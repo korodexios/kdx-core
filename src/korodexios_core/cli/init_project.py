@@ -265,6 +265,8 @@ def build_files(project: ProjectTemplate) -> dict[str, str]:
         ".agents/skills/verification.md": _skill_verification(project),
         f"src/{package}/__init__.py": _package_init(project),
         f"src/{package}/cli.py": _cli_source(project),
+        f"src/{package}/i18n.py": _i18n_source(project),
+        f"src/{package}/locales/{package}.pot": _locales_template(project),
         "tests/test_smoke.py": _smoke_test(project),
     }
     if not project.minimal:
@@ -399,6 +401,8 @@ def _readme(project: ProjectTemplate) -> str:
         fence + "text",
         f"src/{project.package}/",
         "  cli.py                 # entry point: boots the chassis with --home at this root",
+        "  i18n.py                # translate(): stdlib gettext; source strings fall back",
+        f"  locales/               # {project.package}.pot template; .mo catalogues ignored",
     ]
     if project.minimal:
         lines += ["  modules/               # drop module packages here; discovery finds them"]
@@ -423,7 +427,27 @@ def _readme(project: ProjectTemplate) -> str:
             "web/",
             "  index.html, src/       # static client: talks to the daemon over the IPC endpoint",
         ]
-    lines += [fence, "", "## Configuration precedence", ""]
+    lines += [fence, ""]
+    lines += [
+        "## Messages (i18n)",
+        "",
+        "User-facing strings resolve through @BT@i18n.translate()@BT@: the chassis"
+        " stays English-neutral and writes machine payloads, while this project"
+        " owns its language. Copy the template, compile a catalogue, and select a locale:",
+        "",
+        fence + "bash",
+        "LOCALE=sk; D=locales/$LOCALE/LC_MESSAGES",
+        f"cp src/{project.package}/locales/{project.package}.pot $D/{project.package}.po",
+        f"msgfmt $D/{project.package}.po -o $D/{project.package}.mo",
+        f"KDX_LOCALE=$LOCALE {project.script} doctor",
+        fence,
+        "",
+        "Without a compiled catalogue the source string comes back, so nothing is"
+        " blocked on translation.",
+        "",
+        "## Configuration precedence",
+        "",
+    ]
     lines += [
         "@BT@CLI flags > .env (KDX_*) > kdx.yml > built-in defaults@BT@: every key is",
         "dotted (core.log.level) and @BT@kdx doctor@BT@ shows where each value came from.",
@@ -813,6 +837,7 @@ def _agents(project: ProjectTemplate) -> str:
         "",
         f"- @BT@src/{project.package}/modules/@BT@ - chassis modules, auto-discovered.",
         f"- @BT@src/{project.package}/cli.py@BT@ - the only entry point; keep it thin.",
+        f"- @BT@src/{project.package}/i18n.py@BT@ - user-facing strings use @BT@translate()@BT@.",
         "- @BT@tests/@BT@ - pytest; no network, no sleeps longer than one tick.",
         "- @BT@kdx.yml@BT@ - configuration; never hardcode what belongs here.",
         "- @BT@var/@BT@ - runtime state (logs, IPC discovery file); never committed.",
@@ -828,6 +853,8 @@ def _agents(project: ProjectTemplate) -> str:
         "5. **Diagnostics to stderr, UI to stdout.** Modules never print to stdout.",
         "6. **Crash-proof CLI.** Prompt in validation loops, defaults in brackets, and",
         "   never raise a stack trace at the operator.",
+        "7. **Language belongs to the project.** The chassis writes English diagnostics",
+        "   and machine payloads; user-facing strings go through @BT@i18n.translate()@BT@.",
         "",
         "## Docs",
         "",
@@ -900,6 +927,7 @@ def _gitignore() -> str:
             "korodex.local.yml",
             "node_modules/",
             "web/dist/",
+            "*.mo",
             "",
         ]
     )
@@ -939,6 +967,99 @@ def _package_init(project: ProjectTemplate) -> str:
     )
 
 
+def _i18n_source(project: ProjectTemplate) -> str:
+    package = project.package
+    return "\n".join(
+        [
+            f'"""Locale-aware messages for {project.title}: the chassis stays neutral.',
+            "",
+            "The chassis writes English diagnostics and machine payloads. User-facing",
+            "strings in this project resolve through translate(). Catalogue sources live",
+            "next to this file under locales/<locale>/LC_MESSAGES/, compile to .mo, and",
+            "are selected by KDX_LOCALE. Without a compiled catalogue the source string",
+            "comes back, so the project runs before any translation exists.",
+            '"""',
+            "",
+            "from __future__ import annotations",
+            "",
+            "import gettext",
+            "import os",
+            "from pathlib import Path",
+            "from typing import Final",
+            "",
+            f'PACKAGE: Final[str] = "{package}"',
+            'LOCALE_DIR: Final[Path] = Path(__file__).resolve().parent / "locales"',
+            'DEFAULT_LOCALE: Final[str] = "en"',
+            'ENV_KEYS: Final[tuple[str, ...]] = ("KDX_LOCALE", "LC_ALL", "LC_MESSAGES", "LANG")',
+            "",
+            "",
+            "def available_locales() -> tuple[str, ...]:",
+            '    """Return the locales with a compiled catalogue, always including the default."""',
+            "    found: set[str] = {DEFAULT_LOCALE}",
+            "    if LOCALE_DIR.is_dir():",
+            '        for compiled in LOCALE_DIR.glob("*/LC_MESSAGES/" + PACKAGE + ".mo"):',
+            "            found.add(compiled.parent.parent.name)",
+            "    return tuple(sorted(found))",
+            "",
+            "",
+            "def current_locale() -> str:",
+            '    """Resolve the locale from the environment, falling back to the default."""',
+            "    for key in ENV_KEYS:",
+            '        value = os.environ.get(key, "").strip()',
+            "        if not value:",
+            "            continue",
+            '        cleaned = value.split(".", 1)[0].replace("-", "_")',
+            "        if cleaned in available_locales():",
+            "            return cleaned",
+            "    return DEFAULT_LOCALE",
+            "",
+            "",
+            "def translate(message: str, **fields: object) -> str:",
+            '    """Return *message* in the current locale, formatted with *fields*."""',
+            "    catalog = gettext.translation(",
+            "        PACKAGE,",
+            "        localedir=str(LOCALE_DIR),",
+            "        languages=[current_locale()],",
+            "        fallback=True,",
+            "    )",
+            "    text = catalog.gettext(message)",
+            "    if not fields:",
+            "        return text",
+            "    return text.format(**{key: str(value) for key, value in fields.items()})",
+            "",
+        ]
+    )
+
+
+def _locales_template(project: ProjectTemplate) -> str:
+    package = project.package
+    lines = [
+        f"# Translatable strings for {project.title}.",
+        f"# Copy this template to locales/<locale>/LC_MESSAGES/{package}.po, fill the",
+        "# msgstr entries, then compile it:",
+        f"#   msgfmt locales/<locale>/LC_MESSAGES/{package}.po -o <same>.mo",
+        "# and select the locale with KDX_LOCALE=<locale>.",
+        'msgid ""',
+        'msgstr ""',
+        f'"Project-Id-Version: {package} 0.1.0\\n"',
+        '"Content-Type: text/plain; charset=utf-8\\n"',
+        '"Language: en\\n"',
+        "",
+        f"#: src/{package}/cli.py",
+        'msgid "kdx.yml not found next to the package; using {cwd}"',
+        "msgstr \"\"",
+        "",
+    ]
+    if not project.minimal:
+        lines += [
+            f"#: src/{package}/modules/app/module.py",
+            'msgid "Hello from {title}"',
+            "msgstr \"\"",
+            "",
+        ]
+    return "\n".join(lines)
+
+
 def _cli_source(project: ProjectTemplate) -> str:
     return "\n".join(
         [
@@ -952,6 +1073,8 @@ def _cli_source(project: ProjectTemplate) -> str:
             "",
             "from korodexios_core.cli.entry import main as chassis_main",
             "",
+            f"from {project.package}.i18n import translate",
+            "",
             "",
             "def project_root() -> Path:",
             '    """Return the repository root that owns kdx.yml."""',
@@ -959,6 +1082,13 @@ def _cli_source(project: ProjectTemplate) -> str:
             "    for candidate in (*here.parents[2:3], Path.cwd()):",
             '        if (candidate / "kdx.yml").is_file():',
             "            return candidate",
+            "    print(",
+            '        translate(',
+            '            "kdx.yml not found next to the package; using {cwd}",',
+            "            cwd=str(Path.cwd()),",
+            "        ),",
+            "        file=sys.stderr,",
+            "    )",
             "    return Path.cwd()",
             "",
             "",
@@ -1028,6 +1158,8 @@ def _app_module(project: ProjectTemplate) -> str:
             "from korodexios_core.kernel.context import CoreContext",
             "from korodexios_core.kernel.contract import Module",
             "",
+            f"from {project.package}.i18n import translate",
+            "",
             'GREETING_EVENT = "app.greeted"',
             '"""Event published when the module starts."""',
             "",
@@ -1045,7 +1177,7 @@ def _app_module(project: ProjectTemplate) -> str:
             '        """Read project settings so the greeting stays configurable."""',
             "        super().init(context)",
             "        self.greetings = 0",
-            f'        default = "Hello from {project.title}"',
+            f'        default = translate("Hello from {{title}}", title="{project.title}")',
             '        self.greeting = self.config.get_str("greeting", default)',
             "",
             "    def register_cli(self, surface: CliSurface) -> None:",
@@ -1120,7 +1252,11 @@ def _smoke_test(project: ProjectTemplate) -> str:
             "from korodexios_core.kernel.contract import ModuleState, check_contract"
         )
     chassis_imports.append("from korodexios_core.paths import AppPaths")
-    first_party = [f"from {package} import __version__", f"from {package}.cli import project_root"]
+    first_party = [
+        f"from {package} import __version__",
+        f"from {package}.cli import project_root",
+        f"from {package}.i18n import available_locales, translate",
+    ]
     if not project.minimal:
         first_party.append(f"from {package}.modules.app.module import MODULE")
     tests = [
@@ -1136,6 +1272,13 @@ def _smoke_test(project: ProjectTemplate) -> str:
         "def test_version_is_exposed() -> None:",
         '    """The package exposes a version string."""',
         '    assert __version__.count(".") == 2',
+        "",
+        "",
+        "def test_translation_falls_back_to_the_source_string() -> None:",
+        '    """Without a compiled catalogue the source string comes back, formatted."""',
+        '    missing = "kdx.yml not found next to the package; using {cwd}"',
+        '    assert translate(missing, cwd="/tmp") == missing.replace("{cwd}", "/tmp")',
+        '    assert "en" in available_locales()',
         "",
         "",
         "def _boot() -> Chassis:",

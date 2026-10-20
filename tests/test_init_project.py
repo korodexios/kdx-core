@@ -90,6 +90,23 @@ def test_generated_configuration_files_parse(tmp_path: Path) -> None:
     assert files[".env.example"].startswith("# Env layer")
 
 
+def test_seed_ships_the_translation_convention() -> None:
+    """The chassis stays locale-neutral; the seeded project owns its language."""
+    project = project_from_inputs("locale_check")  # type: ignore[arg-type]
+    files = build_files(project)  # type: ignore[arg-type]
+    i18n = files["src/locale_check/i18n.py"]
+    assert "import gettext" in i18n
+    assert "def translate(" in i18n and "def available_locales(" in i18n
+    pot = files["src/locale_check/locales/locale_check.pot"]
+    assert pot.startswith("# Translatable strings for")
+    assert pot.count("msgstr") >= 2
+    assert "Hello from {title}" in files["src/locale_check/modules/app/module.py"]
+    assert "from locale_check.i18n import translate" in files["src/locale_check/cli.py"]
+    assert "*.mo" in files[".gitignore"]
+    bare = build_files(project_from_inputs("locale_bare", minimal=True))  # type: ignore[arg-type]
+    assert "Hello from {title}" not in bare["src/locale_bare/locales/locale_bare.pot"]
+
+
 def test_minimal_variant_disables_the_example_modules(tmp_path: Path) -> None:
     project = project_from_inputs("bare_things", minimal=True)
     result = init_project(tmp_path / "bare_things", project)  # type: ignore[arg-type]
