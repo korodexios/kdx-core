@@ -330,7 +330,7 @@ The chassis installs like any PEP 517 package; nothing inside it assumes a check
 
 - **One version source.** `src/korodexios_core/version.py` is the only declaration;
   `pyproject.toml` says `dynamic = ["version"]` and hatchling reads it with an explicit
-  pattern that a test keeps honest. Current release: **`0.1.0rc2`**, core API `v1`.
+  pattern that a test keeps honest. Current release: **`0.1.0`** (production), core API `v1`.
 - **Typed.** `py.typed` ships in the wheel, so downstream projects get full static
   checking against the chassis API, not just runtime behaviour.
 - **Package data.** Every `modules/*/korodex_module.toml` manifest is an explicit wheel
@@ -361,10 +361,11 @@ handlers, so `Ctrl-C` while following exits **130** (SIGTERM **143**) with
 
 ### 2.6 Core API freeze (core api v1)
 
-The release candidate **`v0.1.0rc1`** freezes the contract every Korodexios project
-will build on. **`v0.1.0rc2`** adds the `kdx` alias, a LAN-bindable control plane with
+The release candidate **`v0.1.0rc1`** froze the contract every Korodexios project
+will build on; **`v0.1.0rc2`** added the `kdx` alias, a LAN-bindable control plane with
 optional per-route auth, `kdx status --target`, and the `kdx.yml` / `KDX_` naming
-alignment; the frozen public surface is unchanged. The package root is the public surface - one import, no archaeology:
+alignment. **`v0.1.0`** is the production release on top of that freeze - the public
+surface is unchanged, plus the dual-audience documentation suite. The package root is the public surface - one import, no archaeology:
 
 ```python
 from korodexios_core import (
@@ -406,7 +407,8 @@ from korodexios_core import (
 | 7 | Distribution readiness: dynamic version from `version.py`, audited wheel and sdist (`py.typed` + every module manifest), isolated `uv tool` / `pipx` install, the `korodex logs` operator helper, and a 3-OS x 3-Python CI matrix | **delivered** |
 | 8 | `kdx` as the primary short alias (`korodexios` canonical, `korodex` kept for backward compatibility), LAN-bindable control plane (`core.ipc.host`), optional auth (`core.ipc.auth`, `--no-auth`), static token (`core.ipc.token`), the anonymous-shutdown guard, and `kdx status --target` | **delivered** |
 | 9 | Naming alignment: `kdx.yml` / `korodexios.yml` config candidates with `korodex.yml` kept as a legacy fallback, a `kdx.local.yml` override layer, `KDX_` as the primary env prefix (`KORODEXIOS_`/`KORODEX_` understood), and `kdx`-first docs | **delivered** |
-| 10 (next) | Publish `v0.1.0` to an index (`twine upload` / GitHub Releases) or a documented git bootstrap, a Textual/TUI front end over the same declarative `CliCommand` tree, and `korodex logs --rotate` | planned |
+| 10 | Production release: `v0.1.0` tagged with the version synchronized across `version.py`, docs, and artifacts | **delivered** |
+| 11 (next) | Publish `v0.1.0` to an index (`twine upload` / GitHub Releases) or a documented git bootstrap, a Textual/TUI front end over the same declarative `CliCommand` tree, and `kdx logs --rotate` | planned |
 
 
 Status tags used across the UI: `[✓]` success, `[?]` question, `[!]` error, `[i]` note.

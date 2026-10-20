@@ -13,7 +13,7 @@ section is a contract, not a suggestion. Human-oriented narrative lives in
 | Distribution | `korodexios-core` |
 | Import root | `korodexios_core` |
 | Console scripts | `kdx` (primary), `korodexios` (canonical), `korodex` (legacy) |
-| Version | `0.1.0rc2`, core API frozen at `v1` (additive changes only inside v1) |
+| Version | `0.1.0` (production), core API frozen at `v1` (additive changes only inside v1) |
 | Runtime | CPython 3.11+, stdlib first (PyYAML for config, rich for the CLI surface) |
 | Config file | `kdx.yml` / `kdx.yaml` / `kdx.json` (then `korodexios.*`, then legacy `korodex.*`) |
 | Env prefix | `KDX_` primary; `KORODEXIOS_` and legacy `KORODEX_` also read |
