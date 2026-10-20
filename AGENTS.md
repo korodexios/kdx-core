@@ -12,8 +12,9 @@ make lint         # ruff check src tests
 make typecheck    # mypy, strict, over korodexios_core
 make test         # pytest -q
 make demo         # scripted end-to-end tour of the CLI
-korodex doctor    # environment, config provenance, modules, control plane
-korodex status    # live daemon report over the IPC endpoint
+kdx doctor        # environment, config provenance, modules, control plane
+kdx status        # live daemon report over the IPC endpoint
+kdx logs -n 50    # the rotating log file, no POSIX tail required
 ```
 
 ## Layout
@@ -46,4 +47,6 @@ korodex status    # live daemon report over the IPC endpoint
 ## Verification
 
 Quote the failing command before and after the fix. `make check` is the bar;
-`korodex init` output must stay lint-clean, type-clean, and runnable.
+`kdx init` output must stay lint-clean, type-clean, and runnable. The console installs
+one entry point under three names: `kdx` (primary short alias), `korodexios` (canonical),
+and `korodex` (kept for backward compatibility). Docs and help lead with `kdx`.

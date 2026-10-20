@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import sys
 
-from korodexios_core.cli.entry import main
+import pytest
+
+from korodexios_core.cli.entry import console_prog, main
 from korodexios_core.constants import ExitCode
 
 
@@ -17,6 +20,15 @@ def test_version_flag(capsys, project_root) -> None:
     captured = capsys.readouterr()
     assert "korodexios-core" in captured.out
     assert captured.err == ""
+
+
+def test_console_prog_follows_the_invoked_alias(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["/usr/local/bin/kdx", "--version"])
+    assert console_prog() == "kdx"
+    monkeypatch.setattr(sys, "argv", ["/usr/local/bin/korodexios", "status"])
+    assert console_prog() == "korodexios"
+    monkeypatch.setattr(sys, "argv", ["__main__.py", "status"])
+    assert console_prog() == "korodex"
 
 
 def test_no_command_prints_help(capsys, project_root) -> None:

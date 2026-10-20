@@ -8,7 +8,13 @@ from typing import TYPE_CHECKING, Any, cast
 
 from ..constants import TAG_ERROR, TAG_NOTE, TAG_OK, ExitCode
 from ..kernel.cli_contract import CliArgument, CliCommand, CliRequest
-from ..kernel.ipc import DISCOVERY_NAME, STATUS_PATH, IpcDiscovery
+from ..kernel.ipc import (
+    DEFAULT_PORT,
+    DISCOVERY_NAME,
+    STATUS_PATH,
+    IpcDiscovery,
+    IpcError,
+)
 from ..version import format_version
 from .render import (
     dump_json,
@@ -160,13 +166,38 @@ def core_commands(chassis: Chassis) -> list[CliCommand]:
         ),
         CliCommand(
             name="status",
-            help="Query the running chassis over its local control plane.",
+            help="Query a running chassis over its control plane (local or remote).",
             args=(
                 CliArgument(
                     ("--json",),
                     dest="as_json",
                     action="store_true",
                     help="Emit the live report as JSON.",
+                ),
+                CliArgument(
+                    ("--target",),
+                    dest="target",
+                    metavar="URL",
+                    help="query http://host:port directly, skipping the local discovery file",
+                ),
+                CliArgument(
+                    ("--host",),
+                    dest="target_host",
+                    metavar="HOST",
+                    help="query this host (with --port) instead of the local endpoint",
+                ),
+                CliArgument(
+                    ("--port",),
+                    dest="target_port",
+                    metavar="PORT",
+                    type="int",
+                    help="port of --host [core.ipc.port]",
+                ),
+                CliArgument(
+                    ("--token",),
+                    dest="target_token",
+                    metavar="TOKEN",
+                    help="shared token for a remote endpoint with auth enabled",
                 ),
             ),
             handler=_status_command,
@@ -287,6 +318,19 @@ def core_commands(chassis: Chassis) -> list[CliCommand]:
                     metavar="SECONDS",
                     type="float",
                     help="Stop automatically after SECONDS.",
+                ),
+                CliArgument(
+                    ("--host",),
+                    dest="ipc_host",
+                    metavar="HOST",
+                    help="bind the control plane here (0.0.0.0 for LAN access)",
+                ),
+                CliArgument(
+                    ("--port",),
+                    dest="ipc_port",
+                    metavar="PORT",
+                    type="int",
+                    help="control-plane port (0 for an ephemeral port)",
                 ),
             ),
             handler=_run_command,
@@ -556,27 +600,56 @@ def _init_command(request: CliRequest) -> int:
 
 
 def _status_command(request: CliRequest) -> int:
-    """Query a running chassis through its loopback control plane."""
+    """Query a running chassis through its control plane, locally or over the LAN."""
     chassis = _chassis(request)
-    discovery_path = Path(chassis.paths.state_dir) / DISCOVERY_NAME
-    discovery = IpcDiscovery.load(discovery_path)
     timeout = float(chassis.config.get_float("core.ipc.timeout", 2.0))
-    if discovery is None or not discovery.is_process_alive():
+    default_port = int(chassis.config.get_int("core.ipc.port", 8123)) or DEFAULT_PORT
+    discovery_path = Path(chassis.paths.state_dir) / DISCOVERY_NAME
+    token = str(
+        request.option("target_token") or chassis.config.get_str("core.ipc.token", "") or ""
+    ).strip()
+    target = str(request.option("target") or "").strip()
+    target_host = str(request.option("target_host") or "").strip()
+    target_port = request.option("target_port")
+    remote = bool(target or target_host)
+    try:
+        discovery: IpcDiscovery | None
+        if target:
+            discovery = IpcDiscovery.remote(target, default_port=default_port, token=token)
+        elif target_host:
+            address = target_host
+            if target_port is not None:
+                address = f"{target_host}:{int(target_port)}"
+            discovery = IpcDiscovery.remote(address, default_port=default_port, token=token)
+        else:
+            discovery = IpcDiscovery.load(discovery_path)
+    except IpcError as exc:
+        write_line(f"{TAG_ERROR} {exc}")
+        if exc.hint:
+            write_line(f"{TAG_NOTE} {exc.hint}")
+        return int(ExitCode.ERROR)
+    if discovery is None or (not remote and not discovery.is_process_alive()):
         if request.flag("as_json"):
             dump_json({"running": False, "discovery_file": str(discovery_path)})
         else:
             write_line(f"{TAG_NOTE} chassis daemon is not running")
             write_line(f"{TAG_NOTE} looked for {discovery_path}")
         return int(ExitCode.SUCCESS)
+    endpoint = discovery.base_url()
     try:
         code, payload = discovery.request(STATUS_PATH, timeout=timeout)
     except OSError as exc:
-        write_line(f"{TAG_ERROR} chassis daemon on port {discovery.port} is not answering")
+        write_line(f"{TAG_ERROR} no control plane answering at {endpoint}")
         write_line(f"{TAG_NOTE} {exc}")
         return int(ExitCode.ERROR)
     if code in (401, 403):
-        write_line(f"{TAG_ERROR} the daemon rejected this client (token mismatch)")
-        write_line(f"{TAG_NOTE} start 'korodex run' again so {discovery_path} is refreshed")
+        write_line(f"{TAG_ERROR} the daemon rejected this client ({endpoint} requires a token)")
+        if remote:
+            write_line(
+                f"{TAG_NOTE} pass --token TOKEN, or set core.ipc.token / KORODEX_CORE__IPC__TOKEN"
+            )
+        else:
+            write_line(f"{TAG_NOTE} start 'korodex run' again so {discovery_path} is refreshed")
         return int(ExitCode.ERROR)
     if code != 200 or not isinstance(payload, dict):
         write_line(f"{TAG_ERROR} the daemon answered HTTP {code}")
@@ -595,8 +668,18 @@ def _status_command(request: CliRequest) -> int:
             ("state", app.get("state", "-")),
             ("uptime", f"{float(app.get('uptime_seconds', 0.0) or 0.0):.1f} s"),
             ("pid", ipc.get("pid", "-")),
-            ("endpoint", f"{ipc.get('host', '-')}:{ipc.get('port', '-')}"),
-            ("discovery file", str(discovery_path)),
+            ("endpoint", endpoint),
+            ("auth", "token required" if ipc.get("auth") else "anonymous reads"),
+            (
+                "shutdown",
+                "anonymous"
+                if ipc.get("allow_anonymous_shutdown") and not ipc.get("auth")
+                else "token required",
+            ),
+            (
+                "source",
+                f"target {endpoint}" if remote else f"discovery file {discovery_path}",
+            ),
         ]
     )
     print_section("Modules")
@@ -773,6 +856,15 @@ def _run_command(request: CliRequest) -> int:
     chassis = _chassis(request)
     duration_value = request.option("duration")
     duration = float(duration_value) if duration_value is not None else None
+    overrides: dict[str, Any] = {}
+    host_value = request.option("ipc_host")
+    if host_value:
+        overrides["core.ipc.host"] = str(host_value)
+    port_value = request.option("ipc_port")
+    if port_value is not None:
+        overrides["core.ipc.port"] = int(port_value)
+    if overrides:
+        chassis.config = chassis.config.with_cli_overrides(overrides)
     chassis.ensure_initialized()
     if chassis.state.value == "failed":
         for name in chassis.registry.health()["failed"]:

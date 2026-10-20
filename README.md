@@ -38,7 +38,7 @@ korodexios-core/
 │   │   ├── context.py          # CoreContext handed to every module
 │   │   ├── discovery.py        # auto-discovery (built-in + external plugin dirs)
 │   │   ├── registry.py         # module state, lifecycle ordering, CLI collection
-│   │   ├── ipc.py              # loopback HTTP control plane: health, status, shutdown
+│   │   ├── ipc.py              # HTTP control plane: health, status, shutdown (LAN-bindable)
 │   │   ├── signals.py          # SIGINT / SIGTERM / SIGBREAK coordinator
 │   │   └── chassis.py          # Chassis: init -> start -> run -> stop coordinator
 │   ├── cli/                    # thin client: argparse + rich wizard, core commands, entry
@@ -53,7 +53,7 @@ korodexios-core/
 │       ├── heartbeat/          # background thread, events, clean shutdown
 │       ├── system_info/        # OS / CPU / RAM / disk diagnostics (stdlib only)
 │       └── backup_engine/      # source -> destination backups with dry runs
-└── tests/                      # pytest suite: 174 tests across 18 modules
+└── tests/                      # pytest suite: 188 tests across 19 modules
 ```
 
 ### 1.1 The module contract
@@ -119,7 +119,8 @@ CLI arguments  >  environment (.env + process env)  >  config file (YAML/JSON)  
 - Defaults live in `src/korodexios_core/config/defaults.py`.
 - Config files are `korodex.yml`, `korodex.yaml`, or `korodex.json` (discovered at the root).
 - Environment keys map to dotted config keys: strip `KORODEX_`, split nesting on `__`,
-  lower-case, map `-` to `_`. Example: `KORODEX_CORE__LOG__LEVEL=DEBUG` → `core.log.level`.
+  lower-case, map `-` to `_`. Examples: `KORODEX_CORE__LOG__LEVEL=DEBUG` → `core.log.level`,
+  `KORODEX_CORE__IPC__HOST=0.0.0.0` → `core.ipc.host`.
 - A real environment variable always beats the same key in `.env`.
 - Values are coerced at the read site (`get_bool`, `get_int`, `get_path`, `get_list`), and a
   bad value raises a polite `ConfigValueError` naming key, value, and source.
@@ -144,32 +145,38 @@ traceback is never shown. Module `stop()` hooks always run.
 
 ## 2. Quickstart
 
+The console installs three names for one entry point. **`kdx`** is the primary
+high-velocity alias, **`korodexios`** is the canonical long name, and **`korodex`** is
+kept as a backward-compatibility alias. They are identical, so every example below works
+with any of them.
+
 ```bash
 uv venv --python 3.13            # or: python3 -m venv .venv
 uv pip install -e ".[dev]"       # or:   pip install -e ".[dev]"
 source .venv/bin/activate
 
-korodex --version
-korodex doctor                   # environment inspection
-korodex status                   # query the running daemon over its control plane
-korodex logs -n 50               # tail the rotating log file (no POSIX tail needed)
-korodex logs -f                  # follow it; Ctrl-C stops cleanly, --clear truncates
-korodex modules list             # what auto-discovery found
-korodex config show --key core.  # resolved values + provenance
-korodex run --once               # boot, one tick, clean stop (CI friendly)
-korodex run --duration 3         # run for three seconds
-korodex heartbeat status         # a module-provided command
-korodex system info                # OS / CPU / memory / disk / uptime
-korodex system diagnostics         # interactive diagnostics menu (pick a section)
-korodex backup plan                # validate + show what a backup would copy
-korodex backup run --dry-run       # simulate; --exclude '*.log' etc. are honoured
-korodex modules create my_plugin --path ./my_plugins   # scaffold a plugin package
-korodex init my_service --path ../my_service # seed a whole new project from the chassis
-korodex wizard                     # interactive numbered-menu wizard (TTY only)
+kdx --version                    # byte-identical from korodexios and korodex too
+kdx doctor                       # environment inspection
+kdx status                       # query the running daemon over its control plane
+kdx logs -n 50                   # tail the rotating log file (no POSIX tail needed)
+kdx logs -f                      # follow it; Ctrl-C stops cleanly, --clear truncates
+kdx modules list                 # what auto-discovery found
+kdx config show --key core.      # resolved values + provenance
+kdx run --once                   # boot, one tick, clean stop (CI friendly)
+kdx run --duration 3             # run for three seconds
+kdx run --host 0.0.0.0 --port 8123   # expose the control plane to the LAN
+kdx heartbeat status             # a module-provided command
+kdx system info                  # OS / CPU / memory / disk / uptime
+kdx system diagnostics           # interactive diagnostics menu (pick a section)
+kdx backup plan                  # validate + show what a backup would copy
+kdx backup run --dry-run         # simulate; --exclude '*.log' etc. are honoured
+kdx modules create my_plugin --path ./my_plugins   # scaffold a plugin package
+kdx init my_service --path ../my_service # seed a whole new project from the chassis
+kdx wizard                       # interactive numbered-menu wizard (TTY only)
 ```
 
 CI / non-interactive runs: pass `--yes` (accept defaults) and `--no-log-file` if the
-filesystem is read-only. `korodex run --once` never prompts and never hangs, and the
+filesystem is read-only. `kdx run --once` never prompts and never hangs, and the
 chassis also **auto-detects non-TTY stdin**, forcing `core.cli.interactive=false` so CI
 can never stall on a question.
 
@@ -210,37 +217,55 @@ UX rules enforced by `cli/ux.py` and `validate.py`:
 
 ---
 
-### 2.2 The local control plane (daemon IPC)
+### 2.2 The control plane (daemon IPC)
 
-A running chassis is headless, so it announces itself instead of requiring a
-client library. \`korodex run\` (not \`--once\`) starts a stdlib
-\`ThreadingHTTPServer\` bound to \`127.0.0.1\` and writes a private discovery file
-at \`<state_dir>/chassis.ipc\` (\`var/chassis.ipc\` by default, mode \`0600\`):
+A running chassis is headless, so it announces itself instead of requiring a client
+library. `kdx run` (not `--once`) starts a stdlib `ThreadingHTTPServer` and writes a private
+discovery file at `<state_dir>/chassis.ipc` (`var/chassis.ipc` by default, mode `0600`):
 
-\`\`\`json
+```json
 {"pid": 8145, "port": 8123, "host": "127.0.0.1", "token": "91d0a1…", "started_at": 1792501644.35}
-\`\`\`
+```
 
-| Endpoint | Auth | Purpose |
+| Endpoint | Token | Purpose |
 | --- | --- | --- |
-| \`GET /health\` | none | liveness for Docker \`HEALTHCHECK\`, Kubernetes, curl |
-| \`GET /api/v1/status\` | \`X-Korodex-Token\` | the full \`health_report()\` payload as JSON |
-| \`POST /api/v1/shutdown\` | \`X-Korodex-Token\` | ask the daemon to stop; it exits \`0\` |
+| `GET /health` | never | liveness for Docker `HEALTHCHECK`, Kubernetes, curl |
+| `GET /api/v1/status` | `X-Korodex-Token` while `core.ipc.auth: true` (the default) | the full `health_report()` payload as JSON |
+| `POST /api/v1/shutdown` | token, unless `core.ipc.allow_anonymous_shutdown: true` | ask the daemon to stop; it exits `0` |
 
-The token is generated per run and never leaves the discovery file (\`korodex
-doctor\` and \`korodex status\` hide it). \`korodex status\` reads the file, checks
-the pid, and renders live state, uptime, modules, event-bus counters, and process
-memory — or \`[i] chassis daemon is not running\`. \`Chassis.shutdown()\` closes the
-server and deletes the file inside the same \`core.lifecycle.stop_timeout\` budget
-as module \`stop()\` hooks, so a remote shutdown still runs every cleanup hook.
+**Where it binds.** `core.ipc.host` defaults to `127.0.0.1`. `0.0.0.0` or an interface IP exposes
+the same JSON to the LAN, and the chassis logs `[i] control plane listening on 0.0.0.0 (LAN
+accessible)` - no `IpcError`, no fuss. A wildcard bind is announced in the discovery file as
+`127.0.0.1`, the address a local client can actually dial. Flags: `kdx run --host 0.0.0.0
+--port 8123`, or globally `--ipc-host` / `--ipc-port`.
 
-### 2.3 Seeding a new project: \`korodex init\`
+**Who may call it.** `core.ipc.auth: false` (or `--no-auth`) lets any host on the network read
+`/health` and `/api/v1/status` with no header - what a homelab dashboard or a VPN peer wants.
+The destructive `POST /api/v1/shutdown` still demands the token unless the operator explicitly
+sets `core.ipc.allow_anonymous_shutdown: true`, so a LAN-visible port is never an accidental
+stop button. The shared secret is `core.ipc.token` (`KORODEX_CORE__IPC__TOKEN`,
+`--ipc-token`): a static key you can hand to a remote client, falling back to a fresh
+ephemeral token per boot when unset. The token never leaves the `0600` discovery file -
+`kdx doctor` and `kdx status` hide it.
 
-The chassis is the seed, not the dependency you copy. \`korodex init my_service\`
+**Querying a remote chassis.** `kdx status --target http://192.168.1.50:8123` (also
+`--host`/`--port`, plus `--token` when auth is on) queries that HTTP endpoint directly instead
+of reading the local `var/chassis.ipc` file, and a 401 explains that a token is required
+rather than failing silently.
+
+`kdx status` reads the discovery file, checks the pid, and renders live state, uptime, modules,
+event-bus counters, and process memory - or `[i] chassis daemon is not running`.
+`Chassis.shutdown()` closes the server and deletes the file inside the same
+`core.lifecycle.stop_timeout` budget as module `stop()` hooks, so a remote shutdown still runs
+every cleanup hook.
+
+### 2.3 Seeding a new project: `korodex init`
+
+The chassis is the seed, not the dependency you copy. `korodex init my_service`
 asks for a name, an author, and a target ecosystem (numbered menu, defaults in
-brackets, \`--yes\` for CI) and writes an independent, runnable repository:
+brackets, `--yes` for CI) and writes an independent, runnable repository:
 
-\`\`\`text
+```text
 my_service/
   pyproject.toml            # src layout, korodexios-core dependency, ruff/mypy/pytest config
   korodex.yml               # core.modules.extra_paths -> src/my_service/modules
@@ -250,18 +275,18 @@ my_service/
   src/my_service/cli.py     # thin entry point: boots the chassis with --home at this root
   src/my_service/modules/app/   # a real module: manifest, contract, CLI command, health()
   tests/test_smoke.py       # discovery, config, and contract proven
-\`\`\`
+```
 
 | Option | Effect |
 | --- | --- |
-| \`--path DIR\` | where to write (default: \`./<name>\`) |
-| \`--ecosystem python\|fullstack\` | fullstack adds \`web/\` (static client for the IPC endpoint) and the \`web-ui\` skill |
-| \`--minimal\` | bare chassis: no example module, \`heartbeat\` and \`backup_engine\` disabled in \`korodex.yml\` |
-| \`--force\` | write into a directory that already holds files |
+| `--path DIR` | where to write (default: `./<name>`) |
+| `--ecosystem python\|fullstack` | fullstack adds `web/` (static client for the IPC endpoint) and the `web-ui` skill |
+| `--minimal` | bare chassis: no example module, `heartbeat` and `backup_engine` disabled in `korodex.yml` |
+| `--force` | write into a directory that already holds files |
 
-Nothing is a placeholder: the generated project passes \`ruff check\`, \`mypy
---strict\`, and \`pytest\` immediately, and \`korodex --home <project> modules list\`
-shows the new \`app\` module as \`external\`.
+Nothing is a placeholder: the generated project passes `ruff check`, `mypy
+--strict`, and `pytest` immediately, and `korodex --home <project> modules list`
+shows the new `app` module as `external`.
 
 
 ### 2.4 Distribution and installation
@@ -303,7 +328,7 @@ POSIX dependency, which matters on Windows CMD and in containers.
 A disabled or missing log file prints `[i] no log file found at <path>` and exits **0**;
 `-n 0` is the only refusal (`[!] --lines must be at least 1`). The chassis owns the signal
 handlers, so `Ctrl-C` while following exits **130** (SIGTERM **143**) with
-`[i] stopped following korodex.log` - the same contract as `korodex run`, never a traceback.
+`[i] stopped following korodex.log` - the same contract as `kdx run`, never a traceback.
 
 
 ### 2.6 Core API freeze (core api v1)
@@ -320,7 +345,7 @@ from korodexios_core import (
     CliSurface,
     LayeredConfig, ScopedConfig, CORE_DEFAULTS,  # CLI > env > file > defaults
     EventBus, Event, Subscription,               # the event bus
-    IpcServer, IpcOptions, IpcDiscovery,         # the loopback control plane
+    IpcServer, IpcOptions, IpcDiscovery,         # the control plane
     AppPaths, ExitCode, KorodexLogger,
 )
 ```
@@ -349,7 +374,8 @@ from korodexios_core import (
 | 2 | `rich` UX layer: numbered-menu wizard over the registered commands, `[default]` prompts, `while True` validation loops, validators (port/IP/path/size/duration), `--yes` + non-TTY auto-detection | **delivered** |
 | 1 | Packaging, config hierarchy, logging, event bus, module contract, discovery, registry, signals, chassis, argparse CLI, `heartbeat` proof of concept, tests | **delivered** |
 | 7 | Distribution readiness: dynamic version from `version.py`, audited wheel and sdist (`py.typed` + every module manifest), isolated `uv tool` / `pipx` install, the `korodex logs` operator helper, and a 3-OS x 3-Python CI matrix | **delivered** |
-| 8 (next) | Publish `v0.1.0` to an index (`twine upload` / GitHub Releases) or a documented git bootstrap, a Textual/TUI front end over the same declarative `CliCommand` tree, and `korodex logs --rotate` | planned |
+| 8 | `kdx` as the primary short alias (`korodexios` canonical, `korodex` kept for backward compatibility), LAN-bindable control plane (`core.ipc.host`), optional auth (`core.ipc.auth`, `--no-auth`), static token (`core.ipc.token`), the anonymous-shutdown guard, and `kdx status --target` | **delivered** |
+| 9 (next) | Publish `v0.1.0` to an index (`twine upload` / GitHub Releases) or a documented git bootstrap, a Textual/TUI front end over the same declarative `CliCommand` tree, and `korodex logs --rotate` | planned |
 
 
 Status tags used across the UI: `[✓]` success, `[?]` question, `[!]` error, `[i]` note.

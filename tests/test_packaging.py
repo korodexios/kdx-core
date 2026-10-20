@@ -83,8 +83,11 @@ def test_py_typed_marker_ships_with_the_package() -> None:
 
 def test_console_scripts_are_declared() -> None:
     scripts = read_pyproject()["project"]["scripts"]
-    assert scripts["korodex"] == "korodexios_core.cli.entry:main"
-    assert scripts["korodexios"] == "korodexios_core.cli.entry:main"
+    expected = "korodexios_core.cli.entry:main"
+    assert scripts["kdx"] == expected
+    assert scripts["korodexios"] == expected
+    assert scripts["korodex"] == expected
+    assert len(scripts) == 3, "every console script must reach the same entry point"
 
 
 def build_distribution(tmp_path: Path) -> tuple[Path, Path]:

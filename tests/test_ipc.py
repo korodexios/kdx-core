@@ -19,7 +19,6 @@ from korodexios_core.kernel.ipc import (
     SHUTDOWN_PATH,
     STATUS_PATH,
     TOKEN_HEADER,
-    IpcError,
     IpcOptions,
     IpcServer,
     process_memory,
@@ -154,15 +153,26 @@ def test_discovery_file_is_private_and_removed(tmp_path: Path) -> None:
     assert server.running is False
 
 
-def test_non_loopback_host_is_refused(tmp_path: Path) -> None:
+def test_wildcard_host_binds_and_announces_loopback(tmp_path: Path) -> None:
+    """A LAN bind is legal; the discovery file announces an address a local client can dial."""
     server = IpcServer(
         status_fn=lambda: {},
         shutdown_fn=lambda: None,
         state_fn=lambda: "running",
         options=IpcOptions(host="0.0.0.0", port=0, discovery_path=tmp_path / DISCOVERY_NAME),
     )
-    with pytest.raises(IpcError, match="loopback interface"):
+    try:
         server.start()
+        assert server.running is True
+        assert server.bound_host == "0.0.0.0"
+        assert server.lan_accessible is True
+        assert server.discovery is not None
+        assert server.discovery.host == "127.0.0.1"
+        assert server.discovery.port > 0
+        recorded = json.loads((tmp_path / DISCOVERY_NAME).read_text(encoding="utf-8"))
+        assert recorded["host"] == "127.0.0.1"
+    finally:
+        server.stop()
 
 
 def test_process_memory_reports_resident_size() -> None:
@@ -234,7 +244,7 @@ def test_status_command_reports_an_unreachable_daemon(capsys, project_root) -> N
     )
     args = [*base_args(project_root), "status"]
     assert main(args) == int(ExitCode.ERROR)
-    assert "is not answering" in capsys.readouterr().out
+    assert "no control plane answering at" in capsys.readouterr().out
 
 
 def test_status_command_flags_a_stale_pid(capsys, project_root) -> None:

@@ -1,9 +1,11 @@
 """Local HTTP control plane: health probe, status snapshot, remote shutdown.
 
 The chassis is headless-first, so a running daemon must be observable from the
-outside without a heavyweight dependency. A stdlib ThreadingHTTPServer bound to
-the loopback interface gives the CLI, curl, Docker HEALTHCHECK, and future web
-dashboards the same JSON on Linux, macOS, and Windows.
+outside without a heavyweight dependency. A stdlib ThreadingHTTPServer gives the
+CLI, curl, Docker HEALTHCHECK, and future web dashboards the same JSON on Linux,
+macOS, and Windows. It binds loopback by default and any host on request: a
+homelab, a VPN peer, or a LAN dashboard can query a remote chassis directly,
+with `core.ipc.auth` deciding whether a token is required to read status.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ import secrets
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -26,10 +29,28 @@ DISCOVERY_NAME = "chassis.ipc"
 TOKEN_HEADER = "X-Korodex-Token"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8123
+DEFAULT_TOKEN_BYTES = 16
+WILDCARD_HOSTS = ("0.0.0.0", "::")
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 HEALTH_PATH = "/health"
 STATUS_PATH = "/api/v1/status"
 SHUTDOWN_PATH = "/api/v1/shutdown"
 ROUTES = (HEALTH_PATH, STATUS_PATH, SHUTDOWN_PATH)
+
+
+def new_token() -> str:
+    """Return a fresh ephemeral shared secret."""
+    return secrets.token_hex(DEFAULT_TOKEN_BYTES)
+
+
+def is_wildcard_host(host: str) -> bool:
+    """Return True when the bind address accepts every interface."""
+    return str(host).strip() in WILDCARD_HOSTS
+
+
+def is_loopback_host(host: str) -> bool:
+    """Return True when only this machine can reach the bind address."""
+    return str(host).strip() in LOOPBACK_HOSTS
 
 
 class IpcError(ValueError):
@@ -88,6 +109,7 @@ class IpcDiscovery:
     token: str
     started_at: float
     path: Path | None = None
+    scheme: str = "http"
 
     def as_dict(self) -> dict[str, Any]:
         """Return the JSON shape written to the discovery file."""
@@ -100,8 +122,48 @@ class IpcDiscovery:
         }
 
     def base_url(self) -> str:
-        """Return the loopback base URL for this endpoint."""
-        return f"http://{self.host}:{self.port}"
+        """Return the base URL for this endpoint."""
+        return f"{self.scheme}://{self.host}:{self.port}"
+
+    @classmethod
+    def remote(
+        cls,
+        target: str,
+        *,
+        default_port: int = DEFAULT_PORT,
+        token: str = "",
+    ) -> IpcDiscovery:
+        """Build a client-side endpoint from 'http://host:port', 'host:port', or 'host'.
+
+        Used by 'korodex status --target' so a LAN or VPN peer needs no local
+        discovery file: the caller supplies the host and, when auth is on, the token.
+        """
+        text = str(target).strip()
+        if not text:
+            raise IpcError("no endpoint given", hint="pass --target http://host:port")
+        if "://" not in text:
+            text = "http://" + text
+        parts = urllib.parse.urlsplit(text)
+        try:
+            port = int(parts.port) if parts.port else int(default_port)
+        except ValueError as exc:
+            raise IpcError(
+                f"cannot read a port from {target!r}",
+                hint="pass --target http://host:port",
+            ) from exc
+        if not parts.hostname:
+            raise IpcError(
+                f"cannot read a host from {target!r}", hint="pass --target http://host:port"
+            )
+        return cls(
+            pid=0,
+            host=str(parts.hostname),
+            port=port,
+            token=str(token),
+            started_at=0.0,
+            path=None,
+            scheme=parts.scheme or "http",
+        )
 
     def is_process_alive(self) -> bool:
         """Return True when the recorded pid still exists."""
@@ -125,10 +187,13 @@ class IpcDiscovery:
         timeout: float = 2.0,
     ) -> tuple[int, Any]:
         """Call one route with the shared token; return (status, decoded body)."""
+        headers: dict[str, str] = {"Accept": "application/json"}
+        if self.token:
+            headers[TOKEN_HEADER] = self.token
         request = urllib.request.Request(
             self.base_url() + route,
             method=method,
-            headers={TOKEN_HEADER: self.token, "Accept": "application/json"},
+            headers=headers,
         )
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -174,7 +239,10 @@ class IpcOptions:
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     discovery_path: Path | None = None
-    token: str = field(default_factory=lambda: secrets.token_hex(16))
+    token: str = field(default_factory=new_token)
+    token_source: str = "ephemeral"
+    auth: bool = True
+    allow_anonymous_shutdown: bool = False
     fallback_attempts: int = 5
 
 
@@ -204,10 +272,14 @@ class _ControlHandler(BaseHTTPRequestHandler):
         if route not in ROUTES:
             self._reply(404, {"error": f"no such endpoint: {route}"})
             return
-        if route != HEALTH_PATH and self.headers.get(TOKEN_HEADER) != ipc.discovery_token:
+        if ipc.requires_token(route) and self.headers.get(TOKEN_HEADER) != ipc.discovery_token:
             self._reply(
                 401,
-                {"error": "missing or invalid X-Korodex-Token header"},
+                {
+                    "error": f"{TOKEN_HEADER} header missing or invalid for {route}",
+                    "hint": "set core.ipc.auth to false for anonymous reads, or "
+                    "core.ipc.allow_anonymous_shutdown to true for anonymous shutdown",
+                },
             )
             return
         if route == HEALTH_PATH:
@@ -263,17 +335,14 @@ class IpcServer:
         self._discovery: IpcDiscovery | None = None
         self._requests = 0
         self._started_at = 0.0
+        self._bound_host = self._options.host
+        self._lan_accessible = not is_loopback_host(self._options.host)
 
     def start(self) -> IpcServer:
         """Bind to the loopback interface, announce the endpoint, serve in background."""
         if self._httpd is not None:
             return self
         host = self._options.host
-        if host not in (DEFAULT_HOST, "localhost", "127.0.0.1"):
-            raise IpcError(
-                f"the control plane must stay on the loopback interface, got {host!r}",
-                hint="Set core.ipc.host to 127.0.0.1 to keep the token meaningful.",
-            )
         httpd: _ControlServer | None = None
         last_error: OSError | None = None
         for attempt in range(max(1, self._options.fallback_attempts)):
@@ -296,14 +365,19 @@ class IpcServer:
         self._started_at = time.time()
         bound_host = str(httpd.server_address[0])
         bound_port = int(httpd.server_address[1])
+        # A wildcard bind is announced as loopback: that is the address a local
+        # client can actually dial, and the discovery file is read locally.
+        announce_host = DEFAULT_HOST if is_wildcard_host(bound_host) else bound_host
+        self._lan_accessible = not is_loopback_host(bound_host)
         self._discovery = IpcDiscovery(
             pid=os.getpid(),
-            host=bound_host,
+            host=announce_host,
             port=bound_port,
             token=self._options.token,
             started_at=self._started_at,
             path=self._options.discovery_path,
         )
+        self._bound_host = bound_host
         httpd.korodex_ipc = self
         self._thread = threading.Thread(
             target=httpd.serve_forever,
@@ -318,6 +392,9 @@ class IpcServer:
                 host=bound_host,
                 port=bound_port,
                 pid=os.getpid(),
+                auth=self._options.auth,
+                token_source=self._options.token_source,
+                lan_accessible=self._lan_accessible,
                 discovery=str(self._options.discovery_path)
                 if self._options.discovery_path
                 else None,
@@ -348,6 +425,39 @@ class IpcServer:
     def discovery_token(self) -> str:
         """Return the shared secret clients must present."""
         return self._discovery.token if self._discovery is not None else self._options.token
+
+    def requires_token(self, route: str) -> bool:
+        """Return True when *route* must present the shared token.
+
+        Policy: /health is always open (it is the liveness probe). Reads follow
+        core.ipc.auth. Shutdown stays authenticated unless the operator explicitly
+        allows anonymous shutdown - a LAN-visible port must not be a stop button.
+        """
+        if route == HEALTH_PATH:
+            return False
+        if route == STATUS_PATH:
+            return bool(self._options.auth)
+        return bool(self._options.auth) or not bool(self._options.allow_anonymous_shutdown)
+
+    @property
+    def bound_host(self) -> str:
+        """Return the interface the server actually bound."""
+        return self._bound_host
+
+    @property
+    def lan_accessible(self) -> bool:
+        """Return True when something off this machine can reach the endpoint."""
+        return self._lan_accessible
+
+    @property
+    def auth_enabled(self) -> bool:
+        """Return True when reads require the shared token."""
+        return bool(self._options.auth)
+
+    @property
+    def token_source(self) -> str:
+        """Return where the shared secret came from: 'static' or 'ephemeral'."""
+        return str(self._options.token_source)
 
     @property
     def running(self) -> bool:
@@ -381,6 +491,11 @@ class IpcServer:
         payload["running"] = self.running
         payload["requests"] = self._requests
         payload["path"] = str(self._discovery.path) if self._discovery.path else None
+        payload["bound_host"] = self._bound_host
+        payload["lan_accessible"] = self._lan_accessible
+        payload["auth"] = bool(self._options.auth)
+        payload["allow_anonymous_shutdown"] = bool(self._options.allow_anonymous_shutdown)
+        payload["token_source"] = str(self._options.token_source)
         payload.pop("token", None)
         return payload
 
@@ -409,12 +524,17 @@ __all__ = [
     "DEFAULT_PORT",
     "DISCOVERY_NAME",
     "HEALTH_PATH",
+    "LOOPBACK_HOSTS",
     "SHUTDOWN_PATH",
     "STATUS_PATH",
     "TOKEN_HEADER",
+    "WILDCARD_HOSTS",
     "IpcDiscovery",
     "IpcError",
     "IpcOptions",
     "IpcServer",
+    "is_loopback_host",
+    "is_wildcard_host",
+    "new_token",
     "process_memory",
 ]

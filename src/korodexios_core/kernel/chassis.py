@@ -22,7 +22,14 @@ from ..version import CORE_API_VERSION, __version__, format_version
 from .cli_contract import CliCommand, CliSurface
 from .context import CoreContext
 from .discovery import DiscoveryReport, ModuleDiscovery
-from .ipc import DISCOVERY_NAME, IpcError, IpcOptions, IpcServer, process_memory
+from .ipc import (
+    DISCOVERY_NAME,
+    IpcError,
+    IpcOptions,
+    IpcServer,
+    new_token,
+    process_memory,
+)
 from .registry import ModuleRegistry
 from .signals import SignalCoordinator, signal_name
 
@@ -196,10 +203,17 @@ class Chassis:
         if not wanted:
             self.ipc = None
             return self
+        static_token = str(self.config.get("core.ipc.token", "") or "").strip()
         options = IpcOptions(
             host=self.config.get_str("core.ipc.host", "127.0.0.1"),
             port=int(self.config.get_int("core.ipc.port", 8123)),
             discovery_path=self.paths.state_dir / DISCOVERY_NAME,
+            token=static_token or new_token(),
+            token_source="static" if static_token else "ephemeral",
+            auth=self.config.get_bool("core.ipc.auth", True),
+            allow_anonymous_shutdown=self.config.get_bool(
+                "core.ipc.allow_anonymous_shutdown", False
+            ),
         )
         server = IpcServer(
             status_fn=self.health_report,
@@ -218,9 +232,21 @@ class Chassis:
             )
             return self
         self.ipc = server
+        if server.lan_accessible:
+            self.logger.info(
+                f"{TAG_NOTE} control plane listening on {options.host} (LAN accessible)",
+                auth=options.auth,
+                token_source=options.token_source,
+            )
         self.bus.publish(
             "core.ipc.started",
-            {"host": options.host, "port": server.discovery.port if server.discovery else None},
+            {
+                "host": options.host,
+                "port": server.discovery.port if server.discovery else None,
+                "auth": options.auth,
+                "token_source": options.token_source,
+                "lan_accessible": server.lan_accessible,
+            },
             source="chassis",
         )
         return self

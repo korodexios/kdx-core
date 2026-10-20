@@ -23,12 +23,15 @@ core:
     tick_interval: 1.0
     stop_timeout: 5.0
   ipc:
-    enabled: true              # 'korodex run' opens a loopback control plane
-    host: 127.0.0.1            # the shared token is only meaningful on loopback
+    enabled: true              # 'kdx run' opens a control plane
+    host: 127.0.0.1            # 0.0.0.0 or an interface IP exposes it to the LAN
     port: 8123                 # 0 takes an ephemeral port; a busy port falls back
-    timeout: 2.0               # client timeout used by 'korodex status'
+    timeout: 2.0               # client timeout used by 'kdx status'
+    token: ""                  # static shared secret; empty means a fresh one per boot
+    auth: true                 # false lets anyone on the network read /api/v1/status
+    allow_anonymous_shutdown: false  # keep POST /api/v1/shutdown authenticated
   logs:
-    poll_interval: 0.5         # seconds between reads for 'korodex logs --follow'
+    poll_interval: 0.5         # seconds between reads for 'kdx logs --follow'
   cli:
     color: true
     interactive: true

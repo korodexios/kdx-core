@@ -43,8 +43,9 @@ dev = [
 ]
 
 [project.scripts]
-korodex = "korodexios_core.cli.entry:main"
+kdx = "korodexios_core.cli.entry:main"
 korodexios = "korodexios_core.cli.entry:main"
+korodex = "korodexios_core.cli.entry:main"
 
 [project.urls]
 Homepage = "https://github.com/korodexios/korodexios-core"

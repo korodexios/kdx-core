@@ -17,4 +17,4 @@ Adding or editing a command, prompt, menu, or the wizard.
 - Diagnostics go to stderr; the operator contract owns stdout.
 
 ## Verification
-`echo | korodex wizard` and `korodex --yes status` both finish without prompting.
+`echo | kdx wizard` and `kdx --yes status` both finish without prompting.

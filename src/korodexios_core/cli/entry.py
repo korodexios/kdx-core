@@ -20,11 +20,23 @@ from .render import write_line
 from .surface import HANDLER_ATTR, ArgparseSurface
 
 LOG_LEVEL_CHOICES = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+PROG_ALIASES = ("kdx", "korodexios", "korodex", "korodexios-core")
+DEFAULT_PROG = "korodex"
+
+
+def console_prog() -> str:
+    """Return the name the console was invoked as, so help matches the prompt.
+
+    'kdx --help' should read 'usage: kdx ...'; a module run ('python -m ...') falls
+    back to the canonical long name instead of showing '__main__.py'.
+    """
+    candidate = Path(sys.argv[0]).stem
+    return candidate if candidate in PROG_ALIASES else DEFAULT_PROG
 
 
 def global_flags() -> argparse.ArgumentParser:
     """Return a help-less parser holding only the global flags (usable as parent)."""
-    parser = argparse.ArgumentParser(prog="korodex", add_help=False)
+    parser = argparse.ArgumentParser(prog=DEFAULT_PROG, add_help=False)
     _add_global_flags(parser)
     return parser
 
@@ -32,11 +44,11 @@ def global_flags() -> argparse.ArgumentParser:
 def build_bootstrap_parser() -> argparse.ArgumentParser:
     """Parser accepting only the global flags (first parsing pass).
 
-    Help is deliberately left to the root parser so 'korodex --help' lists every
+    Help is deliberately left to the root parser so 'kdx --help' lists every
     command contributed by modules, not just the global flags.
     """
     return argparse.ArgumentParser(
-        prog="korodex",
+        prog=DEFAULT_PROG,
         description="korodexios-core chassis console.",
         add_help=False,
         parents=[global_flags()],
@@ -46,9 +58,10 @@ def build_bootstrap_parser() -> argparse.ArgumentParser:
 def build_root_parser(flags: argparse.ArgumentParser | None = None) -> argparse.ArgumentParser:
     """Parser used for the real dispatch pass (second parsing pass)."""
     return argparse.ArgumentParser(
-        prog="korodex",
+        prog=console_prog(),
         description="korodexios-core chassis console: headless core, thin clients.",
         epilog=(
+            "aliases: kdx (short), korodexios (canonical), korodex (compatibility).\n"
             "Every command accepts the global flags above. Use --yes in CI to accept defaults."
         ),
         add_help=True,
@@ -109,6 +122,37 @@ def _add_global_flags(parser: argparse.ArgumentParser) -> None:
         help="Extra plugin directory (repeatable).",
     )
     group.add_argument(
+        "--ipc-host",
+        metavar="HOST",
+        default=argparse.SUPPRESS,
+        help="Control-plane bind address (0.0.0.0 for LAN access) [127.0.0.1].",
+    )
+    group.add_argument(
+        "--ipc-port",
+        metavar="PORT",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="Control-plane port (0 for ephemeral) [8123].",
+    )
+    group.add_argument(
+        "--auth",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Require the shared token on control-plane reads.",
+    )
+    group.add_argument(
+        "--no-auth",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Allow anonymous /health and /api/v1/status reads.",
+    )
+    group.add_argument(
+        "--ipc-token",
+        metavar="TOKEN",
+        default=argparse.SUPPRESS,
+        help="Static shared secret for the control plane.",
+    )
+    group.add_argument(
         "--no-color",
         action="store_true",
         default=argparse.SUPPRESS,
@@ -154,6 +198,19 @@ def _cli_overrides(namespace: argparse.Namespace) -> dict[str, Any]:
         overrides["core.cli.color"] = False
     if getattr(namespace, "yes", False):
         overrides["core.cli.interactive"] = False
+    ipc_host = getattr(namespace, "ipc_host", None)
+    if ipc_host:
+        overrides["core.ipc.host"] = str(ipc_host)
+    ipc_port = getattr(namespace, "ipc_port", None)
+    if ipc_port is not None:
+        overrides["core.ipc.port"] = int(ipc_port)
+    if getattr(namespace, "no_auth", False):
+        overrides["core.ipc.auth"] = False
+    if getattr(namespace, "auth", False):
+        overrides["core.ipc.auth"] = True
+    ipc_token = getattr(namespace, "ipc_token", None)
+    if ipc_token:
+        overrides["core.ipc.token"] = str(ipc_token)
     if getattr(namespace, "home", None):
         overrides["core.home"] = str(Path(str(namespace.home)).expanduser().resolve())
     return overrides

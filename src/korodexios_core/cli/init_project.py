@@ -362,9 +362,12 @@ def _korodex_yml(project: ProjectTemplate) -> str:
             "    stop_timeout: 5.0",
             "  ipc:",
             "    enabled: true",
-            "    host: 127.0.0.1",
+            "    host: 127.0.0.1    # 0.0.0.0 exposes the control plane to the LAN",
             "    port: 0            # ephemeral: never collides with a neighbour",
             "    timeout: 2.0",
+            '    token: ""          # static shared secret; empty means one per boot',
+            "    auth: true         # false = anonymous /health and /api/v1/status reads",
+            "    allow_anonymous_shutdown: false  # keep POST /api/v1/shutdown guarded",
             *module_lines,
             "",
         ]
@@ -419,7 +422,7 @@ def _readme(project: ProjectTemplate) -> str:
     lines += [fence, "", "## Configuration precedence", ""]
     lines += [
         "@BT@CLI flags > .env (KORODEX_*) > korodex.yml > built-in defaults@BT@: every key is",
-        "dotted (core.log.level) and @BT@korodex doctor@BT@ shows where each value came from.",
+        "dotted (core.log.level) and @BT@kdx doctor@BT@ shows where each value came from.",
         "",
         "## Verification",
         "",
@@ -430,7 +433,8 @@ def _readme(project: ProjectTemplate) -> str:
         lines += [
             "## Web UI",
             "",
-            "The daemon binds 127.0.0.1 and writes @BT@var/chassis.ipc@BT@ with port and token.",
+            "The daemon binds 127.0.0.1 (set @BT@core.ipc.host: 0.0.0.0@BT@ for the LAN) and",
+            "writes @BT@var/chassis.ipc@BT@ with pid, port, host, and token.",
             "Serve @BT@web/@BT@ with @BT@npm --prefix web run dev@BT@; open @BT@?port=&token=@BT@.",
             "",
         ]
@@ -970,7 +974,7 @@ def _skill_project_setup(project: ProjectTemplate) -> str:
             "5. @BT@pip install -e ../korodexios-core@BT@ (or a git URL) provides the chassis.",
             "",
             "## Verification",
-            "@BT@make check@BT@ after every change; @BT@korodex doctor@BT@ for config answers.",
+            "@BT@make check@BT@ after every change; @BT@kdx doctor@BT@ for config answers.",
         ],
     ).replace("@BT@", chr(96))
 
@@ -1006,7 +1010,7 @@ def _skill_verification(project: ProjectTemplate) -> str:
             "1. @BT@make lint@BT@ - ruff over @BT@src@BT@ and @BT@tests@BT@.",
             "2. @BT@make typecheck@BT@ - mypy strict over the package.",
             "3. @BT@make test@BT@ - pytest; no network, no sleeps longer than one tick.",
-            "4. Boot it: @BT@korodex run --once@BT@, then @BT@korodex status@BT@, then Ctrl-C and",
+            "4. Boot it: @BT@kdx run --once@BT@, then @BT@kdx status@BT@, then Ctrl-C and",
             "   check the exit code (130 SIGINT, 143 SIGTERM, 0 for an operator stop).",
             "",
             "## Evidence",
@@ -1027,7 +1031,7 @@ def _skill_web_ui(project: ProjectTemplate) -> str:
             "- The token never ships in committed HTML or JS.",
             "",
             "## Steps",
-            "1. @BT@korodex run@BT@ in one terminal, @BT@npm --prefix web run dev@BT@ in another.",
+            "1. @BT@kdx run@BT@ in one terminal, @BT@npm --prefix web run dev@BT@ in another.",
             "2. Read the port and token from @BT@var/chassis.ipc@BT@ for the dev proxy.",
             "3. Keep @BT@web/@BT@ free of build output; @BT@web/dist/@BT@ is gitignored.",
         ],
