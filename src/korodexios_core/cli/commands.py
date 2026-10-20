@@ -82,7 +82,7 @@ def core_commands(chassis: Chassis) -> list[CliCommand]:
         ),
         CliCommand(
             name="logs",
-            help="Show, follow, or truncate the chassis log file.",
+            help="Show, follow, truncate, or rotate the chassis log file.",
             args=(
                 CliArgument(
                     ("-n", "--lines"),
@@ -102,6 +102,12 @@ def core_commands(chassis: Chassis) -> list[CliCommand]:
                     dest="clear",
                     action="store_true",
                     help="truncate the log file (asks first)",
+                ),
+                CliArgument(
+                    ("--rotate",),
+                    dest="rotate",
+                    action="store_true",
+                    help="archive the log file and start a fresh one",
                 ),
                 CliArgument(
                     ("--raw",),
@@ -476,11 +482,17 @@ def _modules_list_command(request: CliRequest) -> int:
 
 
 def _logs_command(request: CliRequest) -> int:
-    """Show, follow, or truncate the chassis log file."""
+    """Show, follow, truncate, or rotate the chassis log file."""
     import signal
     import time
 
-    from ..logging.engine import DEFAULT_TAIL_LINES, LogTailer, tail_lines, truncate_log
+    from ..logging.engine import (
+        DEFAULT_TAIL_LINES,
+        LogTailer,
+        rotate_log,
+        tail_lines,
+        truncate_log,
+    )
     from .ux import UserExperience
 
     chassis = _chassis(request)
@@ -504,6 +516,11 @@ def _logs_command(request: CliRequest) -> int:
         if not raw:
             write_line(f"{TAG_NOTE} {message}")
 
+    if request.flag("rotate") and request.flag("clear"):
+        write_line(f"{TAG_ERROR} --rotate and --clear are mutually exclusive")
+        note("korodex logs --rotate archives the file; --clear empties it")
+        return int(ExitCode.USAGE_ERROR)
+
     if not log_path.is_file():
         reason = (
             "file logging is disabled (core.log.file_enabled=false)"
@@ -512,6 +529,19 @@ def _logs_command(request: CliRequest) -> int:
         )
         write_line(f"{TAG_NOTE} no log file found at {log_path}")
         note(reason)
+        return int(ExitCode.SUCCESS)
+
+    if request.flag("rotate"):
+        proceed = True
+        if ux.is_interactive():
+            proceed = ux.confirm(f"Rotate log file {log_path}?", default=False)
+        if not proceed:
+            note("log file left alone")
+            return int(ExitCode.SUCCESS)
+        archive, archived = rotate_log(
+            log_path, backup_count=chassis.config.get_int("core.log.backup_count", 5)
+        )
+        write_status(f"log file rotated to {archive.name} ({archived} bytes archived)")
         return int(ExitCode.SUCCESS)
 
     if request.flag("clear"):

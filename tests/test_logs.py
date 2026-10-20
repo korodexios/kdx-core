@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import logging
+import re
 import threading
 from pathlib import Path
+
+import pytest
 
 from korodexios_core.cli.entry import main
 from korodexios_core.constants import ExitCode
 from korodexios_core.logging.engine import (
     DEFAULT_TAIL_LINES,
     LogTailer,
+    ReopeningRotatingFileHandler,
+    rotate_log,
     tail_lines,
     truncate_log,
 )
@@ -47,6 +53,54 @@ def test_truncate_log_empties_the_file_in_place(tmp_path: Path) -> None:
     assert target.stat().st_size == 0
     assert tail_lines(target, 5) == []
     assert truncate_log(tmp_path / "absent.log") == 0
+
+
+def test_rotate_log_archives_prunes_and_keeps_size_backups(tmp_path: Path) -> None:
+    target = make_log(tmp_path, lines=10)
+    before = target.stat().st_size
+    archive, archived = rotate_log(target)
+    assert archived == before
+    assert archive.is_file()
+    assert not target.exists()
+    assert tail_lines(archive, 500), "the archive carries the old lines"
+    # The rotating handler's size-based backups are a separate family.
+    size_backup = tmp_path / "korodex.log.1"
+    size_backup.write_text("size based backup\n", encoding="utf-8")
+    for _ in range(3):
+        target.write_text("fresh\n", encoding="utf-8")
+        rotate_log(target, backup_count=1)
+    timestamped = [
+        name
+        for name in (path.name for path in tmp_path.glob("korodex.log.*"))
+        if re.match(r"^\d{8}-\d{6}(-\d+)?$", name[len("korodex.log.") :])
+    ]
+    assert len(timestamped) == 1, timestamped
+    assert size_backup.is_file()
+    with pytest.raises(FileNotFoundError):
+        rotate_log(tmp_path / "absent.log")
+
+
+def test_reopening_handler_notices_an_external_rotation(tmp_path: Path) -> None:
+    target = tmp_path / "korodex.log"
+    handler = ReopeningRotatingFileHandler(
+        target, maxBytes=1_000_000, backupCount=3, encoding="utf-8", delay=False
+    )
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger = logging.getLogger("probe.rotation")
+    logger.handlers.clear()
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    logger.addHandler(handler)
+    try:
+        logger.info("before rotation")
+        archive, _ = rotate_log(target)
+        logger.info("after rotation")
+        handler.flush()
+        assert archive.read_text(encoding="utf-8").splitlines() == ["before rotation"]
+        assert target.read_text(encoding="utf-8").splitlines() == ["after rotation"]
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
 
 
 def test_log_tailer_follows_appends_and_survives_truncation(tmp_path: Path) -> None:
@@ -113,6 +167,27 @@ def test_logs_clear_truncates_with_assent(capsys, tmp_path: Path) -> None:
     # The truncation runs, then this very CLI session appends its own lifecycle lines.
     assert after < before // 2, (before, after)
     assert len(tail_lines(log_path, 500)) <= 3
+
+
+def test_logs_rotate_archives_the_file(capsys, tmp_path: Path) -> None:
+    assert main([*base_args(tmp_path), "run", "--once"]) == int(ExitCode.SUCCESS)
+    log_path = tmp_path / "var" / "log" / "korodex.log"
+    assert log_path.is_file()
+    assert main([*base_args(tmp_path), "--yes", "logs", "--rotate"]) == int(ExitCode.SUCCESS)
+    captured = capsys.readouterr()
+    assert "log file rotated" in captured.out
+    assert sorted(log_path.parent.glob("korodex.log.*")), captured.out
+    # The chassis reopens the path on its next write, so this very CLI session
+    # lands in the fresh file rather than in the archive.
+    assert "chassis stopped" in log_path.read_text(encoding="utf-8")
+
+
+def test_logs_rotate_and_clear_conflict(capsys, tmp_path: Path) -> None:
+    assert main([*base_args(tmp_path), "run", "--once"]) == int(ExitCode.SUCCESS)
+    capsys.readouterr()
+    assert main([*base_args(tmp_path), "logs", "--rotate", "--clear"]) == int(ExitCode.USAGE_ERROR)
+    captured = capsys.readouterr()
+    assert "mutually exclusive" in captured.out
 
 
 def test_logs_follow_streams_appended_lines(capsys, tmp_path: Path) -> None:

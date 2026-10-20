@@ -5,13 +5,15 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
+import re
 import sys
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from ..constants import ENCODING, LOG_LEVELS
 from ..exceptions import ChassisError, PathDiscoveryError
@@ -308,6 +310,51 @@ def ensure_utf8_streams() -> dict[str, str]:
     return report
 
 
+class ReopeningRotatingFileHandler(RotatingFileHandler):
+    """Rotating file handler that notices an externally rotated log file.
+
+    'kdx logs --rotate' renames the log file from another process while the
+    chassis keeps its descriptor open. Without this handler the chassis would
+    keep appending into the archive. The handler compares the file behind its
+    stream with the file at the configured path and reopens when they diverge.
+    """
+
+    def _externally_rotated(self) -> bool:
+        stream = self.stream
+        if stream is None:
+            return False
+        try:
+            path_stat = os.stat(self.baseFilename)
+        except OSError:
+            return True
+        try:
+            stream_stat = os.fstat(stream.fileno())
+        except OSError:
+            return True
+        return (path_stat.st_dev, path_stat.st_ino, path_stat.st_size) != (
+            stream_stat.st_dev,
+            stream_stat.st_ino,
+            stream_stat.st_size,
+        )
+
+    def shouldRollover(self, record: logging.LogRecord) -> bool:
+        if self._externally_rotated():
+            return True
+        return bool(super().shouldRollover(record))
+
+    def doRollover(self) -> None:
+        if self._externally_rotated():
+            # The operator renamed the log file: drop the archive descriptor and
+            # open a fresh file at the configured path, renaming nothing.
+            stream = self.stream
+            if stream is not None:
+                with contextlib.suppress(OSError):
+                    stream.close()
+            self.stream = None
+            self._open()
+            return
+        super().doRollover()
+
 def build_logger(
     config: LayeredConfig,
     paths: AppPaths,
@@ -340,7 +387,7 @@ def build_logger(
         try:
             paths.ensure_directories()
             log_file = paths.log_dir / str(config.get("core.log.file", "korodex.log"))
-            file_handler = RotatingFileHandler(
+            file_handler = ReopeningRotatingFileHandler(
                 log_file,
                 maxBytes=config.get_int("core.log.max_bytes", 1_048_576),
                 backupCount=config.get_int("core.log.backup_count", 5),
@@ -424,6 +471,48 @@ def tail_lines(path: Path, count: int = DEFAULT_TAIL_LINES) -> list[str]:
     decoded = blob.decode(ENCODING, errors="replace")
     lines = decoded.splitlines()
     return lines[-wanted:]
+
+
+ROTATION_STAMP: Final[str] = "%Y%m%d-%H%M%S"
+DEFAULT_LOG_BACKUPS: Final[int] = 5
+_TIMESTAMPED_ARCHIVE: Final[re.Pattern[str]] = re.compile(r"^\d{8}-\d{6}(-\d+)?$")
+
+
+def _timestamped_archives(target: Path) -> list[Path]:
+    """Return the timestamped archives of *target*, ignoring size-based backups."""
+    prefix = target.name + "."
+    found: list[Path] = []
+    for sibling in target.parent.glob(prefix + "*"):
+        if _TIMESTAMPED_ARCHIVE.match(sibling.name[len(prefix) :]):
+            found.append(sibling)
+    return found
+
+
+def rotate_log(path: Path, *, backup_count: int = DEFAULT_LOG_BACKUPS) -> tuple[Path, int]:
+    """Rename *path* to a timestamped sibling; return the archive and its size.
+
+    The newest *backup_count* timestamped archives are kept and older ones are
+    removed; the size-based backups owned by the rotating handler are left
+    alone. Raises FileNotFoundError when there is nothing to rotate.
+    """
+    target = Path(path)
+    try:
+        size = target.stat().st_size
+    except OSError as exc:
+        raise FileNotFoundError(f"no log file to rotate at {target}") from exc
+    stamp = datetime.now().strftime(ROTATION_STAMP)
+    archive = target.with_name(f"{target.name}.{stamp}")
+    counter = 1
+    while archive.exists():
+        archive = target.with_name(f"{target.name}.{stamp}-{counter}")
+        counter += 1
+    target.rename(archive)
+    if backup_count >= 0:
+        stale = sorted(_timestamped_archives(target), key=lambda item: item.name, reverse=True)
+        for outdated in stale[backup_count:]:
+            with contextlib.suppress(OSError):
+                outdated.unlink()
+    return archive, int(size)
 
 
 def truncate_log(path: Path) -> int:
