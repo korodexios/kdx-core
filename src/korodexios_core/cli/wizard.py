@@ -108,6 +108,9 @@ class RootWizard:
         if current.handler is None:
             self._ux.error(f"command {seen!r} has no handler")
             return int(ExitCode.ERROR)
+        chassis = getattr(self._context, "chassis", None)
+        if chassis is not None:
+            chassis.ensure_initialized()
         namespace = self._collect_answers(current, seen)
         request = CliRequest(
             context=self._context,

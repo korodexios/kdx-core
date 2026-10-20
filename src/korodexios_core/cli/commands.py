@@ -351,7 +351,7 @@ def _run_command(request: CliRequest) -> int:
     chassis = _chassis(request)
     duration_value = request.option("duration")
     duration = float(duration_value) if duration_value is not None else None
-    chassis.initialize()
+    chassis.ensure_initialized()
     if chassis.state.value == "failed":
         for name in chassis.registry.health()["failed"]:
             write_line(f"{TAG_ERROR} module {name} failed to initialize", stream=sys.stderr)

@@ -134,6 +134,7 @@ class Chassis:
             discovery=discovery,
             state=ChassisState.PREPARED,
         )
+        context.chassis = chassis
         log.info(
             f"{TAG_OK} chassis prepared",
             modules=registry.health()["total"],
@@ -144,6 +145,12 @@ class Chassis:
         for failure in discovery.failures:
             log.warning(f"{TAG_ERROR} {failure.describe()}")
         return chassis
+
+    def ensure_initialized(self) -> Chassis:
+        """Initialize module hooks once; a no-op when already initialized or running."""
+        if self.state in (ChassisState.PREPARED, ChassisState.NEW):
+            self.initialize()
+        return self
 
     def initialize(self) -> Chassis:
         """Run module init hooks and mark the chassis initialized."""
@@ -161,8 +168,7 @@ class Chassis:
                 f"cannot start a chassis in state {self.state.value}",
                 hint="Call initialize() before start().",
             )
-        if self.state is ChassisState.PREPARED:
-            self.initialize()
+        self.ensure_initialized()
         self.registry.start_all()
         self.state = ChassisState.RUNNING
         self.started_at = time.time()

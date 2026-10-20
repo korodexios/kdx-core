@@ -35,3 +35,16 @@ modules:
   heartbeat:
     enabled: true
     interval: 2.0
+  system_info:
+    enabled: true
+    disk_path: .              # filesystem reported by 'korodex system info/disk'
+    include_cpu_model: true
+  backup_engine:
+    enabled: true
+    source: .                 # what to copy; 'korodex backup plan' shows the result
+    dest: var/lib/backups     # each run lands in dest/<timestamp>/
+    include: ["*"]
+    exclude: [".git", ".venv", "__pycache__", "var", "node_modules", "*.pyc", "*.log"]
+    max_size: 500MB           # polite [!] failure when the copy would exceed this
+    dry_run: false
+    follow_symlinks: false

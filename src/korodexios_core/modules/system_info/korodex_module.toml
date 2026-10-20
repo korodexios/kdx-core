@@ -1,0 +1,13 @@
+# Built-in module manifest, read by korodexios_core.kernel.discovery.
+[module]
+name = "system_info"
+description = "Inspects host OS, CPU, RAM, and disk, and adds system diagnostics commands."
+version = "0.1.0"
+entrypoint = "MODULE"
+enabled = true
+priority = 40
+requires_core = ">=0.1"
+
+[metadata]
+tags = ["diagnostics", "proof-of-concept"]
+owner = "korodexios"

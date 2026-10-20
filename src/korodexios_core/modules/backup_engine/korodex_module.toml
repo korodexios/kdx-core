@@ -1,0 +1,13 @@
+# Built-in module manifest, read by korodexios_core.kernel.discovery.
+[module]
+name = "backup_engine"
+description = "Configurable source-to-destination backups with interactive setup and dry runs."
+version = "0.1.0"
+entrypoint = "MODULE"
+enabled = true
+priority = 60
+requires_core = ">=0.1"
+
+[metadata]
+tags = ["backup", "proof-of-concept"]
+owner = "korodexios"

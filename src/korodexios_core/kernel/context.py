@@ -30,6 +30,7 @@ class CoreContext:
     core_api: str = CORE_API_VERSION
     started_at: float = field(default_factory=time.time)
     registry: ModuleRegistry | None = None
+    chassis: Any = None
 
     def logger_for(self, name: str) -> KorodexLogger:
         """Return a logger namespaced below the chassis namespace."""

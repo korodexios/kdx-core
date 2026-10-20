@@ -26,6 +26,7 @@ korodexios-core/
 │   ├── exceptions.py           # error hierarchy (message + exit code, no tracebacks)
 │   ├── paths.py                # AppPaths: root discovery, runtime directories
 │   ├── validate.py             # input validators: polite messages, no tracebacks
+│   ├── units.py                # format_bytes / format_duration helpers
 │   ├── config/                 # LayeredConfig: CLI > env > file > defaults
 │   ├── logging/                # structured logging: stderr + rotating file
 │   ├── events/                 # EventBus: thread-safe pub/sub with wildcards
@@ -44,8 +45,10 @@ korodexios-core/
 │   │   ├── commands.py         # version / doctor / modules / config / run / wizard
 │   │   └── entry.py            # two-pass parser, global flags, error rendering
 │   └── modules/                # discovery root (built-in plugins live here)
-│       └── heartbeat/          # proof-of-concept module (background thread + events)
-└── tests/                      # pytest suite: config, bus, contract, discovery, CLI
+│       ├── heartbeat/          # background thread, events, clean shutdown
+│       ├── system_info/        # OS / CPU / RAM / disk diagnostics (stdlib only)
+│       └── backup_engine/      # source -> destination backups with dry runs
+└── tests/                      # pytest suite: 104 tests across 11 modules
 ```
 
 ### 1.1 The module contract
@@ -143,6 +146,10 @@ korodex config show --key core.  # resolved values + provenance
 korodex run --once               # boot, one tick, clean stop (CI friendly)
 korodex run --duration 3         # run for three seconds
 korodex heartbeat status         # a module-provided command
+korodex system info                # OS / CPU / memory / disk / uptime
+korodex system diagnostics         # interactive diagnostics menu (pick a section)
+korodex backup plan                # validate + show what a backup would copy
+korodex backup run --dry-run       # simulate; --exclude '*.log' etc. are honoured
 korodex wizard                     # interactive numbered-menu wizard (TTY only)
 ```
 
@@ -194,7 +201,7 @@ UX rules enforced by `cli/ux.py` and `validate.py`:
 | --- | --- | --- |
 | 1 | Packaging, config hierarchy, logging, event bus, module contract, discovery, registry, signals, chassis, argparse CLI, `heartbeat` proof of concept, tests | **delivered** |
 | 2 | `rich` UX layer: numbered-menu wizard over the registered commands, `[default]` prompts, `while True` validation loops, validators (port/IP/path/size/duration), `--yes` + non-TTY auto-detection | **delivered** |
-| 3 | Built-in `system_info` and `backup_engine` modules, more tests, docs polish | planned |
+| 3 | Built-in `system_info` (OS/CPU/RAM/disk diagnostics) and `backup_engine` (validated source to destination backups with dry runs), full test coverage, docs polish | **delivered** |
 
 Status tags used across the UI: `[✓]` success, `[?]` question, `[!]` error, `[i]` note.
 Diagnostics always go to **stderr**; **stdout** stays clean for scripting.

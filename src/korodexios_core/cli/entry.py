@@ -14,19 +14,12 @@ from ..constants import TAG_ERROR, TAG_NOTE, TRACEBACK_ENV_VAR, ExitCode
 from ..exceptions import KorodexError
 from ..kernel.chassis import Chassis, ChassisOptions, stdin_is_tty
 from ..kernel.cli_contract import CliRequest
-from ..kernel.context import CoreContext
 from ..version import format_version
 from .commands import core_commands, wizard_command
 from .render import write_line
 from .surface import HANDLER_ATTR, ArgparseSurface
 
 LOG_LEVEL_CHOICES = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
-
-
-class _ChassisContext(CoreContext):
-    """Context carrying the live chassis so core commands can reach it."""
-
-    chassis: Any = None
 
 
 def global_flags() -> argparse.ArgumentParser:
@@ -235,19 +228,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     chassis: Chassis | None = None
     try:
         chassis = Chassis.create(_options(pre_args))
-        context = _ChassisContext(
-            config=chassis.config,
-            paths=chassis.paths,
-            logs=chassis.context.logs,
-            bus=chassis.bus,
-            app_name=chassis.context.app_name,
-            app_version=chassis.context.app_version,
-            core_api=chassis.context.core_api,
-            started_at=chassis.context.started_at,
-            registry=chassis.registry,
-        )
+        context = chassis.context
+        context.registry = chassis.registry
         context.chassis = chassis
-        chassis.context = context
 
         flags = global_flags()
         parser = build_root_parser(flags)
@@ -263,6 +246,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         except SystemExit as parse_exit:
             return _system_exit_code(parse_exit)
 
+        module_command_names = {command.name for command in chassis.registry.commands()}
+        if getattr(namespace, "command", None) in module_command_names:
+            chassis.ensure_initialized()
         handler = getattr(namespace, HANDLER_ATTR, None)
         if not callable(handler):
             if chassis.config.get_bool("core.cli.interactive", True) and stdin_is_tty():
