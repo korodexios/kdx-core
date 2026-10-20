@@ -78,6 +78,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
+          set -euo pipefail
           uv run ruff check src tests
           uv run mypy
           uv run pytest -q
@@ -106,6 +107,7 @@ jobs:
         shell: bash
         working-directory: build/ci_probe
         run: |
+          set -euo pipefail
           uv run --project ../.. ruff check src tests
           uv run --project ../.. mypy
           uv run --project ../.. pytest -q

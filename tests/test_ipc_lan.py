@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -119,7 +120,10 @@ def test_static_token_is_announced_in_the_discovery_file(tmp_path: Path) -> None
         assert recorded["token"] == "lan-key-static"
         assert server.as_dict()["token_source"] == "static"
         assert "token" not in server.as_dict()
-        assert oct(target.stat().st_mode & 0o777) == "0o600"
+        if os.name != "nt":
+            # NTFS maps POSIX permissions onto the read-only flag, so the mode
+            # guarantee is a POSIX one; the file itself is checked everywhere.
+            assert oct(target.stat().st_mode & 0o777) == "0o600"
     finally:
         server.stop()
 
