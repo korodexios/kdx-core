@@ -68,6 +68,8 @@ include = [
   "tests",
   "README.md",
   "AGENTS.md",
+  "llms.txt",
+  "docs",
   ".agents",
   "LICENSE",
   "kdx.yml",

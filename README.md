@@ -6,9 +6,27 @@ module discovery, and signal-safe shutdown. User interfaces (CLI, TUI, REST) are
 clients that talk to the same core and never reimplement it.
 
 - **Package:** `korodexios-core` (import name `korodexios_core`)
-- **Console script:** `korodex` (alias: `korodexios`)
+- **Console scripts:** `kdx` (primary), `korodexios` (canonical), `korodex` (legacy)
 - **Python:** 3.11+ (developed on 3.13), `uv`-first, `venv` + `pip` compatible
 - **Dependencies:** `pyyaml` (config files), `rich` (Phase 2 wizard layer)
+
+---
+
+## Documentation
+
+| Document | Audience | What it answers |
+| --- | --- | --- |
+| [docs/TUTORIAL.md](docs/TUTORIAL.md) | humans, new | five minutes from `kdx init` to a running custom module |
+| [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) | humans, operators | every command, flag, exit code, LAN and auth option |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | humans, engineers | microkernel design, config flow, event bus, IPC, signals |
+| [docs/AGENTS_GUIDE.md](docs/AGENTS_GUIDE.md) | AI agents, LLMs | contract-first reference: golden rules, module blueprint, manifest spec, verification loop |
+| [llms.txt](llms.txt) | AI agents, LLMs | byte-identical mirror of the agent guide, sized for a context window |
+| [AGENTS.md](AGENTS.md) | both | the working agreement: commands, layout, rules, the verification bar |
+| [.agents/skills/](.agents/skills/) | AI agents | playbooks: project setup, CLI wizard UX, verification |
+
+`docs/AGENTS_GUIDE.md` and `llms.txt` are kept byte-identical by a test, so an agent can
+read either and hold the same contract. `kdx init` seeds both documents, tailored, into
+every project it generates.
 
 ---
 
@@ -18,9 +36,11 @@ clients that talk to the same core and never reimplement it.
 korodexios-core/
 ├── pyproject.toml              # PEP 621 metadata, console scripts, tool config
 ├── kdx.yml                     # project configuration (discovered by name)
-├── .env.example                # environment overrides (layer 2 of 4)
+├── .env.example                # environment overrides (KDX_*)
 ├── Makefile                    # uv-first developer shortcuts
 ├── AGENTS.md                   # working agreement for humans and coding agents
+├── llms.txt                    # agent guide mirror, sized for an LLM context window
+├── docs/                       # human + agent documentation suite (see below)
 ├── .agents/skills/             # canonical skills: setup, wizard UX, verification
 ├── src/korodexios_core/
 │   ├── version.py              # single source of truth for versions
@@ -29,7 +49,7 @@ korodexios-core/
 │   ├── paths.py                # AppPaths: root discovery, runtime directories
 │   ├── validate.py             # input validators: polite messages, no tracebacks
 │   ├── units.py                # format_bytes / format_duration helpers
-│   ├── config/                 # LayeredConfig: CLI > env > file > defaults
+│   ├── config/                 # LayeredConfig: CLI > env > local > file > defaults
 │   ├── logging/                # structured logging: stderr + rotating file
 │   ├── events/                 # EventBus: thread-safe pub/sub with wildcards
 │   ├── kernel/                 # the microkernel
@@ -45,15 +65,16 @@ korodexios-core/
 │   │   ├── surface.py          # CliCommand tree -> argparse subparsers
 │   │   ├── ux.py               # rich menus, bracketed defaults, validation loops
 │   │   ├── wizard.py           # root wizard over the registered command tree
-│   │   ├── init_project.py     # 'korodex init' project templating (zero-stub seed)
-│   │   ├── scaffold.py         # 'korodex modules create' package scaffolding
+│   │   ├── init_project.py     # 'kdx init' project templating (zero-stub seed)
+│   │   ├── scaffold.py         # 'kdx modules create' package scaffolding
 │   │   ├── commands.py         # version / doctor / status / init / modules / config / run / wizard
 │   │   └── entry.py            # two-pass parser, global flags, error rendering
 │   └── modules/                # discovery root (built-in plugins live here)
 │       ├── heartbeat/          # background thread, events, clean shutdown
 │       ├── system_info/        # OS / CPU / RAM / disk diagnostics (stdlib only)
 │       └── backup_engine/      # source -> destination backups with dry runs
-└── tests/                      # pytest suite: 188 tests across 19 modules
+├── tests/                      # pytest suite: 214 tests across 21 modules
+└── var/                        # runtime state (logs, chassis.ipc); never committed
 ```
 
 ### 1.1 The module contract
@@ -63,7 +84,7 @@ Every plugin exposes exactly this surface (`korodexios_core.kernel.contract`):
 | Member | Purpose |
 | --- | --- |
 | `name` | lower_case identifier; also the config namespace `modules.<name>` |
-| `description` | one-liner shown by `korodex modules list` |
+| `description` | one-liner shown by `kdx modules list` |
 | `version` | `MAJOR.MINOR.PATCH`, validated at discovery |
 | `init(context)` | receives `CoreContext` (config, logger, bus, paths, registry) |
 | `register_cli(surface)` | injects declarative commands into the root CLI/wizard |

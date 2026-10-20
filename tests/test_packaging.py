@@ -33,6 +33,11 @@ REQUIRED_WHEEL_ENTRIES = (
 )
 REQUIRED_SDIST_ENTRIES = (
     "AGENTS.md",
+    "llms.txt",
+    "docs/AGENTS_GUIDE.md",
+    "docs/ARCHITECTURE.md",
+    "docs/CLI_REFERENCE.md",
+    "docs/TUTORIAL.md",
     ".agents/skills/verification.md",
     "README.md",
     "LICENSE",
