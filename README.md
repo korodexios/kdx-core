@@ -309,7 +309,7 @@ The chassis installs like any PEP 517 package; nothing inside it assumes a check
 
 - **One version source.** `src/korodexios_core/version.py` is the only declaration;
   `pyproject.toml` says `dynamic = ["version"]` and hatchling reads it with an explicit
-  pattern that a test keeps honest. Current release: **`0.1.0rc1`**, core API `v1`.
+  pattern that a test keeps honest. Current release: **`0.1.0rc2`**, core API `v1`.
 - **Typed.** `py.typed` ships in the wheel, so downstream projects get full static
   checking against the chassis API, not just runtime behaviour.
 - **Package data.** Every `modules/*/korodex_module.toml` manifest is an explicit wheel
@@ -341,7 +341,9 @@ handlers, so `Ctrl-C` while following exits **130** (SIGTERM **143**) with
 ### 2.6 Core API freeze (core api v1)
 
 The release candidate **`v0.1.0rc1`** freezes the contract every Korodexios project
-will build on. The package root is the public surface - one import, no archaeology:
+will build on. **`v0.1.0rc2`** adds the `kdx` alias, a LAN-bindable control plane with
+optional per-route auth, `kdx status --target`, and the `kdx.yml` / `KDX_` naming
+alignment; the frozen public surface is unchanged. The package root is the public surface - one import, no archaeology:
 
 ```python
 from korodexios_core import (
