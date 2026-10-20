@@ -22,6 +22,11 @@ core:
   lifecycle:
     tick_interval: 1.0
     stop_timeout: 5.0
+  ipc:
+    enabled: true              # 'korodex run' opens a loopback control plane
+    host: 127.0.0.1            # the shared token is only meaningful on loopback
+    port: 8123                 # 0 takes an ephemeral port; a busy port falls back
+    timeout: 2.0               # client timeout used by 'korodex status'
   cli:
     color: true
     interactive: true

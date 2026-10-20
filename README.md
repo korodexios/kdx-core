@@ -36,6 +36,7 @@ korodexios-core/
 │   │   ├── context.py          # CoreContext handed to every module
 │   │   ├── discovery.py        # auto-discovery (built-in + external plugin dirs)
 │   │   ├── registry.py         # module state, lifecycle ordering, CLI collection
+│   │   ├── ipc.py              # loopback HTTP control plane: health, status, shutdown
 │   │   ├── signals.py          # SIGINT / SIGTERM / SIGBREAK coordinator
 │   │   └── chassis.py          # Chassis: init -> start -> run -> stop coordinator
 │   ├── cli/                    # thin client: argparse + rich wizard, core commands, entry
@@ -43,13 +44,13 @@ korodexios-core/
 │   │   ├── ux.py               # rich menus, bracketed defaults, validation loops
 │   │   ├── wizard.py           # root wizard over the registered command tree
 │   │   ├── scaffold.py         # 'korodex modules create' package scaffolding
-│   │   ├── commands.py         # version / doctor / modules / config / run / wizard
+│   │   ├── commands.py         # version / doctor / status / modules / config / run / wizard
 │   │   └── entry.py            # two-pass parser, global flags, error rendering
 │   └── modules/                # discovery root (built-in plugins live here)
 │       ├── heartbeat/          # background thread, events, clean shutdown
 │       ├── system_info/        # OS / CPU / RAM / disk diagnostics (stdlib only)
 │       └── backup_engine/      # source -> destination backups with dry runs
-└── tests/                      # pytest suite: 127 tests across 13 modules
+└── tests/                      # pytest suite: 140 tests across 14 modules
 ```
 
 ### 1.1 The module contract
@@ -147,6 +148,7 @@ source .venv/bin/activate
 
 korodex --version
 korodex doctor                   # environment inspection
+korodex status                   # query the running daemon over its control plane
 korodex modules list             # what auto-discovery found
 korodex config show --key core.  # resolved values + provenance
 korodex run --once               # boot, one tick, clean stop (CI friendly)
@@ -202,16 +204,41 @@ UX rules enforced by `cli/ux.py` and `validate.py`:
 
 ---
 
+### 2.2 The local control plane (daemon IPC)
+
+A running chassis is headless, so it announces itself instead of requiring a
+client library. \`korodex run\` (not \`--once\`) starts a stdlib
+\`ThreadingHTTPServer\` bound to \`127.0.0.1\` and writes a private discovery file
+at \`<state_dir>/chassis.ipc\` (\`var/chassis.ipc\` by default, mode \`0600\`):
+
+\`\`\`json
+{"pid": 8145, "port": 8123, "host": "127.0.0.1", "token": "91d0a1…", "started_at": 1792501644.35}
+\`\`\`
+
+| Endpoint | Auth | Purpose |
+| --- | --- | --- |
+| \`GET /health\` | none | liveness for Docker \`HEALTHCHECK\`, Kubernetes, curl |
+| \`GET /api/v1/status\` | \`X-Korodex-Token\` | the full \`health_report()\` payload as JSON |
+| \`POST /api/v1/shutdown\` | \`X-Korodex-Token\` | ask the daemon to stop; it exits \`0\` |
+
+The token is generated per run and never leaves the discovery file (\`korodex
+doctor\` and \`korodex status\` hide it). \`korodex status\` reads the file, checks
+the pid, and renders live state, uptime, modules, event-bus counters, and process
+memory — or \`[i] chassis daemon is not running\`. \`Chassis.shutdown()\` closes the
+server and deletes the file inside the same \`core.lifecycle.stop_timeout\` budget
+as module \`stop()\` hooks, so a remote shutdown still runs every cleanup hook.
+
 ## 3. Roadmap
 
 | Phase | Scope | State |
 | --- | --- | --- |
+| 5 | Daemon IPC: loopback HTTP control plane (`/health`, `/api/v1/status`, `POST /api/v1/shutdown`), discovery file with a shared token, and the `korodex status` command | **delivered** |
 | 4 | Review hardening (event-bus recursion guard, slow-handler timing, plugin import isolation, backup destination and symlink guards, ASCII tag fallback), module dependency DAG (`depends_on`), `korodex modules create` scaffolding | **delivered** |
 | --- | --- | --- |
 | 1 | Packaging, config hierarchy, logging, event bus, module contract, discovery, registry, signals, chassis, argparse CLI, `heartbeat` proof of concept, tests | **delivered** |
 | 2 | `rich` UX layer: numbered-menu wizard over the registered commands, `[default]` prompts, `while True` validation loops, validators (port/IP/path/size/duration), `--yes` + non-TTY auto-detection | **delivered** |
 | 3 | Built-in `system_info` (OS/CPU/RAM/disk diagnostics) and `backup_engine` (validated source to destination backups with dry runs), full test coverage, docs polish | **delivered** |
-| 5 (next) | Daemon IPC: a status socket or local health probe so `korodex status` can query a running chassis; `korodex init` project template; packaging the chassis as a reusable starting point | planned |
+| 6 (next) | `korodex init` project template, packaging the chassis as a reusable starting point, and a Windows named-pipe/HTTP parity pass on real CI | planned |
 
 Status tags used across the UI: `[✓]` success, `[?]` question, `[!]` error, `[i]` note.
 Diagnostics always go to **stderr**; **stdout** stays clean for scripting.

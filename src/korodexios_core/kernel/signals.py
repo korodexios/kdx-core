@@ -40,6 +40,7 @@ class SignalCoordinator:
         self._lock = threading.RLock()
         self._signal_number: int | None = None
         self._count = 0
+        self._clean_stop = False
 
     def install(self) -> tuple[int, ...]:
         """Install handlers, returning the signal numbers actually handled."""
@@ -107,11 +108,19 @@ class SignalCoordinator:
         """Trigger the shutdown path programmatically (tests, CLI flags)."""
         self.record(int(signum) if signum is not None else signal.SIGINT)
 
+    def request_clean_stop(self) -> None:
+        """Ask for a graceful stop that is not a signal (IPC shutdown, --duration)."""
+        with self._lock:
+            self._count += 1
+            self._clean_stop = True
+        self._event.set()
+
     def reset(self) -> None:
         """Clear shutdown state so the chassis can be reused in-process."""
         with self._lock:
             self._signal_number = None
             self._count = 0
+            self._clean_stop = False
         self._event.clear()
 
     @property
@@ -158,6 +167,7 @@ class SignalCoordinator:
             else None,
             "count": self._count,
             "shutdown_requested": self._event.is_set(),
+            "clean_stop": self._clean_stop,
         }
 
     def __repr__(self) -> str:

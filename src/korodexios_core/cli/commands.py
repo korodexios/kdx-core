@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from ..constants import TAG_ERROR, TAG_NOTE, TAG_OK, ExitCode
 from ..kernel.cli_contract import CliArgument, CliCommand, CliRequest
+from ..kernel.ipc import DISCOVERY_NAME, STATUS_PATH, IpcDiscovery
 from ..version import format_version
 from .render import (
     dump_json,
@@ -71,6 +72,20 @@ def core_commands(chassis: Chassis) -> list[CliCommand]:
                 ),
             ),
             handler=_doctor_command,
+            group="core",
+        ),
+        CliCommand(
+            name="status",
+            help="Query the running chassis over its local control plane.",
+            args=(
+                CliArgument(
+                    ("--json",),
+                    dest="as_json",
+                    action="store_true",
+                    help="Emit the live report as JSON.",
+                ),
+            ),
+            handler=_status_command,
             group="core",
         ),
         CliCommand(
@@ -252,6 +267,21 @@ def _doctor_command(request: CliRequest) -> int:
     print_key_values([(key, value) for key, value in report["logging"].items()])
     print_section("Signals")
     print_key_values([(key, value) for key, value in report["signals"].items()])
+    ipc = dict(report.get("ipc") or {})
+    memory = dict(report.get("memory") or {})
+    print_section("Control plane")
+    print_key_values(
+        [
+            ("running", format_bool(bool(ipc.get("running")))),
+            (
+                "endpoint",
+                f"{ipc.get('host', '-')}:{ipc.get('port', '-')}" if ipc.get("running") else "-",
+            ),
+            ("requests served", ipc.get("requests", 0)),
+            ("discovery file", report.get("ipc_file", "-")),
+            ("process memory", memory.get("rss", "-")),
+        ]
+    )
     print_section("Modules")
     modules = report["modules"]
     dependencies = chassis.registry.dependency_report()
@@ -315,6 +345,75 @@ def _modules_list_command(request: CliRequest) -> int:
     for failure in chassis.discovery.failures:
         write_line(f"  {TAG_ERROR} {failure.describe()}")
     return int(ExitCode.ERROR) if health["failed"] else int(ExitCode.SUCCESS)
+
+
+def _status_command(request: CliRequest) -> int:
+    """Query a running chassis through its loopback control plane."""
+    chassis = _chassis(request)
+    discovery_path = Path(chassis.paths.state_dir) / DISCOVERY_NAME
+    discovery = IpcDiscovery.load(discovery_path)
+    timeout = float(chassis.config.get_float("core.ipc.timeout", 2.0))
+    if discovery is None or not discovery.is_process_alive():
+        if request.flag("as_json"):
+            dump_json({"running": False, "discovery_file": str(discovery_path)})
+        else:
+            write_line(f"{TAG_NOTE} chassis daemon is not running")
+            write_line(f"{TAG_NOTE} looked for {discovery_path}")
+        return int(ExitCode.SUCCESS)
+    try:
+        code, payload = discovery.request(STATUS_PATH, timeout=timeout)
+    except OSError as exc:
+        write_line(f"{TAG_ERROR} chassis daemon on port {discovery.port} is not answering")
+        write_line(f"{TAG_NOTE} {exc}")
+        return int(ExitCode.ERROR)
+    if code in (401, 403):
+        write_line(f"{TAG_ERROR} the daemon rejected this client (token mismatch)")
+        write_line(f"{TAG_NOTE} start 'korodex run' again so {discovery_path} is refreshed")
+        return int(ExitCode.ERROR)
+    if code != 200 or not isinstance(payload, dict):
+        write_line(f"{TAG_ERROR} the daemon answered HTTP {code}")
+        return int(ExitCode.ERROR)
+    if request.flag("as_json"):
+        dump_json(payload)
+        return int(ExitCode.SUCCESS)
+    app = dict(payload.get("app") or {})
+    modules = dict(payload.get("modules") or {})
+    bus = dict(payload.get("bus") or {})
+    memory = dict(payload.get("memory") or {})
+    ipc = dict(payload.get("ipc") or {})
+    print_section("Chassis")
+    print_key_values(
+        [
+            ("state", app.get("state", "-")),
+            ("uptime", f"{float(app.get('uptime_seconds', 0.0) or 0.0):.1f} s"),
+            ("pid", ipc.get("pid", "-")),
+            ("endpoint", f"{ipc.get('host', '-')}:{ipc.get('port', '-')}"),
+            ("discovery file", str(discovery_path)),
+        ]
+    )
+    print_section("Modules")
+    rows = [
+        [item.get("name"), item.get("state"), ", ".join(item.get("commands") or []) or "-"]
+        for item in list(modules.get("modules") or [])
+    ]
+    print_key_values(
+        [("total", modules.get("total", 0)), ("failed", modules.get("failed") or "(none)")]
+    )
+    if rows:
+        print_table(rows, headers=("name", "state", "commands"))
+    print_section("Event bus")
+    print_key_values(
+        [
+            ("published", bus.get("published", 0)),
+            ("delivered", bus.get("delivered", 0)),
+            ("handler errors", bus.get("errors", 0)),
+            ("slow handlers", bus.get("slow_handlers", 0)),
+            ("subscriptions", bus.get("subscriptions", 0)),
+        ]
+    )
+    print_section("Memory")
+    print_key_values([("resident", memory.get("rss", "-")), ("source", memory.get("source", "-"))])
+    return int(ExitCode.SUCCESS)
 
 
 def _modules_create_command(request: CliRequest) -> int:

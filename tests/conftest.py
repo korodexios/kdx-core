@@ -22,6 +22,8 @@ core:
   lifecycle:
     tick_interval: 0.05
     stop_timeout: 2.0
+  ipc:
+    enabled: false
 modules:
   scripted:
     enabled: true

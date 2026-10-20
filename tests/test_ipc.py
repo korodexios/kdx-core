@@ -1,0 +1,260 @@
+"""IPC control plane tests: endpoints, token gate, discovery file, and 'korodex status'."""
+
+from __future__ import annotations
+
+import json
+import os
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+import pytest
+
+from korodexios_core.cli.entry import main
+from korodexios_core.constants import ExitCode
+from korodexios_core.kernel.chassis import Chassis, ChassisOptions, ChassisState
+from korodexios_core.kernel.ipc import (
+    DISCOVERY_NAME,
+    HEALTH_PATH,
+    SHUTDOWN_PATH,
+    STATUS_PATH,
+    TOKEN_HEADER,
+    IpcError,
+    IpcOptions,
+    IpcServer,
+    process_memory,
+)
+from korodexios_core.paths import AppPaths
+
+from .test_chassis import build_chassis
+
+
+def make_server(
+    tmp_path: Path, *, port: int = 0, host: str = "127.0.0.1"
+) -> tuple[IpcServer, dict[str, int]]:
+    """Start a control plane on an ephemeral port and count shutdown requests."""
+    calls = {"shutdown": 0}
+    server = IpcServer(
+        status_fn=lambda: {
+            "app": {"state": "running", "uptime_seconds": 1.0},
+            "modules": {"total": 1},
+        },
+        shutdown_fn=lambda: calls.__setitem__("shutdown", calls["shutdown"] + 1),
+        state_fn=lambda: "running",
+        options=IpcOptions(host=host, port=port, discovery_path=tmp_path / DISCOVERY_NAME),
+    )
+    server.start()
+    return server, calls
+
+
+def http_call(
+    base: str,
+    route: str,
+    *,
+    token: str | None = None,
+    method: str = "GET",
+) -> tuple[int, object]:
+    """Issue one control-plane request and return (status, decoded body)."""
+    headers = {TOKEN_HEADER: token} if token is not None else {}
+    request = urllib.request.Request(base + route, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=2) as response:
+            return int(response.status), json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return int(exc.code), json.loads(exc.read().decode("utf-8"))
+
+
+def base_args(project_root) -> list[str]:
+    return ["--home", str(project_root), "--no-log-file", "--no-color"]
+
+
+def ipc_chassis(project_root) -> Chassis:
+    """Return a chassis whose control plane is enabled on an ephemeral port."""
+    paths = AppPaths.discover(root=str(project_root), environ={})
+    return Chassis.create(
+        ChassisOptions(
+            home=paths.root,
+            environ={},
+            cli_overrides={
+                "core.log.file_enabled": False,
+                "core.ipc.enabled": True,
+                "core.ipc.port": 0,
+            },
+            install_signals=False,
+        )
+    )
+
+
+def test_health_is_open_and_reports_state(tmp_path: Path) -> None:
+    server, _ = make_server(tmp_path)
+    try:
+        code, payload = http_call(server.discovery.base_url(), HEALTH_PATH)  # type: ignore[union-attr]
+        assert code == 200
+        assert payload == {
+            "status": "ok",
+            "state": "running",
+            "uptime": pytest.approx(0.0, abs=5.0),
+        }
+    finally:
+        server.stop()
+
+
+def test_status_requires_the_shared_token(tmp_path: Path) -> None:
+    server, _ = make_server(tmp_path)
+    base = server.discovery.base_url()  # type: ignore[union-attr]
+    token = server.discovery_token
+    try:
+        assert http_call(base, STATUS_PATH)[0] == 401
+        assert http_call(base, STATUS_PATH, token="wrong")[0] == 401
+        code, payload = http_call(base, STATUS_PATH, token=token)
+        assert code == 200
+        assert payload["modules"]["total"] == 1  # type: ignore[index]
+        assert payload["ipc"]["running"] is True  # type: ignore[index]
+    finally:
+        server.stop()
+
+
+def test_unknown_routes_and_methods_are_rejected(tmp_path: Path) -> None:
+    server, _ = make_server(tmp_path)
+    base = server.discovery.base_url()  # type: ignore[union-attr]
+    token = server.discovery_token
+    try:
+        assert http_call(base, "/nope")[0] == 404
+        assert http_call(base, STATUS_PATH, token=token, method="POST")[0] == 405
+        assert http_call(base, SHUTDOWN_PATH, token=token)[0] == 405
+    finally:
+        server.stop()
+
+
+def test_shutdown_post_asks_the_chassis_to_stop(tmp_path: Path) -> None:
+    server, calls = make_server(tmp_path)
+    base = server.discovery.base_url()  # type: ignore[union-attr]
+    try:
+        code, payload = http_call(base, SHUTDOWN_PATH, token=server.discovery_token, method="POST")
+        assert code == 200
+        assert payload["accepted"] is True  # type: ignore[index]
+        assert calls["shutdown"] == 1
+        assert server.as_dict()["requests"] == 1
+    finally:
+        server.stop()
+
+
+def test_discovery_file_is_private_and_removed(tmp_path: Path) -> None:
+    target = tmp_path / DISCOVERY_NAME
+    server, _ = make_server(tmp_path)
+    assert target.is_file()
+    if os.name != "nt":
+        assert target.stat().st_mode & 0o777 == 0o600
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    assert payload["pid"] == os.getpid()
+    assert payload["port"] > 0
+    assert len(payload["token"]) >= 16
+    server.stop()
+    assert not target.exists()
+    assert server.running is False
+
+
+def test_non_loopback_host_is_refused(tmp_path: Path) -> None:
+    server = IpcServer(
+        status_fn=lambda: {},
+        shutdown_fn=lambda: None,
+        state_fn=lambda: "running",
+        options=IpcOptions(host="0.0.0.0", port=0, discovery_path=tmp_path / DISCOVERY_NAME),
+    )
+    with pytest.raises(IpcError, match="loopback interface"):
+        server.start()
+
+
+def test_process_memory_reports_resident_size() -> None:
+    memory = process_memory()
+    assert memory["source"] in ("proc/statm", "getrusage", "unavailable")
+    if memory["source"] != "unavailable":
+        assert memory["rss_bytes"] and memory["rss_bytes"] > 0
+        assert memory["rss"] != "-"
+
+
+def test_chassis_lifecycle_opens_and_closes_the_endpoint(project_root) -> None:
+    chassis = ipc_chassis(project_root)
+    discovery_path = chassis.paths.state_dir / DISCOVERY_NAME
+    chassis.initialize()
+    chassis.start()
+    assert chassis.state is ChassisState.RUNNING
+    assert chassis.ipc is not None and chassis.ipc.running
+    assert discovery_path.is_file()
+    code, payload = chassis.ipc.discovery.request(STATUS_PATH)  # type: ignore[union-attr]
+    assert code == 200
+    assert payload["app"]["state"] == "running"  # type: ignore[index]
+    chassis.shutdown()
+    assert chassis.ipc is None
+    assert not discovery_path.exists()
+
+
+def test_start_with_ipc_disabled_keeps_the_port_free(project_root) -> None:
+    chassis = ipc_chassis(project_root)
+    chassis.initialize()
+    chassis.start(ipc=False)
+    assert chassis.ipc is None
+    assert not (chassis.paths.state_dir / DISCOVERY_NAME).exists()
+    chassis.shutdown()
+
+
+def test_status_command_without_a_daemon(capsys, project_root) -> None:
+    chassis = build_chassis(project_root)
+    chassis.signals.uninstall()
+    args = [*base_args(project_root), "status"]
+    assert main(args) == int(ExitCode.SUCCESS)
+    captured = capsys.readouterr()
+    assert "chassis daemon is not running" in captured.out
+    assert str(project_root / "var" / DISCOVERY_NAME) in captured.out
+
+
+def test_status_command_reads_a_live_daemon(capsys, project_root) -> None:
+    chassis = ipc_chassis(project_root)
+    chassis.initialize()
+    chassis.start()
+    try:
+        args = [*base_args(project_root), "status", "--json"]
+        assert main(args) == int(ExitCode.SUCCESS)
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["app"]["state"] == "running"
+        assert payload["ipc"]["port"] > 0
+        assert payload["modules"]["total"] >= 3
+    finally:
+        chassis.shutdown()
+
+
+def test_status_command_reports_an_unreachable_daemon(capsys, project_root) -> None:
+    state_dir = project_root / "var"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / DISCOVERY_NAME).write_text(
+        json.dumps(
+            {"pid": os.getpid(), "host": "127.0.0.1", "port": 1, "token": "x", "started_at": 0.0}
+        ),
+        encoding="utf-8",
+    )
+    args = [*base_args(project_root), "status"]
+    assert main(args) == int(ExitCode.ERROR)
+    assert "is not answering" in capsys.readouterr().out
+
+
+def test_status_command_flags_a_stale_pid(capsys, project_root) -> None:
+    state_dir = project_root / "var"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / DISCOVERY_NAME).write_text(
+        json.dumps(
+            {
+                "pid": 2_147_483_647,
+                "host": "127.0.0.1",
+                "port": 8123,
+                "token": "x",
+                "started_at": 0.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = [*base_args(project_root), "status", "--json"]
+    assert main(args) == int(ExitCode.SUCCESS)
+    assert json.loads(capsys.readouterr().out) == {
+        "running": False,
+        "discovery_file": str(state_dir / DISCOVERY_NAME),
+    }

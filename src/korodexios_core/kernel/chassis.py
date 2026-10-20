@@ -22,6 +22,7 @@ from ..version import CORE_API_VERSION, __version__, format_version
 from .cli_contract import CliCommand, CliSurface
 from .context import CoreContext
 from .discovery import DiscoveryReport, ModuleDiscovery
+from .ipc import DISCOVERY_NAME, IpcError, IpcOptions, IpcServer, process_memory
 from .registry import ModuleRegistry
 from .signals import SignalCoordinator, signal_name
 
@@ -67,6 +68,7 @@ class Chassis:
     discovery: DiscoveryReport
     state: ChassisState = ChassisState.NEW
     started_at: float = field(default_factory=time.time)
+    ipc: IpcServer | None = None
 
     @classmethod
     def create(cls, options: ChassisOptions | None = None) -> Chassis:
@@ -160,8 +162,8 @@ class Chassis:
         self.bus.publish("core.initialized", {"modules": len(self.registry)}, source="chassis")
         return self
 
-    def start(self) -> Chassis:
-        """Run module start hooks and enter the running state."""
+    def start(self, *, ipc: bool | None = None) -> Chassis:
+        """Run module start hooks, open the control plane, and enter the running state."""
         allowed = (ChassisState.INITIALIZED, ChassisState.PREPARED, ChassisState.FAILED)
         if self.state not in allowed:
             raise ChassisError(
@@ -177,7 +179,67 @@ class Chassis:
             {"modules": len(self.registry), "version": __version__},
             source="chassis",
         )
+        self.start_ipc(enabled=ipc)
         self.logger.debug("chassis running", modules=len(self.registry))
+        return self
+
+    def start_ipc(self, *, enabled: bool | None = None) -> Chassis:
+        """Open the loopback control plane; a busy port never breaks the boot."""
+        if self.ipc is not None and self.ipc.running:
+            return self
+        allowed = (ChassisState.RUNNING, ChassisState.INITIALIZED, ChassisState.PREPARED)
+        if self.state not in allowed:
+            return self
+        wanted = (
+            self.config.get_bool("core.ipc.enabled", True) if enabled is None else bool(enabled)
+        )
+        if not wanted:
+            self.ipc = None
+            return self
+        options = IpcOptions(
+            host=self.config.get_str("core.ipc.host", "127.0.0.1"),
+            port=int(self.config.get_int("core.ipc.port", 8123)),
+            discovery_path=self.paths.state_dir / DISCOVERY_NAME,
+        )
+        server = IpcServer(
+            status_fn=self.health_report,
+            shutdown_fn=self.signals.request_clean_stop,
+            state_fn=lambda: self.state.value,
+            options=options,
+            logger=self.logger.child("ipc"),
+        )
+        try:
+            server.start()
+        except (OSError, IpcError) as exc:
+            hint = getattr(exc, "hint", None)
+            self.logger.warning(
+                f"{TAG_ERROR} ipc control plane unavailable: {exc}",
+                hint=hint or "set core.ipc.port to 0 for an ephemeral port",
+            )
+            return self
+        self.ipc = server
+        self.bus.publish(
+            "core.ipc.started",
+            {"host": options.host, "port": server.discovery.port if server.discovery else None},
+            source="chassis",
+        )
+        return self
+
+    def stop_ipc(self, timeout: float | None = None) -> Chassis:
+        """Close the control plane and remove its discovery file."""
+        server = self.ipc
+        self.ipc = None
+        if server is None:
+            return self
+        limit = (
+            self.config.get_float("core.lifecycle.stop_timeout", 5.0)
+            if timeout is None
+            else timeout
+        )
+        server.stop(timeout=limit)
+        self.bus.publish(
+            "core.ipc.stopped", {"requests": server.as_dict()["requests"]}, source="chassis"
+        )
         return self
 
     def run_forever(self, duration: float | None = None) -> int:
@@ -233,6 +295,7 @@ class Chassis:
             source="chassis",
         )
         timeout = self.config.get_float("core.lifecycle.stop_timeout", 5.0)
+        self.stop_ipc(timeout=timeout)
         self.registry.stop_all(timeout=timeout)
         self.state = ChassisState.STOPPED
         self.bus.publish("core.stopped", {"exit_code": code}, source="chassis")
@@ -288,6 +351,11 @@ class Chassis:
             "discovery": self.discovery.as_dict(),
             "signals": self.signals.as_dict(),
             "bus": self.bus.stats(),
+            "memory": process_memory(),
+            "ipc": self.ipc.as_dict()
+            if self.ipc is not None
+            else {"running": False, "requests": 0},
+            "ipc_file": str(self.paths.state_dir / DISCOVERY_NAME),
         }
 
     def describe(self) -> str:
