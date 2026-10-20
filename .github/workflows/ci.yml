@@ -18,19 +18,45 @@ env:
   PYTHONDONTWRITEBYTECODE: "1"
 
 jobs:
+  prepare:
+    name: plan the matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - name: Pick the matrix for this event
+        id: pick
+        shell: bash
+        run: |
+          set -euo pipefail
+          full_matrix='{"include":[{"os":"ubuntu-latest","python":"3.11"},{"os":"ubuntu-latest","python":"3.12"},{"os":"ubuntu-latest","python":"3.13"},{"os":"macos-latest","python":"3.11"},{"os":"macos-latest","python":"3.12"},{"os":"macos-latest","python":"3.13"},{"os":"windows-latest","python":"3.11"},{"os":"windows-latest","python":"3.12"},{"os":"windows-latest","python":"3.13"}]}'
+          trimmed_matrix='{"include":[{"os":"ubuntu-latest","python":"3.11"},{"os":"ubuntu-latest","python":"3.12"},{"os":"ubuntu-latest","python":"3.13"},{"os":"macos-latest","python":"3.13"},{"os":"windows-latest","python":"3.13"}]}'
+          case "${GITHUB_REF}" in
+            refs/tags/v*) matrix="${full_matrix}" ;;
+            *)
+              if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+                matrix="${trimmed_matrix}"
+              else
+                matrix="${full_matrix}"
+              fi
+              ;;
+          esac
+          echo "matrix=${matrix}" >> "${GITHUB_OUTPUT}"
+          echo "planned $(printf '%s' "${matrix}" | grep -o '"os"' | wc -l) combinations"
+
   # A branch push runs a trimmed matrix for fast feedback; pull requests and
   # release tags run the full 3-OS x 3-Python matrix, so a release is never cut
-  # on one platform alone.
+  # on one platform alone. The matrix is planned by the prepare job because a
+  # job-level if cannot see the matrix context.
   check:
     name: check (${{ matrix.os }} / Python ${{ matrix.python }})
-    if: ${{ github.event_name != 'push' || startsWith(github.ref, 'refs/tags/') || matrix.os == 'ubuntu-latest' || matrix.python == '3.13' }}
+    needs: [prepare]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python: ["3.11", "3.12", "3.13"]
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
     steps:
       - name: Check out the chassis
         uses: actions/checkout@v4
