@@ -53,7 +53,7 @@ korodexios-core/
 │       ├── heartbeat/          # background thread, events, clean shutdown
 │       ├── system_info/        # OS / CPU / RAM / disk diagnostics (stdlib only)
 │       └── backup_engine/      # source -> destination backups with dry runs
-└── tests/                      # pytest suite: 170 tests across 17 modules
+└── tests/                      # pytest suite: 174 tests across 18 modules
 ```
 
 ### 1.1 The module contract
@@ -306,6 +306,38 @@ handlers, so `Ctrl-C` while following exits **130** (SIGTERM **143**) with
 `[i] stopped following korodex.log` - the same contract as `korodex run`, never a traceback.
 
 
+### 2.6 Core API freeze (core api v1)
+
+The release candidate **`v0.1.0rc1`** freezes the contract every Korodexios project
+will build on. The package root is the public surface - one import, no archaeology:
+
+```python
+from korodexios_core import (
+    Chassis, ChassisOptions, ChassisState,      # lifecycle
+    Module, ModuleProtocol, ModuleSpec,          # the module contract
+    ModuleState, check_contract, as_module,
+    CliCommand, CliArgument, CliRequest,         # the declarative CLI contract
+    CliSurface,
+    LayeredConfig, ScopedConfig, CORE_DEFAULTS,  # CLI > env > file > defaults
+    EventBus, Event, Subscription,               # the event bus
+    IpcServer, IpcOptions, IpcDiscovery,         # the loopback control plane
+    AppPaths, ExitCode, KorodexLogger,
+)
+```
+
+| Frozen surface | Stability policy |
+| --- | --- |
+| `ModuleProtocol` / `Module` members, `check_contract` | additive only; a new required member is a major version |
+| `CliCommand` / `CliArgument` / `CliRequest` | new optional fields are minor; renamed flags are major |
+| `LayeredConfig` precedence and provenance | the four layers and their order are permanent |
+| `EventBus` semantics (wildcards, `once`, `wait_for`, recursion guard) | behaviour is part of the contract |
+| `IpcServer` routes and token header | new routes are minor; a route change is major |
+| Exit codes | `0` operator stop, `130` SIGINT, `143` SIGTERM, `1` handled error |
+
+`tests/test_public_api.py` fails the build if a frozen name disappears, and
+`korodexios_core.CORE_API_VERSION` stays `"1"` for the whole v1 line.
+
+
 ## 3. Roadmap
 
 | Phase | Scope | State |
@@ -317,7 +349,7 @@ handlers, so `Ctrl-C` while following exits **130** (SIGTERM **143**) with
 | 2 | `rich` UX layer: numbered-menu wizard over the registered commands, `[default]` prompts, `while True` validation loops, validators (port/IP/path/size/duration), `--yes` + non-TTY auto-detection | **delivered** |
 | 1 | Packaging, config hierarchy, logging, event bus, module contract, discovery, registry, signals, chassis, argparse CLI, `heartbeat` proof of concept, tests | **delivered** |
 | 7 | Distribution readiness: dynamic version from `version.py`, audited wheel and sdist (`py.typed` + every module manifest), isolated `uv tool` / `pipx` install, the `korodex logs` operator helper, and a 3-OS x 3-Python CI matrix | **delivered** |
-| 8 (next) | Publish the distribution to an index (or a documented git bootstrap), a TUI front end over the same command contract, and log rotation controls (`korodex logs --rotate`) | planned |
+| 8 (next) | Publish `v0.1.0` to an index (`twine upload` / GitHub Releases) or a documented git bootstrap, a Textual/TUI front end over the same declarative `CliCommand` tree, and `korodex logs --rotate` | planned |
 
 
 Status tags used across the UI: `[✓]` success, `[?]` question, `[!]` error, `[i]` note.

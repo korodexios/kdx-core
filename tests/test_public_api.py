@@ -1,0 +1,66 @@
+"""Core API freeze: the package root is the v1 contract downstream relies on."""
+
+from __future__ import annotations
+
+import korodexios_core
+
+FROZEN_SURFACE = (
+    "ModuleProtocol",
+    "Module",
+    "ModuleSpec",
+    "ModuleState",
+    "check_contract",
+    "as_module",
+    "CoreContext",
+    "CliCommand",
+    "CliArgument",
+    "CliRequest",
+    "CliSurface",
+    "LayeredConfig",
+    "ScopedConfig",
+    "CORE_DEFAULTS",
+    "ConfigSource",
+    "EventBus",
+    "Event",
+    "Subscription",
+    "Chassis",
+    "ChassisOptions",
+    "ChassisState",
+    "ModuleRegistry",
+    "IpcServer",
+    "IpcOptions",
+    "IpcDiscovery",
+    "IpcError",
+    "AppPaths",
+    "ExitCode",
+    "KorodexError",
+    "KorodexLogger",
+    "build_logger",
+    "CORE_API_VERSION",
+    "__version__",
+)
+
+
+def test_every_exported_name_resolves() -> None:
+    for name in korodexios_core.__all__:
+        assert getattr(korodexios_core, name) is not None, name
+
+
+def test_public_surface_is_unique_and_freeze_complete() -> None:
+    # Ordering is ruff's job (RUF022); this test guards the contract itself.
+    exported = list(korodexios_core.__all__)
+    assert len(set(exported)) == len(exported), "duplicate export in __all__"
+    missing = sorted(name for name in FROZEN_SURFACE if name not in set(exported))
+    assert not missing, f"core API lost a frozen name: {missing}"
+
+
+def test_core_api_version_is_frozen_at_one() -> None:
+    assert korodexios_core.CORE_API_VERSION == "1"
+    assert korodexios_core.__version__.startswith("0.1.0")
+
+
+def test_frozen_contract_is_importable_from_the_package_root() -> None:
+    assert korodexios_core.Module.__name__ == "Module"
+    assert korodexios_core.ModuleState.NEW.value == "new"
+    assert korodexios_core.ExitCode.SUCCESS == 0
+    assert korodexios_core.check_contract(object())  # a bare object fails, loudly

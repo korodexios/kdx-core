@@ -268,8 +268,9 @@ def check_contract(candidate: Any) -> list[str]:
         value = getattr(candidate, hook, None)
         if value is not None and not callable(value):
             violations.append(f"{hook} must be callable, got {type(value).__name__}")
-    if isinstance(getattr(candidate, "name", ""), str):
-        name = str(candidate.name)
+    name_value = getattr(candidate, "name", "")
+    if isinstance(name_value, str):
+        name = str(name_value)
         if name and not NAME_PATTERN.match(name):
             violations.append(f"name {name!r} must be lower_case with digits or underscores")
     version_value = getattr(candidate, "version", "")
