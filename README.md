@@ -202,6 +202,7 @@ UX rules enforced by `cli/ux.py` and `validate.py`:
 | 1 | Packaging, config hierarchy, logging, event bus, module contract, discovery, registry, signals, chassis, argparse CLI, `heartbeat` proof of concept, tests | **delivered** |
 | 2 | `rich` UX layer: numbered-menu wizard over the registered commands, `[default]` prompts, `while True` validation loops, validators (port/IP/path/size/duration), `--yes` + non-TTY auto-detection | **delivered** |
 | 3 | Built-in `system_info` (OS/CPU/RAM/disk diagnostics) and `backup_engine` (validated source to destination backups with dry runs), full test coverage, docs polish | **delivered** |
+| 4 (next) | `korodex init` project scaffolding, a long-running daemon mode with a status socket, and packaging the chassis as a reusable cookiecutter-style starting point | planned |
 
 Status tags used across the UI: `[✓]` success, `[?]` question, `[!]` error, `[i]` note.
 Diagnostics always go to **stderr**; **stdout** stays clean for scripting.
