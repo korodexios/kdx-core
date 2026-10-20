@@ -24,6 +24,31 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 RUN_HELP = "Boot the chassis, run the lifecycle, then stop cleanly."
 
 
+def wizard_command() -> CliCommand:
+    """Return the root-wizard command; hidden from the wizard itself."""
+    return CliCommand(
+        name="wizard",
+        help="Open the interactive command wizard.",
+        handler=_wizard_command,
+        group="core",
+        show_in_wizard=False,
+    )
+
+
+def _wizard_command(request: CliRequest) -> int:
+    """Run the numbered-menu wizard over every registered command."""
+    from .ux import UserExperience
+    from .wizard import RootWizard
+
+    surface = request.options.get("surface")
+    commands = list(surface.commands()) if surface is not None else []
+    if not commands:
+        write_line(f"{TAG_NOTE} no commands are registered yet")
+        return int(ExitCode.SUCCESS)
+    ux = UserExperience(request.context.config)
+    return RootWizard(ux, request.context, commands, options=dict(request.options)).run()
+
+
 def core_commands(chassis: Chassis) -> list[CliCommand]:
     """Build the chassis command set bound to *chassis*."""
     return [

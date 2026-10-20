@@ -44,6 +44,7 @@ class CliCommand:
     subcommands: tuple[CliCommand, ...] = ()
     module_name: str | None = None
     group: str = "module"
+    show_in_wizard: bool = True
 
     def __post_init__(self) -> None:
         if not self.name.strip():

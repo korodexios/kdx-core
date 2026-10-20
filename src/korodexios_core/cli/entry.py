@@ -12,11 +12,11 @@ from typing import Any
 
 from ..constants import TAG_ERROR, TAG_NOTE, TRACEBACK_ENV_VAR, ExitCode
 from ..exceptions import KorodexError
-from ..kernel.chassis import Chassis, ChassisOptions
+from ..kernel.chassis import Chassis, ChassisOptions, stdin_is_tty
 from ..kernel.cli_contract import CliRequest
 from ..kernel.context import CoreContext
 from ..version import format_version
-from .commands import core_commands
+from .commands import core_commands, wizard_command
 from .render import write_line
 from .surface import HANDLER_ATTR, ArgparseSurface
 
@@ -37,11 +37,15 @@ def global_flags() -> argparse.ArgumentParser:
 
 
 def build_bootstrap_parser() -> argparse.ArgumentParser:
-    """Parser accepting only the global flags (first parsing pass)."""
+    """Parser accepting only the global flags (first parsing pass).
+
+    Help is deliberately left to the root parser so 'korodex --help' lists every
+    command contributed by modules, not just the global flags.
+    """
     return argparse.ArgumentParser(
         prog="korodex",
         description="korodexios-core chassis console.",
-        add_help=True,
+        add_help=False,
         parents=[global_flags()],
     )
 
@@ -202,6 +206,18 @@ def _system_exit_code(request: SystemExit) -> int:
     return int(ExitCode.USAGE_ERROR)
 
 
+def _launch_wizard(context: Any, surface: Any) -> int:
+    """Open the interactive wizard when 'korodex' runs bare in a terminal."""
+    from .ux import UserExperience
+    from .wizard import RootWizard
+
+    commands = list(surface.commands())
+    if not commands:
+        return int(ExitCode.SUCCESS)
+    ux = UserExperience(context.config)
+    return RootWizard(ux, context, commands, options={"surface": surface}).run()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the console client and return the process exit code."""
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -239,6 +255,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         surface = ArgparseSurface(subparsers, context=context, parents=[flags])
         for command in core_commands(chassis):
             surface.add_command(command)
+        surface.add_command(wizard_command())
         chassis.collect_cli(surface)
 
         try:
@@ -248,13 +265,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         handler = getattr(namespace, HANDLER_ATTR, None)
         if not callable(handler):
+            if chassis.config.get_bool("core.cli.interactive", True) and stdin_is_tty():
+                return _launch_wizard(context, surface)
             parser.print_help(sys.stdout)
             return int(ExitCode.SUCCESS)
         request = CliRequest(
             context=context,
             command=str(getattr(namespace, "command", "") or ""),
             namespace=namespace,
-            options={"chassis": chassis},
+            options={"chassis": chassis, "surface": surface},
         )
         return int(handler(request))
     except KorodexError as exc:

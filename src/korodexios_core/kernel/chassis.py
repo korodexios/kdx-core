@@ -91,7 +91,7 @@ class Chassis:
         paths = paths.with_log_dir(config.get("core.log.dir")).with_extra_module_dirs(
             [str(item) for item in config.get_list("core.modules.extra_paths")]
         )
-        if config.get_bool("core.cli.interactive", True) and not _stdin_is_tty():
+        if config.get_bool("core.cli.interactive", True) and not stdin_is_tty():
             config = config.with_cli_overrides({"core.cli.interactive": False})
 
         _root_logger, factory = build_logger(config, paths)
@@ -311,7 +311,7 @@ class Chassis:
         self.shutdown()
 
 
-def _stdin_is_tty() -> bool:
+def stdin_is_tty() -> bool:
     """Return True when an interactive wizard can safely prompt."""
     try:
         return bool(sys.stdin and sys.stdin.isatty())

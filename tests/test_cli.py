@@ -80,3 +80,18 @@ def test_missing_config_override_exits_with_config_error(capsys, tmp_path) -> No
     args = ["--home", str(tmp_path), "--config", str(tmp_path / "nope.yml"), "version"]
     assert main(args) == int(ExitCode.CONFIG_ERROR)
     assert "[!]" in capsys.readouterr().err
+
+
+def test_wizard_runs_non_interactively(capsys, project_root) -> None:
+    args = [*base_args(project_root), "wizard", "--yes"]
+    assert main(args) == int(ExitCode.SUCCESS)
+    captured = capsys.readouterr()
+    assert "korodexios-core wizard" in captured.out
+    assert "default [1]" in captured.out
+
+
+def test_help_lists_module_and_wizard_commands(capsys, project_root) -> None:
+    assert main([*base_args(project_root), "--help"]) == int(ExitCode.SUCCESS)
+    captured = capsys.readouterr()
+    for marker in ("wizard", "heartbeat", "doctor"):
+        assert marker in captured.out

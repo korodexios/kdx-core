@@ -25,6 +25,7 @@ korodexios-core/
 │   ├── constants.py            # exit codes, status tags, key names
 │   ├── exceptions.py           # error hierarchy (message + exit code, no tracebacks)
 │   ├── paths.py                # AppPaths: root discovery, runtime directories
+│   ├── validate.py             # input validators: polite messages, no tracebacks
 │   ├── config/                 # LayeredConfig: CLI > env > file > defaults
 │   ├── logging/                # structured logging: stderr + rotating file
 │   ├── events/                 # EventBus: thread-safe pub/sub with wildcards
@@ -36,7 +37,12 @@ korodexios-core/
 │   │   ├── registry.py         # module state, lifecycle ordering, CLI collection
 │   │   ├── signals.py          # SIGINT / SIGTERM / SIGBREAK coordinator
 │   │   └── chassis.py          # Chassis: init -> start -> run -> stop coordinator
-│   ├── cli/                    # thin client: argparse surface, core commands, entry
+│   ├── cli/                    # thin client: argparse + rich wizard, core commands, entry
+│   │   ├── surface.py          # CliCommand tree -> argparse subparsers
+│   │   ├── ux.py               # rich menus, bracketed defaults, validation loops
+│   │   ├── wizard.py           # root wizard over the registered command tree
+│   │   ├── commands.py         # version / doctor / modules / config / run / wizard
+│   │   └── entry.py            # two-pass parser, global flags, error rendering
 │   └── modules/                # discovery root (built-in plugins live here)
 │       └── heartbeat/          # proof-of-concept module (background thread + events)
 └── tests/                      # pytest suite: config, bus, contract, discovery, CLI
@@ -137,6 +143,7 @@ korodex config show --key core.  # resolved values + provenance
 korodex run --once               # boot, one tick, clean stop (CI friendly)
 korodex run --duration 3         # run for three seconds
 korodex heartbeat status         # a module-provided command
+korodex wizard                     # interactive numbered-menu wizard (TTY only)
 ```
 
 CI / non-interactive runs: pass `--yes` (accept defaults) and `--no-log-file` if the
@@ -147,6 +154,38 @@ can never stall on a question.
 Development shortcuts: `make install`, `make test`, `make lint`, `make typecheck`,
 `make check`, `make demo`.
 
+### 2.1 The crash-proof wizard
+
+`korodex wizard` (and a bare `korodex` in a terminal) opens a numbered menu built from
+the **same `CliCommand` objects** modules register for argparse — no module ever knows a
+wizard exists.
+
+```text
+╭──────────────────────────── Command ────────────────────────────╮
+│ [1] version  Print the chassis and core API version.            │
+│ [2] doctor   Inspect the environment, configuration, and logs.  │
+│ [3] modules  Inspect auto-discovered modules.                   │
+│ [7] Quit     leave the wizard                                   │
+╰─────────────────────────────────────────────────────────────────╯
+[?] Command [1]:
+[?] modules show: Module name; omit for all [1]:
+[?] modules show: Emit the detail as JSON [y/N]:
+```
+
+UX rules enforced by `cli/ux.py` and `validate.py`:
+
+- **Numbers beat typing** — every menu is `[1] [2] [3]`; ENTER accepts the highlighted
+  default; a label prefix (`modules`) also works.
+- **Defaults are always visible** — `Port [8080]: `, `[Y/n]` / `[y/N]`.
+- **Free text is guarded by a `while True` validation loop** — an invalid answer prints
+  `[!] port 99999 is outside 1-65535 (expected port number between 1 and 65535)` and
+  re-prompts. Nothing crashes, nothing tracebacks.
+- **Non-interactive is first-class** — `--yes` (or non-TTY stdin) answers every question
+  with its default, so CI, Docker, and `| tee` never hang. A closed stdin mid-run falls
+  back to defaults with an `[i] input closed; continuing with defaults` note.
+- **Colour is opt-out** — `--no-color`, `core.cli.color`, or a non-TTY stdout; rich keeps
+  Windows CMD/PowerShell, macOS, and Linux honest.
+
 ---
 
 ## 3. Roadmap
@@ -154,7 +193,7 @@ Development shortcuts: `make install`, `make test`, `make lint`, `make typecheck
 | Phase | Scope | State |
 | --- | --- | --- |
 | 1 | Packaging, config hierarchy, logging, event bus, module contract, discovery, registry, signals, chassis, argparse CLI, `heartbeat` proof of concept, tests | **delivered** |
-| 2 | `rich` wizard layer: numbered menus, `[default]` prompts, validated free-text loops, `--yes` + non-TTY detection | planned |
+| 2 | `rich` UX layer: numbered-menu wizard over the registered commands, `[default]` prompts, `while True` validation loops, validators (port/IP/path/size/duration), `--yes` + non-TTY auto-detection | **delivered** |
 | 3 | Built-in `system_info` and `backup_engine` modules, more tests, docs polish | planned |
 
 Status tags used across the UI: `[✓]` success, `[?]` question, `[!]` error, `[i]` note.
