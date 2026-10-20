@@ -82,7 +82,7 @@ def build_plugins(root: Path) -> Path:
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("from . import module\n", encoding="utf-8")
     (package / "module.py").write_text(PACKAGE_MODULE, encoding="utf-8")
-    (package / "korodex_module.toml").write_text(MANIFEST, encoding="utf-8")
+    (package / "kdx_module.toml").write_text(MANIFEST, encoding="utf-8")
     (root / "solo.py").write_text(SOLO_MODULE, encoding="utf-8")
     (root / "broken.py").write_text(BROKEN_MODULE, encoding="utf-8")
     (root / "__init__.py").write_text("", encoding="utf-8")
@@ -257,7 +257,7 @@ def test_a_plugin_can_import_its_own_project_package(tmp_path: Path) -> None:
     (package / "__init__.py").write_text('MARK = "the project package"\n', encoding="utf-8")
     (plugin / "module.py").write_text(OWN_MODULE, encoding="utf-8")
     (plugin / "__init__.py").write_text("from . import module\n", encoding="utf-8")
-    (plugin / "korodex_module.toml").write_text(OWN_MANIFEST, encoding="utf-8")
+    (plugin / "kdx_module.toml").write_text(OWN_MANIFEST, encoding="utf-8")
     paths = AppPaths.discover(
         root=str(project), environ={}, extra_module_dirs=[str(package / 'modules')]
     )

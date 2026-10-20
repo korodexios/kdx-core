@@ -6,7 +6,7 @@ import re
 from typing import Final, NamedTuple
 
 __version__: Final[str] = "0.1.0"
-CORE_API_VERSION: Final[str] = "1"
+CORE_API_VERSION: Final[str] = "2"
 
 _VERSION_PATTERN = re.compile(
     r"^(?P<major>\d+)(?:\.(?P<minor>\d+))?(?:\.(?P<patch>\d+))?(?P<prerelease>[A-Za-z0-9._+-]*)$"
@@ -53,5 +53,5 @@ def current_version() -> VersionInfo:
 
 
 def format_version(version: str = __version__, api: str = CORE_API_VERSION) -> str:
-    """Render the one-line version banner used by 'korodex --version'."""
+    """Render the one-line version banner used by 'kdx --version'."""
     return f"korodexios-core {version} (core api v{api}, python chassis)"

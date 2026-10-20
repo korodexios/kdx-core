@@ -33,8 +33,8 @@ FROZEN_SURFACE = (
     "IpcError",
     "AppPaths",
     "ExitCode",
-    "KorodexError",
-    "KorodexLogger",
+    "KorodexiosError",
+    "KorodexiosLogger",
     "build_logger",
     "CORE_API_VERSION",
     "__version__",
@@ -54,8 +54,8 @@ def test_public_surface_is_unique_and_freeze_complete() -> None:
     assert not missing, f"core API lost a frozen name: {missing}"
 
 
-def test_core_api_version_is_frozen_at_one() -> None:
-    assert korodexios_core.CORE_API_VERSION == "1"
+def test_core_api_version_is_frozen_at_two() -> None:
+    assert korodexios_core.CORE_API_VERSION == "2"
     assert korodexios_core.__version__.startswith("0.1.0")
 
 

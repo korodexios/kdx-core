@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from korodexios_core.cli.entry import console_prog, main
+from korodexios_core.cli.entry import _cli_overrides, build_bootstrap_parser, console_prog, main
 from korodexios_core.constants import ExitCode
 
 
@@ -22,19 +22,47 @@ def test_version_flag(capsys, project_root) -> None:
     assert captured.err == ""
 
 
+def test_global_flags_reach_every_core_setting() -> None:
+    """Every core setting is overridable: the parser maps flags to dotted keys."""
+    namespace, _ = build_bootstrap_parser().parse_known_args(
+        [
+            "--tick-interval", "0.5", "--stop-timeout", "9", "--ipc-timeout", "3",
+            "--no-ipc", "--allow-anonymous-shutdown", "--logs-poll-interval", "0.25",
+            "--log-max-bytes", "2048", "--log-backup-count", "3", "--cli-width", "88",
+            "--no-confirmations", "--no-autodiscover", "--disable-module", "heartbeat",
+            "--enable-module", "backup_engine", "--name", "acme",
+        ]
+    )
+    overrides = _cli_overrides(namespace)
+    assert overrides["core.lifecycle.tick_interval"] == 0.5
+    assert overrides["core.lifecycle.stop_timeout"] == 9.0
+    assert overrides["core.ipc.timeout"] == 3.0
+    assert overrides["core.ipc.enabled"] is False
+    assert overrides["core.ipc.allow_anonymous_shutdown"] is True
+    assert overrides["core.logs.poll_interval"] == 0.25
+    assert overrides["core.log.max_bytes"] == 2048
+    assert overrides["core.log.backup_count"] == 3
+    assert overrides["core.cli.width"] == 88
+    assert overrides["core.cli.confirmations"] is False
+    assert overrides["core.modules.autodiscover"] is False
+    assert overrides["core.modules.disabled"] == ["heartbeat"]
+    assert overrides["core.modules.enabled"] == ["backup_engine"]
+    assert overrides["core.name"] == "acme"
+
+
 def test_console_prog_follows_the_invoked_alias(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "argv", ["/usr/local/bin/kdx", "--version"])
     assert console_prog() == "kdx"
     monkeypatch.setattr(sys, "argv", ["/usr/local/bin/korodexios", "status"])
     assert console_prog() == "korodexios"
     monkeypatch.setattr(sys, "argv", ["__main__.py", "status"])
-    assert console_prog() == "korodex"
+    assert console_prog() == "kdx"
 
 
 def test_no_command_prints_help(capsys, project_root) -> None:
     assert main(base_args(project_root)) == int(ExitCode.SUCCESS)
     captured = capsys.readouterr()
-    assert "usage: korodex" in captured.out
+    assert "usage: kdx" in captured.out
 
 
 def test_modules_list_shows_builtin(capsys, project_root) -> None:
@@ -126,7 +154,7 @@ def test_modules_create_scaffolds_and_reports(capsys, project_root, tmp_path) ->
     payload = json.loads(capsys.readouterr().out)
     assert payload["module"] == "demo"
     assert len(payload["created"]) == 3
-    assert (plugins / "demo" / "korodex_module.toml").is_file()
+    assert (plugins / "demo" / "kdx_module.toml").is_file()
 
 
 def test_modules_create_rejects_bad_names(capsys, project_root, tmp_path) -> None:

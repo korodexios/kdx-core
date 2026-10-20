@@ -89,8 +89,8 @@ def _noop_handler(request: Any) -> int:
 
 @pytest.fixture()
 def project_root(tmp_path: Path) -> Path:
-    """Return a throwaway chassis root with a minimal korodex.yml."""
-    (tmp_path / "korodex.yml").write_text(PROJECT_CONFIG, encoding="utf-8")
+    """Return a throwaway chassis root with a minimal kdx.yml."""
+    (tmp_path / "kdx.yml").write_text(PROJECT_CONFIG, encoding="utf-8")
     return tmp_path
 
 
@@ -107,7 +107,7 @@ def config(project_root: Path) -> LayeredConfig:
     return LayeredConfig.load(
         config_file=resolved.config_file,
         env_file=resolved.env_file,
-        environ={"KORODEX_CORE__LOG__LEVEL": "DEBUG"},
+        environ={"KORODEXIOS_CORE__LOG__LEVEL": "DEBUG"},
     )
 
 

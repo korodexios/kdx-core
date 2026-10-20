@@ -8,7 +8,7 @@ from collections.abc import Callable
 from types import FrameType
 
 from ..constants import TAG_NOTE
-from ..logging.engine import KorodexLogger
+from ..logging.engine import KorodexiosLogger
 
 Handler = Callable[[int], None]
 
@@ -28,7 +28,7 @@ class SignalCoordinator:
 
     def __init__(
         self,
-        logger: KorodexLogger,
+        logger: KorodexiosLogger,
         *,
         signals: tuple[str, ...] = _EXTRA_SIGNALS,
     ) -> None:
@@ -153,7 +153,7 @@ class SignalCoordinator:
         return self._event.wait(timeout)
 
     def describe(self) -> str:
-        """Return the one-line status shown by 'korodex doctor'."""
+        """Return the one-line status shown by 'kdx doctor'."""
         installed = ", ".join(signal_name(num) for num in self._installed) or "(none)"
         state = signal_name(self._signal_number) if self._signal_number is not None else "none"
         return f"handlers={installed}; received={state}; count={self._count}"

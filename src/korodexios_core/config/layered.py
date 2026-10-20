@@ -38,7 +38,7 @@ class ConfigSource(IntEnum):
     CLI = 4
 
     def label(self) -> str:
-        """Return the human label used by 'korodex config show'."""
+        """Return the human label used by 'kdx config show'."""
         return _SOURCE_LABELS[self]
 
 
@@ -436,7 +436,7 @@ class LayeredConfig:
         return resolved
 
     def describe_rows(self, limit: int | None = None) -> list[tuple[str, str, str]]:
-        """Return (key, value, source) rows for 'korodex config show'."""
+        """Return (key, value, source) rows for 'kdx config show'."""
         rows = [entry.as_row() for entry in self.entries()]
         return rows[:limit] if limit else rows
 

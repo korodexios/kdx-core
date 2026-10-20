@@ -91,7 +91,7 @@ def scaffold_module(
     description = title.strip() or f"{cleaned} module for the korodexios chassis."
     result = ScaffoldResult(directory=directory, replaced=existed)
     files = {
-        "korodex_module.toml": _manifest(cleaned, description),
+        "kdx_module.toml": _manifest(cleaned, description),
         "module.py": _module_source(cleaned, class_name, description),
         "__init__.py": _package_source(cleaned, class_name, description),
     }

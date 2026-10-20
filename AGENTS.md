@@ -35,8 +35,8 @@ kdx logs -n 50    # the rotating log file, no POSIX tail required
    shutdown. The CLI and any future TUI are thin clients of that core.
 2. **Zero stubs.** No TODO bodies, no `pass` placeholders, no mock returns. If a
    branch exists, it runs.
-3. **Precedence is sacred.** CLI > env (`KDX_*`, then `KORODEXIOS_*`, then legacy
-   `KORODEX_*`) > `kdx.local.yml` > `kdx.yml` > defaults. Read configuration through
+3. **Precedence is sacred.** CLI > env (`KDX_*`, then `KORODEXIOS_*`) >
+   `kdx.local.yml` > `kdx.yml` > defaults. Read configuration through
    `LayeredConfig`, never `os.environ`.
 4. **Clean shutdown.** Whatever `start()` acquires, `stop()` releases inside
    `core.lifecycle.stop_timeout`. SIGINT exits 130, SIGTERM 143, an operator stop
@@ -55,5 +55,5 @@ PyYAML and rich.
 
 Quote the failing command before and after the fix. `make check` is the bar;
 `kdx init` output must stay lint-clean, type-clean, and runnable. The console installs
-one entry point under three names: `kdx` (primary short alias), `korodexios` (canonical),
-and `korodex` (kept for backward compatibility). Docs and help lead with `kdx`.
+one entry point under two names: `kdx` (primary short alias) and `korodexios` (canonical).
+Docs and help lead with `kdx`.

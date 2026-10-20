@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from .engine import (
     JsonFormatter,
-    KorodexLogger,
+    KorodexiosLogger,
     LoggerFactory,
     ReopeningRotatingFileHandler,
     TextFormatter,
@@ -17,7 +17,7 @@ from .engine import (
 
 __all__ = [
     "JsonFormatter",
-    "KorodexLogger",
+    "KorodexiosLogger",
     "LoggerFactory",
     "ReopeningRotatingFileHandler",
     "TextFormatter",

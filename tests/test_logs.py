@@ -1,4 +1,4 @@
-"""Log inspection tests: helpers plus the 'korodex logs' command."""
+"""Log inspection tests: helpers plus the 'kdx logs' command."""
 
 from __future__ import annotations
 
@@ -22,9 +22,9 @@ from korodexios_core.logging.engine import (
 
 
 def make_log(tmp_path: Path, lines: int = 120) -> Path:
-    target = tmp_path / "korodex.log"
+    target = tmp_path / "kdx.log"
     body = "".join(
-        f"2026-10-20 12:00:0{i % 10} [INFO   ] korodex.probe: line {i}\n"
+        f"2026-10-20 12:00:0{i % 10} [INFO   ] kdx.probe: line {i}\n"
         for i in range(1, lines + 1)
     )
     target.write_text(body, encoding="utf-8")
@@ -33,7 +33,7 @@ def make_log(tmp_path: Path, lines: int = 120) -> Path:
 
 def test_tail_lines_returns_the_tail_without_reading_the_head(tmp_path: Path) -> None:
     target = make_log(tmp_path)
-    assert tail_lines(target, 5)[-1] == "2026-10-20 12:00:00 [INFO   ] korodex.probe: line 120"
+    assert tail_lines(target, 5)[-1] == "2026-10-20 12:00:00 [INFO   ] kdx.probe: line 120"
     assert len(tail_lines(target, DEFAULT_TAIL_LINES)) == DEFAULT_TAIL_LINES
     assert tail_lines(target, 1) == tail_lines(target, 1)
     assert tail_lines(target, 0) == []
@@ -64,15 +64,15 @@ def test_rotate_log_archives_prunes_and_keeps_size_backups(tmp_path: Path) -> No
     assert not target.exists()
     assert tail_lines(archive, 500), "the archive carries the old lines"
     # The rotating handler's size-based backups are a separate family.
-    size_backup = tmp_path / "korodex.log.1"
+    size_backup = tmp_path / "kdx.log.1"
     size_backup.write_text("size based backup\n", encoding="utf-8")
     for _ in range(3):
         target.write_text("fresh\n", encoding="utf-8")
         rotate_log(target, backup_count=1)
     timestamped = [
         name
-        for name in (path.name for path in tmp_path.glob("korodex.log.*"))
-        if re.match(r"^\d{8}-\d{6}(-\d+)?$", name[len("korodex.log.") :])
+        for name in (path.name for path in tmp_path.glob("kdx.log.*"))
+        if re.match(r"^\d{8}-\d{6}(-\d+)?$", name[len("kdx.log.") :])
     ]
     assert len(timestamped) == 1, timestamped
     assert size_backup.is_file()
@@ -81,7 +81,7 @@ def test_rotate_log_archives_prunes_and_keeps_size_backups(tmp_path: Path) -> No
 
 
 def test_reopening_handler_notices_an_external_rotation(tmp_path: Path) -> None:
-    target = tmp_path / "korodex.log"
+    target = tmp_path / "kdx.log"
     handler = ReopeningRotatingFileHandler(
         target, maxBytes=1_000_000, backupCount=3, encoding="utf-8", delay=False
     )
@@ -135,7 +135,7 @@ def test_logs_command_shows_the_recent_lines(capsys, tmp_path: Path) -> None:
     capsys.readouterr()
     assert main([*base_args(tmp_path), "logs", "-n", "5", "--raw"]) == int(ExitCode.SUCCESS)
     captured = capsys.readouterr()
-    printed = [line for line in captured.out.splitlines() if "korodex.chassis" in line]
+    printed = [line for line in captured.out.splitlines() if "kdx.chassis" in line]
     assert printed, captured.out
     assert "chassis stopped" in captured.out
 
@@ -152,12 +152,12 @@ def test_logs_command_rejects_a_zero_line_count(capsys, tmp_path: Path) -> None:
     assert main([*base_args(tmp_path), "logs", "-n", "0"]) == int(ExitCode.ERROR)
     captured = capsys.readouterr()
     assert "--lines must be at least 1" in captured.out
-    assert "korodex logs -n 200" in captured.out
+    assert "kdx logs -n 200" in captured.out
 
 
 def test_logs_clear_truncates_with_assent(capsys, tmp_path: Path) -> None:
     assert main([*base_args(tmp_path), "run", "--once"]) == int(ExitCode.SUCCESS)
-    log_path = tmp_path / "var" / "log" / "korodex.log"
+    log_path = tmp_path / "var" / "log" / "kdx.log"
     assert log_path.is_file() and log_path.stat().st_size > 0
     before = log_path.stat().st_size
     assert main([*base_args(tmp_path), "--yes", "logs", "--clear"]) == int(ExitCode.SUCCESS)
@@ -171,12 +171,12 @@ def test_logs_clear_truncates_with_assent(capsys, tmp_path: Path) -> None:
 
 def test_logs_rotate_archives_the_file(capsys, tmp_path: Path) -> None:
     assert main([*base_args(tmp_path), "run", "--once"]) == int(ExitCode.SUCCESS)
-    log_path = tmp_path / "var" / "log" / "korodex.log"
+    log_path = tmp_path / "var" / "log" / "kdx.log"
     assert log_path.is_file()
     assert main([*base_args(tmp_path), "--yes", "logs", "--rotate"]) == int(ExitCode.SUCCESS)
     captured = capsys.readouterr()
     assert "log file rotated" in captured.out
-    assert sorted(log_path.parent.glob("korodex.log.*")), captured.out
+    assert sorted(log_path.parent.glob("kdx.log.*")), captured.out
     # The chassis reopens the path on its next write, so this very CLI session
     # lands in the fresh file rather than in the archive.
     assert "chassis stopped" in log_path.read_text(encoding="utf-8")
@@ -192,12 +192,12 @@ def test_logs_rotate_and_clear_conflict(capsys, tmp_path: Path) -> None:
 
 def test_logs_follow_streams_appended_lines(capsys, tmp_path: Path) -> None:
     assert main([*base_args(tmp_path), "run", "--once"]) == int(ExitCode.SUCCESS)
-    log_path = tmp_path / "var" / "log" / "korodex.log"
+    log_path = tmp_path / "var" / "log" / "kdx.log"
     assert log_path.is_file()
 
     def append() -> None:
         with log_path.open("a", encoding="utf-8") as handle:
-            handle.write("2026-10-20 12:00:00 [INFO   ] korodex.probe: streamed marker\n")
+            handle.write("2026-10-20 12:00:00 [INFO   ] kdx.probe: streamed marker\n")
 
     timer = threading.Timer(0.2, append)
     timer.start()

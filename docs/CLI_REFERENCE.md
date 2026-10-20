@@ -8,7 +8,6 @@ the Python API. All examples use the primary alias `kdx`.
 ```bash
 kdx <command> [subcommand] [flags]     # primary short alias
 korodexios <command>                   # canonical name
-korodex <command>                      # kept for backward compatibility
 ```
 
 Help text follows the alias you invoke (`usage: kdx ...`), so screenshots match the
@@ -20,12 +19,12 @@ docs. `kdx --help` lists every command, including the ones modules contributed.
 | --- | --- | --- |
 | pip in a venv | `pip install korodexios-core` | from an index, once published |
 | uv | `uv pip install korodexios-core` | the same wheel |
-| pipx / uv tool | `pipx install korodexios-core` | the three console scripts land on PATH |
+| pipx / uv tool | `pipx install korodexios-core` | the two console scripts land on PATH |
 | git bootstrap | `pip install "korodexios-core @ git+ssh://git@github.com/korodexios/kdx-core.git@v0.1.0"` | the documented path before an index publish |
 | development | `pip install -e ".[dev]"` | the chassis repository itself |
 
 The wheel carries `py.typed` and every built-in module manifest
-(`korodex_module.toml`), so a plugin installed into the same environment can read the
+(`kdx_module.toml`), so a plugin installed into the same environment can read the
 manifests it needs. The sdist carries `docs/`, `README.md`, `AGENTS.md`, `llms.txt`,
 `.agents/skills/`, `kdx.yml`, and the tests, so an sdist install can run `make check`.
 
@@ -35,7 +34,7 @@ manifests it needs. The sdist carries `docs/`, `README.md`, `AGENTS.md`, `llms.t
 | --- | --- | --- |
 | `--version` | print chassis and core API version, exit | - |
 | `--home PATH` | chassis root directory | discovered root |
-| `--config FILE` | explicit config file (`kdx.yml`, `korodexios.yml`, `korodex.yml`) | first candidate |
+| `--config FILE` | explicit config file (`kdx.yml`, `korodexios.yml`) | first candidate |
 | `--env-file FILE` | explicit `.env` path | `<root>/.env` |
 | `--log-level LEVEL` | console log level (diagnostics go to stderr) | `INFO` |
 | `--log-json` | emit JSON log lines | off |
@@ -45,10 +44,26 @@ manifests it needs. The sdist carries `docs/`, `README.md`, `AGENTS.md`, `llms.t
 | `--ipc-port PORT` | control-plane port (`0` = ephemeral) | `8123` |
 | `--auth` / `--no-auth` | require or allow anonymous control-plane reads | auth on |
 | `--ipc-token TOKEN` | static shared secret for the control plane | empty (ephemeral) |
+| `--ipc-timeout SECONDS` | client timeout for control-plane reads | `2.0` |
+| `--no-ipc` | do not open the control plane in `kdx run` | ipc enabled |
+| `--allow-anonymous-shutdown` | unauthenticated clients may stop the daemon | off |
+| `--tick-interval SECONDS` | lifecycle tick interval | `1.0` |
+| `--stop-timeout SECONDS` | budget for module `stop()` hooks | `5.0` |
+| `--logs-poll-interval SECONDS` | follow poll interval for `kdx logs` | `0.5` |
+| `--log-max-bytes BYTES` | rotating log size limit | `1048576` |
+| `--log-backup-count COUNT` | rotating log archives kept | `5` |
+| `--cli-width COLUMNS` | terminal table width for the CLI | `100` |
+| `--confirmations` / `--no-confirmations` | ask before destructive module actions | on |
+| `--no-autodiscover` | disable module auto-discovery for this run | autodiscover on |
+| `--enable-module NAME` / `--disable-module NAME` | force one module on or off (repeatable) | - |
+| `--name NAME` | chassis display name (banner, doctor) | `korodexios` |
 | `--no-color` | disable coloured output | colour on a TTY |
 | `-q, --quiet` | warnings and errors only | - |
 | `-v, --verbose` | debug logging and tracebacks | - |
 | `-y, --yes` | accept defaults, never prompt (auto-detected for non-TTY) | - |
+
+Two bootstrap keys stay config/env-only: `core.distribution` (packaging metadata) and
+`core.env.prefix` (it selects the env layer the CLI would itself override).
 
 ## `kdx run`
 
@@ -97,7 +112,7 @@ kdx logs --rotate             # archive the file and start a fresh one
 
 No POSIX `tail` required: the file lives under the configured log directory and is
 resolved from configuration, not a hardcoded path. Rotation names the archive
-`korodex.log.<timestamp>`, keeps the newest `core.log.backup_count` archives, and is
+`kdx.log.<timestamp>`, keeps the newest `core.log.backup_count` archives, and is
 cooperative: the running chassis notices the renamed file on its next write and
 reopens the path, so it never keeps appending into the archive.
 
@@ -110,7 +125,7 @@ kdx modules show <name>       # spec plus live health for one module (or all)
 kdx modules create <name> --path src/<pkg>/modules [--title TEXT] [--force] [--json]
 ```
 
-`create` scaffolds `__init__.py`, `module.py`, and `korodex_module.toml` - zero stubs,
+`create` scaffolds `__init__.py`, `module.py`, and `kdx_module.toml` - zero stubs,
 immediately runnable.
 
 ## `kdx config`

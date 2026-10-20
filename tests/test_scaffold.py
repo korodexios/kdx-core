@@ -43,7 +43,7 @@ def test_scaffold_writes_a_working_package(tmp_path: Path) -> None:
     modules = root / "korodexios_core" / "modules"
     result = scaffold_module(modules, "demo_plugin", title="Demo plugin.", project_root=root)
     assert [item.name for item in result.created] == [
-        "korodex_module.toml",
+        "kdx_module.toml",
         "module.py",
         "__init__.py",
     ]

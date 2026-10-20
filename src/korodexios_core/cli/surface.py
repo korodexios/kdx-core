@@ -17,8 +17,8 @@ _TYPE_MAP: dict[str, Callable[[Any], Any]] = {
     "path": Path,
 }
 
-COMMAND_ATTR = "__korodex_command__"
-HANDLER_ATTR = "__korodex_handler__"
+COMMAND_ATTR = "__kdx_command__"
+HANDLER_ATTR = "__kdx_handler__"
 
 
 class ArgparseSurface:

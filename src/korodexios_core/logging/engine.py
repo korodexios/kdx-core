@@ -96,7 +96,7 @@ def _stamp(record: logging.LogRecord, *, utc: bool) -> str:
 
 
 def _fields_of(record: logging.LogRecord) -> Mapping[str, Any]:
-    fields = getattr(record, "korodex_fields", None)
+    fields = getattr(record, "kdx_fields", None)
     if isinstance(fields, Mapping):
         return fields
     return {}
@@ -154,7 +154,7 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False)
 
 
-class KorodexLogger:
+class KorodexiosLogger:
     """Thin wrapper adding structured fields and child namespaces."""
 
     def __init__(self, logger: logging.Logger, *, fields: Mapping[str, Any] | None = None) -> None:
@@ -171,15 +171,15 @@ class KorodexLogger:
         """Return the stdlib logger for advanced integrations."""
         return self._logger
 
-    def bind(self, **fields: Any) -> KorodexLogger:
+    def bind(self, **fields: Any) -> KorodexiosLogger:
         """Return a child logger that always logs *fields*."""
         merged = dict(self._fields)
         merged.update(fields)
-        return KorodexLogger(self._logger, fields=merged)
+        return KorodexiosLogger(self._logger, fields=merged)
 
-    def child(self, name: str) -> KorodexLogger:
-        """Return a logger namespaced below this one (for example 'korodex.backup')."""
-        return KorodexLogger(
+    def child(self, name: str) -> KorodexiosLogger:
+        """Return a logger namespaced below this one (for example 'kdx.backup')."""
+        return KorodexiosLogger(
             logging.getLogger(f"{self._logger.name}.{name}"),
             fields=self._fields,
         )
@@ -188,7 +188,7 @@ class KorodexLogger:
         """Emit *message* at *level* with per-call structured *fields*."""
         merged = dict(self._fields)
         merged.update(fields)
-        self._logger.log(level, message, extra={"korodex_fields": merged})
+        self._logger.log(level, message, extra={"kdx_fields": merged})
 
     def debug(self, message: str, **fields: Any) -> None:
         """Emit a debug diagnostic."""
@@ -214,7 +214,7 @@ class KorodexLogger:
         """Emit an error diagnostic with the active exception attached."""
         merged = dict(self._fields)
         merged.update(fields)
-        self._logger.error(message, exc_info=True, extra={"korodex_fields": merged})
+        self._logger.error(message, exc_info=True, extra={"kdx_fields": merged})
 
     def flush(self) -> None:
         """Flush every handler attached to the underlying logger."""
@@ -225,7 +225,7 @@ class KorodexLogger:
                 continue
 
     def __repr__(self) -> str:
-        return f"KorodexLogger(name={self._logger.name!r}, fields={sorted(self._fields)})"
+        return f"KorodexiosLogger(name={self._logger.name!r}, fields={sorted(self._fields)})"
 
 
 class LoggerFactory:
@@ -263,12 +263,12 @@ class LoggerFactory:
         """Return the active log file, when file logging is enabled."""
         return self._log_file
 
-    def get(self, name: str) -> KorodexLogger:
+    def get(self, name: str) -> KorodexiosLogger:
         """Return a logger for *name* under the chassis namespace."""
         clean = str(name).strip(".")
         if not clean or clean == self._root.name:
-            return KorodexLogger(self._root)
-        return KorodexLogger(logging.getLogger(f"{self._root.name}.{clean}"))
+            return KorodexiosLogger(self._root)
+        return KorodexiosLogger(logging.getLogger(f"{self._root.name}.{clean}"))
 
     def stats(self) -> dict[str, Any]:
         """Return a JSON-friendly description of the logging pipeline."""
@@ -359,7 +359,7 @@ def build_logger(
     config: LayeredConfig,
     paths: AppPaths,
     *,
-    name: str = "korodex",
+    name: str = "kdx",
 ) -> tuple[logging.Logger, LoggerFactory]:
     """Build the chassis logger from configuration and resolved paths."""
     level = resolve_level(config.get("core.log.level", "INFO"))
@@ -386,7 +386,7 @@ def build_logger(
     if config.get_bool("core.log.file_enabled", True):
         try:
             paths.ensure_directories()
-            log_file = paths.log_dir / str(config.get("core.log.file", "korodex.log"))
+            log_file = paths.log_dir / str(config.get("core.log.file", "kdx.log"))
             file_handler = ReopeningRotatingFileHandler(
                 log_file,
                 maxBytes=config.get_int("core.log.max_bytes", 1_048_576),
@@ -403,7 +403,7 @@ def build_logger(
             logger.warning(
                 "file logging disabled; continuing with stderr only",
                 extra={
-                    "korodex_fields": {"path": str(log_file or paths.log_dir), "error": str(exc)}
+                    "kdx_fields": {"path": str(log_file or paths.log_dir), "error": str(exc)}
                 },
             )
             log_file = None

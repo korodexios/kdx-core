@@ -47,7 +47,7 @@ def call_with_timeout(
         except BaseException as exc:
             box["error"] = exc
 
-    worker = threading.Thread(target=_runner, name=f"korodex-{description}", daemon=True)
+    worker = threading.Thread(target=_runner, name=f"kdx-{description}", daemon=True)
     worker.start()
     worker.join(timeout)
     if worker.is_alive():
@@ -75,7 +75,7 @@ class RegisteredModule:
     commands: list[CliCommand] = field(default_factory=list)
 
     def describe(self) -> str:
-        """Return the one-line status line for 'korodex modules list'."""
+        """Return the one-line status line for 'kdx modules list'."""
         marker = {
             ModuleState.RUNNING: "[running]",
             ModuleState.INITIALIZED: "[ready]",
@@ -87,7 +87,7 @@ class RegisteredModule:
         return f"{marker} {self.spec.describe()}"
 
     def as_dict(self) -> dict[str, Any]:
-        """Return a JSON-friendly view used by 'korodex doctor'."""
+        """Return a JSON-friendly view used by 'kdx doctor'."""
         return {
             "name": self.spec.name,
             "version": self.spec.version,
@@ -334,7 +334,7 @@ class ModuleRegistry:
         return counts
 
     def health(self) -> dict[str, Any]:
-        """Return the module health block shown by 'korodex doctor'."""
+        """Return the module health block shown by 'kdx doctor'."""
         records = self.ordered()
         return {
             "total": len(records),

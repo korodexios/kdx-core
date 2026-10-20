@@ -116,7 +116,7 @@ def env_prefixes(prefix: str | Sequence[str] | None = None) -> tuple[str, ...]:
     """Return the environment prefixes to consult, in precedence order.
 
     The built-in aliases are consulted together, in order: KDX_ (primary),
-    KORODEXIOS_ (canonical long name), KORODEX_ (legacy). An operator who sets a
+    KORODEXIOS_ (canonical long name). An operator who sets a
     private prefix such as core.env.prefix: MYAPP gets exactly MYAPP_ - no
     implicit aliases - so a shared machine never leaks another project's keys.
     """
@@ -162,7 +162,7 @@ def normalize_env_key(
     """Translate an environment variable name into a dotted config key.
 
     The first prefix that matches wins, so KDX_CORE__LOG__LEVEL and
-    KORODEX_CORE__LOG__LEVEL both map to core.log.level.
+    KORODEXIOS_CORE__LOG__LEVEL both map to core.log.level.
     """
     for token in env_prefixes(prefix):
         dotted = normalize_exact_key(key, token)
@@ -237,7 +237,7 @@ def load_environment(
     """Collect chassis keys from a live environment mapping.
 
     Prefixes are consulted in precedence order, so KDX_CORE__IPC__HOST wins over a
-    legacy KORODEX_CORE__IPC__HOST when both are exported.
+    KORODEXIOS_CORE__IPC__HOST when both are exported.
     """
     values: dict[str, str] = {}
     for token in env_prefixes(prefix):

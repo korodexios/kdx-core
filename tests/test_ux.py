@@ -36,7 +36,7 @@ def test_non_interactive_never_reads_input() -> None:
     ux = UserExperience(config, input_fn=boom, stdout=buffer)
     options = [MenuOption("Run"), MenuOption("Configure")]
     assert ux.menu("Action", options, default_index=2) == 2
-    assert ux.ask_text("Name", default="korodex") == "korodex"
+    assert ux.ask_text("Name", default="kdx") == "kdx"
     assert ux.ask_int("Port", default=8080, minimum=1, maximum=65535) == 8080
     assert ux.ask_float("Ratio", default=1.5) == 1.5
     assert ux.confirm("Dry run", default=False) is False
@@ -83,8 +83,8 @@ def test_ask_text_uses_default_on_enter_and_validates_otherwise() -> None:
 
 
 def test_ask_text_required_reprompts_on_empty() -> None:
-    ux, buffer = interactive_ux(["", "   ", "korodex"])
-    assert ux.ask_text("Name", required=True) == "korodex"
+    ux, buffer = interactive_ux(["", "   ", "kdx"])
+    assert ux.ask_text("Name", required=True) == "kdx"
     assert buffer.getvalue().count("[!]") >= 1
 
 
@@ -106,7 +106,7 @@ def test_closed_input_falls_back_to_defaults() -> None:
 
     ux = UserExperience(config, input_fn=closed, stdout=buffer)
     assert ux.menu("Action", [MenuOption("Run"), MenuOption("Configure")], default_index=2) == 2
-    assert ux.ask_text("Name", default="korodex", required=True) == "korodex"
+    assert ux.ask_text("Name", default="kdx", required=True) == "kdx"
     assert ux.confirm("Dry run") is True
     assert not ux.interactive
     assert "input closed" in buffer.getvalue()

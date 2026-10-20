@@ -16,7 +16,7 @@ from ..config.layered import LayeredConfig
 from ..constants import DOCTOR_SCHEMA_VERSION, PACKAGE_NAME, TAG_ERROR, TAG_NOTE, TAG_OK
 from ..events.bus import EventBus
 from ..exceptions import ChassisError
-from ..logging.engine import KorodexLogger, build_logger, close_logger, ensure_utf8_streams
+from ..logging.engine import KorodexiosLogger, build_logger, close_logger, ensure_utf8_streams
 from ..paths import AppPaths
 from ..version import CORE_API_VERSION, __version__, format_version
 from .cli_contract import CliCommand, CliSurface
@@ -81,7 +81,7 @@ class Chassis:
     context: CoreContext
     registry: ModuleRegistry
     signals: SignalCoordinator
-    logger: KorodexLogger
+    logger: KorodexiosLogger
     config: LayeredConfig
     paths: AppPaths
     bus: EventBus
@@ -366,7 +366,7 @@ class Chassis:
         return ExitCode.SUCCESS
 
     def health_report(self) -> dict[str, Any]:
-        """Return the inspection payload rendered by 'korodex doctor'."""
+        """Return the inspection payload rendered by 'kdx doctor'."""
         return {
             "schema": DOCTOR_SCHEMA_VERSION,
             "app": {
@@ -411,7 +411,7 @@ class Chassis:
         }
 
     def describe(self) -> str:
-        """Return the banner printed by 'korodex doctor'."""
+        """Return the banner printed by 'kdx doctor'."""
         report = self.health_report()
         app = report["app"]
         return (

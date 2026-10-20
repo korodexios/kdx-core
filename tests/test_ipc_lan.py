@@ -277,5 +277,5 @@ def test_status_command_accepts_host_and_port(capsys, project_root) -> None:
 
 
 def test_token_header_name_is_stable() -> None:
-    assert TOKEN_HEADER == "X-Korodex-Token"
+    assert TOKEN_HEADER == "X-Kdx-Token"
     assert DISCOVERY_NAME == "chassis.ipc"

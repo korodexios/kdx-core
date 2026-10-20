@@ -17,7 +17,7 @@ from .cli_contract import CliSurface
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..config.layered import ScopedConfig
     from ..events.bus import EventBus
-    from ..logging.engine import KorodexLogger
+    from ..logging.engine import KorodexiosLogger
     from ..paths import AppPaths
     from .context import CoreContext
 
@@ -85,7 +85,7 @@ class ModuleSpec:
             )
 
     def describe(self) -> str:
-        """Return the one-line description used by 'korodex modules list'."""
+        """Return the one-line description used by 'kdx modules list'."""
         origin = f" ({self.origin})" if self.origin else ""
         return f"{self.name} {self.version}{origin}: {self.description or 'no description'}"
 
@@ -201,7 +201,7 @@ class Module:
         return self.require_context().module_config(self.name)
 
     @property
-    def logger(self) -> KorodexLogger:
+    def logger(self) -> KorodexiosLogger:
         """Return a logger namespaced to this module."""
         return self.require_context().logger_for(self.name)
 
@@ -236,7 +236,7 @@ class Module:
         self._started_at = None
 
     def health(self) -> dict[str, Any]:
-        """Return the module's self-report shown by 'korodex modules show'."""
+        """Return the module's self-report shown by 'kdx modules show'."""
         uptime = (time.time() - self._started_at) if self._started_at else 0.0
         return {
             "name": self.name,
@@ -296,7 +296,7 @@ def as_module(candidate: Any) -> Any:
 
 
 def contract_help() -> str:
-    """Return the contract cheat sheet printed by 'korodex modules show --help'."""
+    """Return the contract cheat sheet printed by 'kdx modules show --help'."""
     return (
         "contract: name, description, version, init(context), "
         "register_cli(surface), start(), stop()"

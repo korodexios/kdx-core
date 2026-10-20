@@ -12,11 +12,11 @@ section is a contract, not a suggestion. Human-oriented narrative lives in
 | --- | --- |
 | Distribution | `korodexios-core` |
 | Import root | `korodexios_core` |
-| Console scripts | `kdx` (primary), `korodexios` (canonical), `korodex` (legacy) |
-| Version | `0.1.0` (production), core API frozen at `v1` (additive changes only inside v1) |
+| Console scripts | `kdx` (primary short alias), `korodexios` (canonical) |
+| Version | `0.1.0` (production), core API frozen at `v2` (additive changes only inside v2) |
 | Runtime | CPython 3.11+, stdlib first (PyYAML for config, rich for the CLI surface) |
-| Config file | `kdx.yml` / `kdx.yaml` / `kdx.json` (then `korodexios.*`, then legacy `korodex.*`) |
-| Env prefix | `KDX_` primary; `KORODEXIOS_` and legacy `KORODEX_` also read |
+| Config file | `kdx.yml` / `kdx.yaml` / `kdx.json` (then `korodexios.*`) |
+| Env prefix | `KDX_` primary; `KORODEXIOS_` is the canonical long prefix |
 | Layout | `kernel/` infrastructure, `modules/` pure discovery root, `cli/` thin clients |
 | State dir | `var/` (logs, `chassis.ipc`); never committed |
 | Public surface | the package root `__all__`; anything deeper is importable but internal |
@@ -30,7 +30,7 @@ section is a contract, not a suggestion. Human-oriented narrative lives in
    branch exists, it runs - and a test runs it.
 3. **Stdlib first.** A new dependency needs a paragraph of justification, not a line.
 4. **Precedence is sacred.** CLI > environment (`KDX_*`, then `KORODEXIOS_*`, then
-   legacy `KORODEX_*`) > `kdx.local.yml` > `kdx.yml` > built-in defaults. Read
+   `KORODEXIOS_*) > `kdx.local.yml` > `kdx.yml` > built-in defaults. Read
    configuration through `LayeredConfig` / `ScopedConfig`, never `os.environ`.
 5. **Diagnostics to stderr, UI to stdout.** Modules never write to stdout; the CLI
    owns stdout. Log records, warnings, and tracebacks go to stderr.
@@ -161,7 +161,7 @@ class MetricsModule(Module):
         super().start()
         self._stop.clear()
         self._worker = threading.Thread(
-            target=self._sample_loop, name="korodex-metrics", daemon=True
+            target=self._sample_loop, name="kdx-metrics", daemon=True
         )
         self._worker.start()
         self.logger.info(
@@ -325,13 +325,13 @@ returns a process exit code; `0` means success.
   documented and menu-driven.
 - Never construct an `ArgumentParser` inside a module.
 
-## 8. Module Manifest Reference - `korodex_module.toml`
+## 8. Module Manifest Reference - `kdx_module.toml`
 
 Optional metadata file inside the module directory. Discovery reads the `[module]`
 table and passes `[metadata]` through untouched.
 
 ```toml
-# korodex_module.toml - read by korodexios_core.kernel.discovery
+# kdx_module.toml - read by korodexios_core.kernel.discovery
 [module]
 name = "metrics"              # must equal the directory name; ^[a-z][a-z0-9_]*$
 description = "Samples a counter on a timer."   # shown by 'kdx modules list'
@@ -371,19 +371,19 @@ Five layers, lowest to highest: **defaults -> `kdx.yml` -> `kdx.local.yml` ->
 environment (`.env` then process env) -> CLI overrides**.
 
 - Candidate order at the root: `kdx.yml`, `kdx.yaml`, `kdx.json`, then
-  `korodexios.yml`, `korodexios.yaml`, `korodexios.json`, then legacy `korodex.yml`,
-  `korodex.yaml`, `korodex.json`. The first hit wins; the rest are ignored.
+  `korodexios.yml`, `korodexios.yaml`, `korodexios.json`.
+  The first hit wins; the rest are ignored.
 - Local override candidates: `kdx.local.yml`, `kdx.local.yaml`, `kdx.local.json`,
-  `korodexios.local.*`, `korodex.local.*`. Gitignored by the seed template.
+  `korodexios.local.*`. Gitignored by the seed template.
 - Environment mapping: strip the prefix, split nesting on `__`, lower-case, map `-`
-  to `_`. Prefixes are consulted in order `KDX`, `KORODEXIOS`, `KORODEX`; the first
+  to `_`. Prefixes are consulted in order `KDX`, `KORODEXIOS`; the first
   match wins. A custom `core.env.prefix` (e.g. `MYAPP`) means exactly `MYAPP_` with
   no implicit aliases.
 - Root discovery walks upward from the current directory looking for
-  `pyproject.toml` with a `[project]` table, `pyproject.toml`, `korodex_module.toml`,
-  or any config candidate; `.kdx-root` or `.korodex-root` stops the walk explicitly.
+  `pyproject.toml` with a `[project]` table, `pyproject.toml`, `kdx_module.toml`,
+  or any config candidate; `.kdx-root` or `.korodexios-root` stops the walk explicitly.
 - Environment overrides: `KDX_HOME`, `KDX_CONFIG`, `KDX_ENV_FILE`, `KDX_TRACEBACK`
-  (and the `KORODEXIOS_` / `KORODEX_` spellings).
+  (and the `KORODEXIOS_` spelling).
 - Secrets: never read `os.environ` in a module; a value that came from the
   environment must be visible in `kdx config show` provenance.
 
@@ -412,6 +412,7 @@ dependency order -> lifecycle loop -> `stop()` in reverse -> close logging.
 | Route | Method | Needs token |
 | --- | --- | --- |
 | `/health` | GET | never |
+| `/api/v1/schema` | GET | never |
 | `/api/v1/status` | GET | when `core.ipc.auth` is on |
 | `/api/v1/shutdown` | POST | when auth is on, or when anonymous shutdown is disallowed |
 
@@ -448,7 +449,7 @@ kdx status        # live report from a running daemon over the control plane
 ## 13. Agent Do / Don't
 
 - **Do** keep `kernel/` free of product knowledge; put new behaviour in a module.
-- **Do** raise `KorodexError` subclasses with a `hint=` - the CLI prints it.
+- **Do** raise `KorodexiosError` subclasses with a `hint=` - the CLI prints it.
 - **Do** make every command safe for non-TTY runs (`--yes`, no prompts, no menus).
 - **Do** add a test with every change; tests use no network and no sleeps longer than
   one lifecycle tick.
@@ -456,12 +457,12 @@ kdx status        # live report from a running daemon over the control plane
 - **Don't** write to stdout from a module or from library code.
 - **Don't** spawn a thread without a `stop()` path that joins it.
 - **Don't** add a dependency without a paragraph of justification.
-- **Don't** rename public API names: the core API is frozen at `v1`.
+- **Don't** rename public API names: the core API is frozen at `v2`.
 - **Don't** commit `var/`, `.env`, or `kdx.local.yml`.
 
 ## 14. Error Taxonomy
 
-`KorodexError` is the base; every subclass carries an optional operator `hint`.
+`KorodexiosError` is the base; every subclass carries an optional operator `hint`.
 
 | Exception | Raised by | Typical cause |
 | --- | --- | --- |
@@ -480,7 +481,7 @@ kdx status        # live report from a running daemon over the control plane
 ## 15. Recipes
 
 - **Add a module**: create `src/<pkg>/modules/<name>/` with `__init__.py`,
-  `module.py` (blueprint shape, `MODULE` at the bottom), and `korodex_module.toml`;
+  `module.py` (blueprint shape, `MODULE` at the bottom), and `kdx_module.toml`;
   run `kdx modules list`, then `kdx <name> status`.
 - **Add a config key**: put the default in `CORE_DEFAULTS`, document it in the config
   file, and read it with a typed getter - never a bare string compare.

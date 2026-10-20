@@ -6,10 +6,10 @@ module discovery, and signal-safe shutdown. User interfaces (CLI, TUI, REST) are
 clients that talk to the same core and never reimplement it.
 
 - **Package:** `korodexios-core` (import name `korodexios_core`)
-- **Console scripts:** `kdx` (primary), `korodexios` (canonical), `korodex` (legacy)
+- **Console scripts:** `kdx` (primary short alias), `korodexios` (canonical)
 - **Python:** 3.11+ (developed on 3.13), `uv`-first, `venv` + `pip` compatible
 - **Dependencies:** `pyyaml` (config files), `rich` (the wizard layer)
-- **Release:** `v0.1.0`, core API frozen at `v1`
+- **Release:** `v0.1.0`, core API frozen at `v2`
 
 ---
 
@@ -21,6 +21,7 @@ clients that talk to the same core and never reimplement it.
 | [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) | humans, operators | every command, flag, exit code, install path, LAN and auth option |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | humans, engineers | microkernel design, config flow, event bus, IPC, signals, API freeze |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | everyone | the phase history and what ships next |
+| [CHANGELOG.md](CHANGELOG.md) | humans, operators | notable changes per release, newest first |
 | [docs/AGENTS_GUIDE.md](docs/AGENTS_GUIDE.md) | AI agents, LLMs | contract-first reference: golden rules, module blueprint, manifest spec, verification loop |
 | [llms.txt](llms.txt) | AI agents, LLMs | byte-identical mirror of the agent guide, sized for a context window |
 | [AGENTS.md](AGENTS.md) | both | the working agreement: commands, layout, rules, the verification bar |
@@ -39,7 +40,7 @@ uv venv --python 3.13            # or: python3 -m venv .venv
 uv pip install -e ".[dev]"       # or:   pip install -e ".[dev]"
 source .venv/bin/activate
 
-kdx --version                    # byte-identical from korodexios and korodex too
+kdx --version                    # byte-identical from korodexios too
 kdx doctor                       # environment, config provenance, modules (--json for CI)
 kdx status                       # query the running daemon over its control plane
 kdx logs -n 50                   # tail the rotating log file (no POSIX tail needed)
@@ -64,8 +65,8 @@ non-TTY stdin and forces `core.cli.interactive=false`. Development shortcuts:
 ## What the chassis guarantees
 
 - **Precedence is sacred.** `CLI > env > kdx.local.yml > kdx.yml > defaults`. The env
-  layer maps `KDX_CORE__IPC__PORT` to `core.ipc.port`; `KORODEXIOS_` and the legacy
-  `KORODEX_` prefixes are understood too. `kdx config show` names the layer of every
+  layer maps `KDX_CORE__IPC__PORT` to `core.ipc.port`; the canonical
+  `KORODEXIOS_` prefix is understood too. `kdx config show` names the layer of every
   key, and `kdx config check` fails CI on a key nothing reads.
 - **Clean shutdown.** `SIGINT` exits `130`, `SIGTERM` exits `143`, an operator stop
   (including `POST /api/v1/shutdown`) exits `0`; `SIGBREAK` on Windows joins the same
@@ -104,9 +105,10 @@ tests/       # pytest; no network, no sleeps longer than one lifecycle tick
 ## Control plane
 
 `kdx run` binds `127.0.0.1:8123` by default and writes `var/chassis.ipc` (mode `0600`)
-with `pid`, `port`, `host`, and `token`. Three endpoints answer: `GET /health`,
-`GET /api/v1/status`, and `POST /api/v1/shutdown`; reads require the token
-(`X-Korodex-Token`) unless `core.ipc.auth: false`. Set `core.ipc.host: 0.0.0.0` to serve
+with `pid`, `port`, `host`, and `token`. Four endpoints answer: `GET /health`,
+`GET /api/v1/schema` (the machine-readable contract), `GET /api/v1/status`, and
+`POST /api/v1/shutdown`; status reads require the token (`X-Kdx-Token`) unless
+`core.ipc.auth: false`. Set `core.ipc.host: 0.0.0.0` to serve
 the LAN, and `kdx status --target host:port` to query a remote chassis.
 
 ## Seeding a project

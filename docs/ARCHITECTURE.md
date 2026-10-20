@@ -58,11 +58,11 @@ Shutdown reverses step 9, then closes logging. `stop()` runs even after a failed
 ```text
   defaults            CORE_DEFAULTS, flat dotted keys
       v
-  config file         kdx.yml | korodexios.yml | korodex.yml   (first candidate wins)
+  config file         kdx.yml | korodexios.yml        (first candidate wins)
       v
   local override      kdx.local.yml                            (gitignored, machine-local)
       v
-  environment         .env, then process env  (KDX_ > KORODEXIOS_ > KORODEX_)
+  environment         .env, then process env  (KDX_ > KORODEXIOS_)
       v
   CLI overrides       --log-level, --ipc-host, --ipc-port, --auth ...
       v
@@ -100,6 +100,7 @@ cannot order.
 | Route | Purpose |
 | --- | --- |
 | `GET /health` | liveness; never needs a token |
+| `GET /api/v1/schema` | machine-readable contract: routes, auth flags, response fields |
 | `GET /api/v1/status` | full chassis report: state, uptime, ticks, modules, health |
 | `POST /api/v1/shutdown` | operator stop; the process exits 0 |
 
@@ -109,12 +110,13 @@ cannot order.
 - **Discovery** - `var/chassis.ipc` (mode `0600`) records `pid`, `host`, `port`,
   `token`, `started_at`. Clients read it, then talk HTTP.
 - **Auth** - `core.ipc.auth` (default `true`) requires the shared token on
-  `/api/v1/status`; `/health` stays open for load balancers.
+  `/api/v1/status`; `/health` and `/api/v1/schema` stay open (liveness and static
+  metadata).
   `core.ipc.allow_anonymous_shutdown` (default `false`) decides whether an
   unauthenticated client may stop the daemon.
 - **Token** - `core.ipc.token` is the shared secret. Empty means the chassis mints an
   ephemeral token at boot; a static value survives restarts and is what a remote
-  `kdx status --target` should present. The header is `X-Korodex-Token`.
+  `kdx status --target` should present. The header is `X-Kdx-Token`.
 - **Client** - `IpcDiscovery.load(path)` for the local file,
   `IpcDiscovery.remote("http://host:port")` for anything else.
 
@@ -166,7 +168,7 @@ of raising, so one bad module never costs the chassis the rest.
 
 ## 9. Public API and versioning
 
-The package root `__all__` is the frozen public surface (core API `v1`): the module
+The package root `__all__` is the frozen public surface (core API `v2`): the module
 contract, the declarative CLI contract, layered configuration, the event bus, chassis
 lifecycle, paths, logging, exceptions, and the control plane. Additive changes are
 allowed inside `v1`; anything that breaks an import or a signature moves the major
@@ -177,7 +179,7 @@ The freeze policy is mechanical:
 
 | Change | Effect |
 | --- | --- |
-| New export, new optional keyword, new command | additive: `v1` keeps going |
+| New export, new optional keyword, new command | additive: `v2` keeps going |
 | Renamed or removed export, changed signature | breaking: the major version moves |
 | `korodexios_core.CORE_API_VERSION` | the string a module can assert against |
 

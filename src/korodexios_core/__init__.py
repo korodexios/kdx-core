@@ -17,7 +17,7 @@ from .exceptions import (
     ConfigFileError,
     ConfigurationError,
     ConfigValueError,
-    KorodexError,
+    KorodexiosError,
     ModuleContractError,
     ModuleDiscoveryError,
     ModuleLifecycleError,
@@ -42,7 +42,7 @@ from .kernel.contract import (
 )
 from .kernel.ipc import IpcDiscovery, IpcError, IpcOptions, IpcServer
 from .kernel.registry import ModuleRegistry
-from .logging import KorodexLogger, LoggerFactory, build_logger
+from .logging import KorodexiosLogger, LoggerFactory, build_logger
 from .paths import AppPaths
 from .version import CORE_API_VERSION, __version__
 
@@ -75,8 +75,8 @@ __all__ = [
     "IpcError",
     "IpcOptions",
     "IpcServer",
-    "KorodexError",
-    "KorodexLogger",
+    "KorodexiosError",
+    "KorodexiosLogger",
     "LayeredConfig",
     "LoggerFactory",
     "Module",

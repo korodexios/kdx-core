@@ -183,9 +183,9 @@ jobs:
               "korodexios_core/py.typed",
               "korodexios_core/kernel/ipc.py",
               "korodexios_core/cli/init_project.py",
-              "korodexios_core/modules/heartbeat/korodex_module.toml",
-              "korodexios_core/modules/system_info/korodex_module.toml",
-              "korodexios_core/modules/backup_engine/korodex_module.toml",
+              "korodexios_core/modules/heartbeat/kdx_module.toml",
+              "korodexios_core/modules/system_info/kdx_module.toml",
+              "korodexios_core/modules/backup_engine/kdx_module.toml",
           }
           missing = sorted(required - names)
           if missing:
@@ -205,14 +205,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          uv venv /tmp/korodex-audit --python 3.13
-          uv pip install --python /tmp/korodex-audit/bin/python "$(ls dist/*.whl | head -1)"
-          /tmp/korodex-audit/bin/kdx --version --no-log-file
-          rm -rf /tmp/korodex-audit-seed
-          /tmp/korodex-audit/bin/kdx init audit_probe --path /tmp/korodex-audit-seed --yes --no-log-file
-          test -f /tmp/korodex-audit-seed/pyproject.toml
-          test -f /tmp/korodex-audit-seed/docs/AGENTS_GUIDE.md
-          /tmp/korodex-audit/bin/kdx --home /tmp/korodex-audit-seed modules list --no-log-file
+          uv venv /tmp/kdx-audit --python 3.13
+          uv pip install --python /tmp/kdx-audit/bin/python "$(ls dist/*.whl | head -1)"
+          /tmp/kdx-audit/bin/kdx --version --no-log-file
+          rm -rf /tmp/kdx-audit-seed
+          /tmp/kdx-audit/bin/kdx init audit_probe --path /tmp/kdx-audit-seed --yes --no-log-file
+          test -f /tmp/kdx-audit-seed/pyproject.toml
+          test -f /tmp/kdx-audit-seed/docs/AGENTS_GUIDE.md
+          /tmp/kdx-audit/bin/kdx --home /tmp/kdx-audit-seed modules list --no-log-file
 
   release:
     name: release artifacts

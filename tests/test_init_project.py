@@ -1,4 +1,4 @@
-"""Project templating tests: 'korodex init' writes a runnable repository."""
+"""Project templating tests: 'kdx init' writes a runnable repository."""
 
 from __future__ import annotations
 
@@ -47,12 +47,12 @@ def test_project_from_inputs_normalises_the_identity() -> None:
 def test_project_names_are_validated_politely() -> None:
     assert validate_project_name("my_service").ok
     assert str(validate_project_name("My-Service").value) == "my_service"
-    for bad in ("", "9lives", "korodex", "korodexios_core", "has space"):
+    for bad in ("", "9lives", "kdx", "korodexios_core", "has space"):
         assert not validate_project_name(bad).ok, bad
     with pytest.raises(ProjectError, match="project name is required"):
         project_from_inputs("")
     with pytest.raises(ProjectError, match="collides with the chassis"):
-        project_from_inputs("korodex")
+        project_from_inputs("kdx")
     with pytest.raises(ProjectError, match="unknown ecosystem"):
         project_from_inputs("demo_app", ecosystem="cobol")
 
@@ -130,7 +130,7 @@ def test_fullstack_variant_adds_a_web_client(tmp_path: Path) -> None:
     ):
         assert (result.root / relative).is_file(), relative
     script = (result.root / "web/src/main.js").read_text(encoding="utf-8")
-    assert "X-Korodex-Token" in script
+    assert "X-Kdx-Token" in script
     assert "api/v1/status" in script
     skills = sorted((result.root / ".agents/skills").glob("*.md"))
     assert [skill.name for skill in skills] == [
@@ -194,7 +194,7 @@ def test_init_command_rejects_a_bad_name_without_prompting(capsys, tmp_path: Pat
     assert main(args) == int(ExitCode.ERROR)
     captured = capsys.readouterr()
     assert "is not a usable project name" in captured.out
-    assert "korodex init my_service" in captured.out
+    assert "kdx init my_service" in captured.out
 
 
 def test_init_command_is_offered_by_the_wizard(project_root) -> None:

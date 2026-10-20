@@ -1,4 +1,4 @@
-"""IPC control plane tests: endpoints, token gate, discovery file, and 'korodex status'."""
+"""IPC control plane tests: endpoints, token gate, discovery file, and 'kdx status'."""
 
 from __future__ import annotations
 
@@ -11,11 +11,13 @@ from pathlib import Path
 import pytest
 
 from korodexios_core.cli.entry import main
-from korodexios_core.constants import ExitCode
+from korodexios_core.constants import IPC_SCHEMA_VERSION, ExitCode
 from korodexios_core.kernel.chassis import Chassis, ChassisOptions, ChassisState
 from korodexios_core.kernel.ipc import (
     DISCOVERY_NAME,
     HEALTH_PATH,
+    ROUTES,
+    SCHEMA_PATH,
     SHUTDOWN_PATH,
     STATUS_PATH,
     TOKEN_HEADER,
@@ -24,6 +26,7 @@ from korodexios_core.kernel.ipc import (
     process_memory,
 )
 from korodexios_core.paths import AppPaths
+from korodexios_core.version import CORE_API_VERSION
 
 from .test_chassis import build_chassis
 
@@ -109,6 +112,25 @@ def test_status_requires_the_shared_token(tmp_path: Path) -> None:
         assert code == 200
         assert payload["modules"]["total"] == 1  # type: ignore[index]
         assert payload["ipc"]["running"] is True  # type: ignore[index]
+    finally:
+        server.stop()
+
+
+def test_schema_is_open_and_matches_the_live_routes(tmp_path: Path) -> None:
+    server, _ = make_server(tmp_path)
+    base = server.discovery.base_url()  # type: ignore[union-attr]
+    try:
+        code, payload = http_call(base, SCHEMA_PATH)  # static metadata needs no token
+        assert code == 200
+        assert payload["schema"] == IPC_SCHEMA_VERSION
+        assert payload["core_api"] == CORE_API_VERSION
+        assert payload["token_header"] == TOKEN_HEADER
+        routes = {route["path"]: route for route in payload["routes"]}  # type: ignore[index]
+        assert sorted(routes) == sorted(ROUTES)
+        assert routes[HEALTH_PATH]["auth"] is False
+        assert routes[STATUS_PATH]["auth"] is True
+        assert "app" in routes[STATUS_PATH]["fields"]  # type: ignore[operator]
+        assert http_call(base, SCHEMA_PATH, method="POST")[0] == 405
     finally:
         server.stop()
 

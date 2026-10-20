@@ -11,10 +11,10 @@ Touching `pyproject.toml`, packaging, module discovery, or the runtime layout.
 2. New package data goes in `[tool.hatch.build.targets.wheel].artifacts` and must be
    verified inside the built wheel, not just on disk.
 3. Built-in modules live in `src/korodexios_core/modules/<name>/` with a
-   `korodex_module.toml` manifest; that directory stays a pure discovery root.
+   `kdx_module.toml` manifest; that directory stays a pure discovery root.
 4. Runtime state belongs under `var/` (`log/`, `lib/`, `chassis.ipc`): out of git,
    out of the source tree.
 5. Build and audit before releasing: `uv build`, then inspect wheel and sdist.
 
 ## Verification
-`make check` plus a wheel audit: `py.typed` and every `korodex_module.toml` present.
+`make check` plus a wheel audit: `py.typed` and every `kdx_module.toml` present.

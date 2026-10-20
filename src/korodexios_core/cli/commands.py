@@ -517,14 +517,14 @@ def _logs_command(request: CliRequest) -> int:
 
     chassis = _chassis(request)
     ux = UserExperience(chassis.config)
-    log_path = Path(chassis.paths.log_dir) / chassis.config.get_str("core.log.file", "korodex.log")
+    log_path = Path(chassis.paths.log_dir) / chassis.config.get_str("core.log.file", "kdx.log")
     raw = bool(request.flag("raw"))
     follow = bool(request.flag("follow"))
     lines_value = request.option("lines")
     count = int(str(lines_value)) if lines_value is not None else DEFAULT_TAIL_LINES
     if count < 1:
         write_line(f"{TAG_ERROR} --lines must be at least 1, got {count}")
-        write_line(f"{TAG_NOTE} korodex logs -n 200")
+        write_line(f"{TAG_NOTE} kdx logs -n 200")
         return int(ExitCode.ERROR)
     timeout_value = request.option("timeout")
     timeout = float(str(timeout_value)) if timeout_value is not None else None
@@ -538,7 +538,7 @@ def _logs_command(request: CliRequest) -> int:
 
     if request.flag("rotate") and request.flag("clear"):
         write_line(f"{TAG_ERROR} --rotate and --clear are mutually exclusive")
-        note("korodex logs --rotate archives the file; --clear empties it")
+        note("kdx logs --rotate archives the file; --clear empties it")
         return int(ExitCode.USAGE_ERROR)
 
     if not log_path.is_file():
@@ -707,7 +707,7 @@ def _status_command(request: CliRequest) -> int:
                 f"{TAG_NOTE} pass --token TOKEN, or set core.ipc.token / KDX_CORE__IPC__TOKEN"
             )
         else:
-            write_line(f"{TAG_NOTE} start 'korodex run' again so {discovery_path} is refreshed")
+            write_line(f"{TAG_NOTE} start 'kdx run' again so {discovery_path} is refreshed")
         return int(ExitCode.ERROR)
     if code != 200 or not isinstance(payload, dict):
         write_line(f"{TAG_ERROR} the daemon answered HTTP {code}")
@@ -824,7 +824,7 @@ def _modules_create_command(request: CliRequest) -> int:
             f"{TAG_NOTE} discovery needs {result.directory.parent} in core.modules.extra_paths "
             "or passed as --modules-dir"
         )
-    write_line(f"{TAG_NOTE} next: korodex modules list")
+    write_line(f"{TAG_NOTE} next: kdx modules list")
     return int(ExitCode.SUCCESS)
 
 

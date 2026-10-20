@@ -44,29 +44,29 @@ def write(path: Path, text: str) -> Path:
 
 
 def test_candidate_order_leads_with_the_project_names() -> None:
-    """kdx.* first, korodexios.* next, korodex.* retained as the legacy fallback."""
+    """kdx.* first, korodexios.* second; no other aliases are candidates."""
     assert CONFIG_CANDIDATES[:3] == ("kdx.yml", "kdx.yaml", "kdx.json")
     assert CONFIG_CANDIDATES[3:6] == (
         "korodexios.yml",
         "korodexios.yaml",
         "korodexios.json",
     )
-    assert CONFIG_CANDIDATES[6:] == ("korodex.yml", "korodex.yaml", "korodex.json")
+    assert len(CONFIG_CANDIDATES) == 6
     assert LOCAL_CONFIG_CANDIDATES[0] == "kdx.local.yml"
     assert "korodexios.local.yml" in LOCAL_CONFIG_CANDIDATES
-    assert "korodex.local.yml" in LOCAL_CONFIG_CANDIDATES
+    assert len(LOCAL_CONFIG_CANDIDATES) == 6
     assert ".kdx-root" in ROOT_MARKER_FILES
     assert "kdx.yml" in ROOT_MARKER_FILES
 
 
 def test_environment_prefix_defaults_to_the_short_alias() -> None:
-    """KDX_ is primary; KORODEXIOS_ and the legacy KORODEX_ stay understood."""
+    """KDX_ is primary; KORODEXIOS_ is the canonical long prefix."""
     assert ENV_PREFIX == "KDX"
-    assert ENV_PREFIX_ALIASES == ("KDX", "KORODEXIOS", "KORODEX")
+    assert ENV_PREFIX_ALIASES == ("KDX", "KORODEXIOS")
     assert CORE_DEFAULTS["core.env.prefix"] == "KDX"
     assert normalize_env_key("KDX_CORE__LOG__LEVEL") == "core.log.level"
     assert normalize_env_key("KORODEXIOS_CORE__LOG__LEVEL") == "core.log.level"
-    assert normalize_env_key("KORODEX_CORE__LOG__LEVEL") == "core.log.level"
+    assert normalize_env_key("KORODEX_CORE__LOG__LEVEL") is None
     assert normalize_env_key("KDX_") is None
     assert normalize_env_key("PATH") is None
 
@@ -79,12 +79,12 @@ def test_a_private_prefix_does_not_inherit_the_aliases() -> None:
     assert env_prefixes(None) == ENV_PREFIX_ALIASES
 
 
-def test_primary_prefix_wins_over_the_legacy_one() -> None:
+def test_primary_prefix_wins_over_the_canonical_one() -> None:
     values = load_environment(
         {
-            "KORODEX_CORE__IPC__HOST": "127.0.0.1",
+            "KORODEXIOS_CORE__IPC__HOST": "127.0.0.1",
             "KDX_CORE__IPC__HOST": "0.0.0.0",
-            "KORODEX_CORE__IPC__PORT": "8123",
+            "KORODEXIOS_CORE__IPC__PORT": "8123",
         }
     )
     assert values["core.ipc.host"] == "0.0.0.0"
@@ -101,9 +101,9 @@ def test_chassis_discovers_kdx_yml(tmp_path: Path) -> None:
     assert config.source_of("core.name") is ConfigSource.FILE
 
 
-def test_kdx_yml_wins_over_the_legacy_korodex_yml(tmp_path: Path) -> None:
+def test_kdx_yml_wins_over_korodexios_yml(tmp_path: Path) -> None:
     write(tmp_path / "kdx.yml", PRIMARY_YAML)
-    write(tmp_path / "korodex.yml", LEGACY_YAML)
+    write(tmp_path / "korodexios.yml", LEGACY_YAML)
     paths = AppPaths.discover(root=str(tmp_path), environ={})
     assert paths.config_file is not None
     assert paths.config_file.name == "kdx.yml"
@@ -111,7 +111,7 @@ def test_kdx_yml_wins_over_the_legacy_korodex_yml(tmp_path: Path) -> None:
 
 def test_korodexios_yml_is_the_canonical_candidate(tmp_path: Path) -> None:
     write(tmp_path / "korodexios.yml", LEGACY_YAML)
-    write(tmp_path / "korodex.yml", PRIMARY_YAML)
+    write(tmp_path / "korodex.yml", PRIMARY_YAML)  # inert: not a candidate
     paths = AppPaths.discover(root=str(tmp_path), environ={})
     assert paths.config_file is not None
     assert paths.config_file.name == "korodexios.yml"

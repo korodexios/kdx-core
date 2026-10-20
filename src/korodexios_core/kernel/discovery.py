@@ -113,7 +113,7 @@ class DiscoveryFailure:
     origin: str = ""
 
     def describe(self) -> str:
-        """Return the one-line rendering used by 'korodex modules list'."""
+        """Return the one-line rendering used by 'kdx modules list'."""
         where = f" ({self.origin})" if self.origin else ""
         return f"{self.name} [{self.stage}]{where}: {self.message}"
 

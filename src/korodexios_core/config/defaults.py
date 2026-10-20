@@ -11,7 +11,7 @@ CORE_DEFAULTS: Final[dict[str, Any]] = {
     "core.home": None,
     "core.log.level": "INFO",
     "core.log.dir": "var/log",
-    "core.log.file": "korodex.log",
+    "core.log.file": "kdx.log",
     "core.log.file_enabled": True,
     "core.log.json": False,
     "core.log.color": True,

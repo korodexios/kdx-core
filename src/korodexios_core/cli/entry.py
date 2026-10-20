@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ..constants import TAG_ERROR, TAG_NOTE, TRACEBACK_ENV_VAR, ExitCode
-from ..exceptions import KorodexError
+from ..exceptions import KorodexiosError
 from ..kernel.chassis import Chassis, ChassisOptions, stdin_is_tty
 from ..kernel.cli_contract import CliRequest
 from ..version import format_version
@@ -20,8 +20,8 @@ from .render import write_line
 from .surface import HANDLER_ATTR, ArgparseSurface
 
 LOG_LEVEL_CHOICES = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
-PROG_ALIASES = ("kdx", "korodexios", "korodex", "korodexios-core")
-DEFAULT_PROG = "korodex"
+PROG_ALIASES = ("kdx", "korodexios", "korodexios-core")
+DEFAULT_PROG = "kdx"
 
 
 def console_prog() -> str:
@@ -61,7 +61,7 @@ def build_root_parser(flags: argparse.ArgumentParser | None = None) -> argparse.
         prog=console_prog(),
         description="korodexios-core chassis console: headless core, thin clients.",
         epilog=(
-            "aliases: kdx (short), korodexios (canonical), korodex (compatibility).\n"
+            "aliases: kdx (short), korodexios (canonical).\n"
             "Every command accepts the global flags above. Use --yes in CI to accept defaults."
         ),
         add_help=True,
@@ -87,7 +87,7 @@ def _add_global_flags(parser: argparse.ArgumentParser) -> None:
         "--config",
         metavar="FILE",
         default=argparse.SUPPRESS,
-        help="Path to kdx.yml, korodexios.yml, or korodex.yml.",
+        help="Path to kdx.yml or korodexios.yml.",
     )
     group.add_argument(
         "--env-file",
@@ -153,6 +153,105 @@ def _add_global_flags(parser: argparse.ArgumentParser) -> None:
         help="Static shared secret for the control plane.",
     )
     group.add_argument(
+        "--ipc-timeout",
+        metavar="SECONDS",
+        type=float,
+        default=argparse.SUPPRESS,
+        help="Client timeout for control-plane reads [2.0].",
+    )
+    group.add_argument(
+        "--no-ipc",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Do not open the control plane in 'kdx run'.",
+    )
+    group.add_argument(
+        "--allow-anonymous-shutdown",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Let unauthenticated clients POST /api/v1/shutdown.",
+    )
+    group.add_argument(
+        "--tick-interval",
+        metavar="SECONDS",
+        type=float,
+        default=argparse.SUPPRESS,
+        help="Lifecycle tick interval [1.0].",
+    )
+    group.add_argument(
+        "--stop-timeout",
+        metavar="SECONDS",
+        type=float,
+        default=argparse.SUPPRESS,
+        help="Budget for module stop() hooks [5.0].",
+    )
+    group.add_argument(
+        "--logs-poll-interval",
+        metavar="SECONDS",
+        type=float,
+        default=argparse.SUPPRESS,
+        help="Follow poll interval for 'kdx logs' [0.5].",
+    )
+    group.add_argument(
+        "--log-max-bytes",
+        metavar="BYTES",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="Rotating log size limit [1048576].",
+    )
+    group.add_argument(
+        "--log-backup-count",
+        metavar="COUNT",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="Rotating log archives kept [5].",
+    )
+    group.add_argument(
+        "--cli-width",
+        metavar="COLUMNS",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="Terminal table width for the CLI [100].",
+    )
+    group.add_argument(
+        "--confirmations",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Ask before destructive module actions.",
+    )
+    group.add_argument(
+        "--no-confirmations",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Skip destructive confirmations.",
+    )
+    group.add_argument(
+        "--no-autodiscover",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Disable module auto-discovery for this run.",
+    )
+    group.add_argument(
+        "--enable-module",
+        metavar="NAME",
+        action="append",
+        default=argparse.SUPPRESS,
+        help="Force-enable one module (repeatable).",
+    )
+    group.add_argument(
+        "--disable-module",
+        metavar="NAME",
+        action="append",
+        default=argparse.SUPPRESS,
+        help="Force-disable one module (repeatable).",
+    )
+    group.add_argument(
+        "--name",
+        metavar="NAME",
+        default=argparse.SUPPRESS,
+        help="Chassis display name (banner, doctor).",
+    )
+    group.add_argument(
         "--no-color",
         action="store_true",
         default=argparse.SUPPRESS,
@@ -211,6 +310,46 @@ def _cli_overrides(namespace: argparse.Namespace) -> dict[str, Any]:
     ipc_token = getattr(namespace, "ipc_token", None)
     if ipc_token:
         overrides["core.ipc.token"] = str(ipc_token)
+    ipc_timeout = getattr(namespace, "ipc_timeout", None)
+    if ipc_timeout is not None:
+        overrides["core.ipc.timeout"] = float(ipc_timeout)
+    if getattr(namespace, "no_ipc", False):
+        overrides["core.ipc.enabled"] = False
+    if getattr(namespace, "allow_anonymous_shutdown", False):
+        overrides["core.ipc.allow_anonymous_shutdown"] = True
+    tick_interval = getattr(namespace, "tick_interval", None)
+    if tick_interval is not None:
+        overrides["core.lifecycle.tick_interval"] = float(tick_interval)
+    stop_timeout = getattr(namespace, "stop_timeout", None)
+    if stop_timeout is not None:
+        overrides["core.lifecycle.stop_timeout"] = float(stop_timeout)
+    logs_poll = getattr(namespace, "logs_poll_interval", None)
+    if logs_poll is not None:
+        overrides["core.logs.poll_interval"] = float(logs_poll)
+    log_max_bytes = getattr(namespace, "log_max_bytes", None)
+    if log_max_bytes is not None:
+        overrides["core.log.max_bytes"] = int(log_max_bytes)
+    log_backup_count = getattr(namespace, "log_backup_count", None)
+    if log_backup_count is not None:
+        overrides["core.log.backup_count"] = int(log_backup_count)
+    cli_width = getattr(namespace, "cli_width", None)
+    if cli_width is not None:
+        overrides["core.cli.width"] = int(cli_width)
+    if getattr(namespace, "confirmations", False):
+        overrides["core.cli.confirmations"] = True
+    if getattr(namespace, "no_confirmations", False):
+        overrides["core.cli.confirmations"] = False
+    if getattr(namespace, "no_autodiscover", False):
+        overrides["core.modules.autodiscover"] = False
+    enabled_modules = getattr(namespace, "enable_module", None)
+    if enabled_modules:
+        overrides["core.modules.enabled"] = list(enabled_modules)
+    disabled_modules = getattr(namespace, "disable_module", None)
+    if disabled_modules:
+        overrides["core.modules.disabled"] = list(disabled_modules)
+    chassis_name = getattr(namespace, "name", None)
+    if chassis_name:
+        overrides["core.name"] = str(chassis_name)
     if getattr(namespace, "home", None):
         overrides["core.home"] = str(Path(str(namespace.home)).expanduser().resolve())
     return overrides
@@ -233,7 +372,7 @@ def _options(namespace: argparse.Namespace) -> ChassisOptions:
     )
 
 
-def _render_error(exc: KorodexError, *, verbose: bool) -> None:
+def _render_error(exc: KorodexiosError, *, verbose: bool) -> None:
     print(exc.render(), file=sys.stderr)
     if verbose or os.environ.get(TRACEBACK_ENV_VAR, "").strip():
         print("".join(traceback.format_exception(exc)).rstrip(), file=sys.stderr)
@@ -257,7 +396,7 @@ def _system_exit_code(request: SystemExit) -> int:
 
 
 def _launch_wizard(context: Any, surface: Any) -> int:
-    """Open the interactive wizard when 'korodex' runs bare in a terminal."""
+    """Open the interactive wizard when 'kdx' runs bare in a terminal."""
     from .ux import UserExperience
     from .wizard import RootWizard
 
@@ -319,7 +458,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             options={"chassis": chassis, "surface": surface},
         )
         return int(handler(request))
-    except KorodexError as exc:
+    except KorodexiosError as exc:
         _render_error(exc, verbose=bool(getattr(pre_args, "verbose", False)))
         return int(exc.exit_code)
     except KeyboardInterrupt:

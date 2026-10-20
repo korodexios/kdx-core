@@ -170,7 +170,7 @@ class BackupEngineModule(Module):
         return result
 
     def health(self) -> dict[str, Any]:
-        """Return module counters for 'korodex modules show'."""
+        """Return module counters for 'kdx modules show'."""
         base = super().health()
         base.update(
             {

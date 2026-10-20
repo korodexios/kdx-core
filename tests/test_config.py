@@ -41,15 +41,16 @@ def test_flatten_round_trip() -> None:
 
 
 def test_normalize_env_key_rules() -> None:
-    assert normalize_env_key("KORODEX_CORE__LOG__LEVEL") == "core.log.level"
-    assert normalize_env_key("KORODEX_CORE__LOG__FILE_ENABLED") == "core.log.file_enabled"
-    assert normalize_env_key("KORODEX_MODULES__HEARTBEAT__INTERVAL") == "modules.heartbeat.interval"
+    assert normalize_env_key("KORODEXIOS_CORE__LOG__LEVEL") == "core.log.level"
+    assert normalize_env_key("KORODEXIOS_CORE__LOG__FILE_ENABLED") == "core.log.file_enabled"
+    heartbeat_key = normalize_env_key("KORODEXIOS_MODULES__HEARTBEAT__INTERVAL")
+    assert heartbeat_key == "modules.heartbeat.interval"
     assert normalize_env_key("PATH") is None
-    assert normalize_env_key("KORODEX_") is None
+    assert normalize_env_key("KORODEX_") is None  # the retired legacy prefix
 
 
 def test_load_config_file_yaml(tmp_path: Path) -> None:
-    target = tmp_path / "korodex.yml"
+    target = tmp_path / "kdx.yml"
     target.write_text(FILE_CONFIG, encoding="utf-8")
     values = load_config_file(target)
     assert values["core.log.level"] == "WARNING"
@@ -58,13 +59,13 @@ def test_load_config_file_yaml(tmp_path: Path) -> None:
 
 
 def test_load_config_file_json(tmp_path: Path) -> None:
-    target = tmp_path / "korodex.json"
+    target = tmp_path / "kdx.json"
     target.write_text('{"core": {"log": {"level": "ERROR"}}}', encoding="utf-8")
     assert load_config_file(target)["core.log.level"] == "ERROR"
 
 
 def test_load_config_file_rejects_scalar(tmp_path: Path) -> None:
-    target = tmp_path / "korodex.yml"
+    target = tmp_path / "kdx.yml"
     target.write_text("just a string", encoding="utf-8")
     with pytest.raises(ConfigFileError):
         load_config_file(target)
@@ -73,27 +74,27 @@ def test_load_config_file_rejects_scalar(tmp_path: Path) -> None:
 def test_load_dotenv_skips_comments_and_quotes(tmp_path: Path) -> None:
     target = tmp_path / ".env"
     target.write_text(
-        "# comment\nexport KORODEX_CORE__LOG__LEVEL=DEBUG\n"
-        'KORODEX_CORE__LOG__FILE="korodex.log"  # inline comment\n'
+        "# comment\nexport KORODEXIOS_CORE__LOG__LEVEL=DEBUG\n"
+        'KORODEXIOS_CORE__LOG__FILE="kdx.log"  # inline comment\n'
         "SHELL=/bin/sh\n",
         encoding="utf-8",
     )
     values = load_dotenv(target)
     assert values["core.log.level"] == "DEBUG"
-    assert values["core.log.file"] == "korodex.log"
+    assert values["core.log.file"] == "kdx.log"
     assert "shell" not in values
 
 
 def test_precedence_cli_beats_env_beats_file_beats_defaults(tmp_path: Path) -> None:
-    config_file = tmp_path / "korodex.yml"
+    config_file = tmp_path / "kdx.yml"
     config_file.write_text(FILE_CONFIG, encoding="utf-8")
     env_file = tmp_path / ".env"
-    env_file.write_text("KORODEX_CORE__LOG__LEVEL=INFO\n", encoding="utf-8")
+    env_file.write_text("KORODEXIOS_CORE__LOG__LEVEL=INFO\n", encoding="utf-8")
 
     config = LayeredConfig.load(
         config_file=config_file,
         env_file=env_file,
-        environ={"KORODEX_CORE__LOG__LEVEL": "WARNING", "KORODEX_CORE__NAME": "acme"},
+        environ={"KORODEXIOS_CORE__LOG__LEVEL": "WARNING", "KORODEXIOS_CORE__NAME": "acme"},
         cli_overrides={"core.log.level": "CRITICAL"},
     )
     assert config.get("core.log.level") == "CRITICAL"
@@ -108,9 +109,9 @@ def test_precedence_cli_beats_env_beats_file_beats_defaults(tmp_path: Path) -> N
 
 def test_real_environment_beats_dotenv_file(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
-    env_file.write_text("KORODEX_CORE__LOG__LEVEL=DEBUG\n", encoding="utf-8")
+    env_file.write_text("KORODEXIOS_CORE__LOG__LEVEL=DEBUG\n", encoding="utf-8")
     config = LayeredConfig.load(
-        config_file=None, env_file=env_file, environ={"KORODEX_CORE__LOG__LEVEL": "ERROR"}
+        config_file=None, env_file=env_file, environ={"KORODEXIOS_CORE__LOG__LEVEL": "ERROR"}
     )
     assert config.get("core.log.level") == "ERROR"
 
@@ -122,7 +123,7 @@ def test_typed_coercion_and_errors(config: LayeredConfig) -> None:
     assert config.get_str("core.name") == "korodexios"
     assert config.get_list("core.modules.extra_paths") == []
     broken = LayeredConfig.load(
-        config_file=None, env_file=None, environ={"KORODEX_CORE__LOG__MAX_BYTES": "wide"}
+        config_file=None, env_file=None, environ={"KORODEXIOS_CORE__LOG__MAX_BYTES": "wide"}
     )
     with pytest.raises(ConfigValueError) as resolved:
         broken.get_int("core.log.max_bytes")

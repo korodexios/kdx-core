@@ -32,7 +32,7 @@ def _coerce_path(value: str | os.PathLike[str]) -> Path:
     return Path(value).expanduser()
 
 
-def _is_korodex_project_file(candidate: Path) -> bool:
+def _is_chassis_project_file(candidate: Path) -> bool:
     if candidate.name in ROOT_MARKER_FILES:
         return True
     if candidate.name == "pyproject.toml" and candidate.is_file():
@@ -71,7 +71,7 @@ def discover_root(
 
     for directory in (cursor, *cursor.parents):
         for child in sorted(directory.iterdir(), key=lambda item: item.name):
-            if _is_korodex_project_file(child):
+            if _is_chassis_project_file(child):
                 return directory
     return cursor
 
@@ -233,7 +233,7 @@ class AppPaths:
         return tuple(created)
 
     def as_dict(self) -> dict[str, Any]:
-        """Return a JSON-friendly view used by 'korodex doctor'."""
+        """Return a JSON-friendly view used by 'kdx doctor'."""
         return {
             "root": str(self.root),
             "config_file": str(self.config_file) if self.config_file else None,

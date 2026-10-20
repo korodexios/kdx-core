@@ -27,9 +27,9 @@ REQUIRED_WHEEL_ENTRIES = (
     "korodexios_core/py.typed",
     "korodexios_core/kernel/ipc.py",
     "korodexios_core/cli/init_project.py",
-    "korodexios_core/modules/heartbeat/korodex_module.toml",
-    "korodexios_core/modules/system_info/korodex_module.toml",
-    "korodexios_core/modules/backup_engine/korodex_module.toml",
+    "korodexios_core/modules/heartbeat/kdx_module.toml",
+    "korodexios_core/modules/system_info/kdx_module.toml",
+    "korodexios_core/modules/backup_engine/kdx_module.toml",
 )
 REQUIRED_SDIST_ENTRIES = (
     "AGENTS.md",
@@ -92,8 +92,7 @@ def test_console_scripts_are_declared() -> None:
     expected = "korodexios_core.cli.entry:main"
     assert scripts["kdx"] == expected
     assert scripts["korodexios"] == expected
-    assert scripts["korodex"] == expected
-    assert len(scripts) == 3, "every console script must reach the same entry point"
+    assert len(scripts) == 2, "every console script must reach the same entry point"
 
 
 def build_distribution(tmp_path: Path) -> tuple[Path, Path]:

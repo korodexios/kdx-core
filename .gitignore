@@ -26,4 +26,5 @@ var/
 # Local overrides
 .env
 .env.local
-korodex.local.yml
+kdx.local.*
+korodexios.local.*

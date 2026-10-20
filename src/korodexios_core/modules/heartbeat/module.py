@@ -72,7 +72,7 @@ class HeartbeatModule(Module):
         super().start()
         self._stop.clear()
         self._thread = threading.Thread(
-            target=self._beat_loop, name="korodex-heartbeat", daemon=True
+            target=self._beat_loop, name="kdx-heartbeat", daemon=True
         )
         self._thread.start()
         self.logger.info("heartbeat thread started", interval_seconds=round(self._interval, 3))

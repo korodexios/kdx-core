@@ -81,7 +81,7 @@ Three files, no stubs:
 
 ```text
 src/demo_app/modules/metrics/
-  korodex_module.toml   # [module] name, description, version, entrypoint = "MODULE"
+  kdx_module.toml   # [module] name, description, version, entrypoint = "MODULE"
   module.py             # class MetricsModule(Module): ... ; MODULE = MetricsModule()
   __init__.py           # re-export MODULE and the class
 ```

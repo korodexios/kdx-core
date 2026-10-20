@@ -1,4 +1,4 @@
-"""Project templating: 'korodex init' seeds a runnable repository from the chassis.
+"""Project templating: 'kdx init' seeds a runnable repository from the chassis.
 
 The chassis exists to be the seed of future projects, so a new repository must be
 one command away - not a copy-rename-replace session. Everything generated here
@@ -23,7 +23,7 @@ RESERVED_NAMES = frozenset(
         "build",
         "dist",
         "docs",
-        "korodex",
+        "kdx",
         "korodexios",
         "korodexios_core",
         "src",
@@ -105,7 +105,7 @@ class ProjectTemplate:
 
 @dataclass(slots=True)
 class ProjectResult:
-    """What one 'korodex init' run produced."""
+    """What one 'kdx init' run produced."""
 
     root: Path
     files: list[str] = field(default_factory=list)
@@ -221,7 +221,7 @@ def prompt_project(
     if not validated.ok:
         raise ProjectError(
             f"{validated.message} (expected {validated.expected})",
-            hint="pass the name: korodex init my_service",
+            hint="pass the name: kdx init my_service",
         )
     package = str(validated.value)
     author_value = str(author).strip()
@@ -300,7 +300,7 @@ def build_files(project: ProjectTemplate) -> dict[str, str]:
             {
                 f"src/{package}/modules/app/__init__.py": _app_package(project),
                 f"src/{package}/modules/app/module.py": _app_module(project),
-                f"src/{package}/modules/app/korodex_module.toml": _app_manifest(project),
+                f"src/{package}/modules/app/kdx_module.toml": _app_manifest(project),
             }
         )
     if project.fullstack:
@@ -452,7 +452,7 @@ def _readme(project: ProjectTemplate) -> str:
         lines += [
             "  modules/app/           # your first module (auto-discovered)",
             "    module.py            # name, description, version, init/register_cli/start/stop",
-            "    korodex_module.toml  # manifest read by the discovery layer",
+            "    kdx_module.toml  # manifest read by the discovery layer",
         ]
     lines += [
         "tests/",
@@ -530,7 +530,7 @@ def _docs_agents_guide(project: ProjectTemplate) -> str:
         f"| Console script | @BT@{project.script}@BT@ |",
         f"| Chassis | korodexios-core >= @BT@{project.core_version}@BT@ |",
         "| Config file | @BT@kdx.yml@BT@ (local override: @BT@kdx.local.yml@BT@) |",
-        "| Env prefix | @BT@KDX_@BT@ (@BT@KORODEXIOS_@BT@ and legacy @BT@KORODEX_@BT@ also read) |",
+        "| Env prefix | @BT@KDX_@BT@ primary, @BT@KORODEXIOS_@BT@ canonical long alias |",
         f"| Module root | @BT@src/{package}/modules/@BT@ (auto-discovered) |",
         "| State dir | @BT@var/@BT@ (logs, @BT@chassis.ipc@BT@); never committed |",
         "| Chassis surface | the @BT@korodexios_core@BT@ package root @BT@__all__@BT@ |",
@@ -542,7 +542,7 @@ def _docs_agents_guide(project: ProjectTemplate) -> str:
         "2. **Zero stubs.** No TODO bodies, no @BT@pass@BT@ placeholders, no mock returns.",
         "3. **Stdlib first.** A new dependency needs a paragraph of justification.",
         "4. **Precedence is sacred.** CLI > env (@BT@KDX_@BT@, then @BT@KORODEXIOS_@BT@, then",
-        "   legacy @BT@KORODEX_@BT@) > @BT@kdx.local.yml@BT@ > @BT@kdx.yml@BT@ > defaults.",
+        "   @BT@KORODEXIOS_@BT@) > @BT@kdx.local.yml@BT@ > @BT@kdx.yml@BT@ > defaults.",
         "   Never read @BT@os.environ@BT@ in a module.",
         "5. **Diagnostics to stderr, UI to stdout.** Modules never print to stdout.",
         "6. **Clean shutdown.** Whatever @BT@start()@BT@ acquires, @BT@stop()@BT@ releases inside",
@@ -646,7 +646,7 @@ def _docs_agents_guide(project: ProjectTemplate) -> str:
         "MODULE = GreeterModule()  # the manifest entrypoint",
         fence,
         "",
-        "## Module Manifest - @BT@korodex_module.toml@BT@",
+        "## Module Manifest - @BT@kdx_module.toml@BT@",
         "",
         fence + "toml",
         "[module]",
@@ -711,7 +711,7 @@ def _docs_agents_guide(project: ProjectTemplate) -> str:
         "- **Do** put new behaviour in a module directory under @BT@src/"
         + package
         + "/modules/@BT@.",
-        "- **Do** raise @BT@KorodexError@BT@ subclasses with a @BT@hint=@BT@ the CLI can print.",
+        "- **Do** raise @BT@KorodexiosError@BT@ subclasses with a @BT@hint=@BT@ the CLI can print.",
         "- **Do** keep @BT@cli.py@BT@ thin: build @BT@ChassisOptions@BT@, call",
         "  @BT@Chassis.create@BT@, render.",
         "- **Don't** read @BT@os.environ@BT@, write to stdout, or spawn a thread @BT@stop()@BT@",
@@ -767,7 +767,7 @@ def _docs_architecture(project: ProjectTemplate) -> str:
         module_line,
         "  modules/<name>/",
         "    module.py            # the contract: init/register_cli/start/stop",
-        "    korodex_module.toml  # manifest: name, version, entrypoint, priority, gates",
+        "    kdx_module.toml  # manifest: name, version, entrypoint, priority, gates",
         "    __init__.py          # re-exports MODULE",
         fence,
         "",
@@ -783,11 +783,11 @@ def _docs_architecture(project: ProjectTemplate) -> str:
         fence + "text",
         "  defaults               CORE_DEFAULTS from the chassis",
         "      v",
-        "  kdx.yml                project config (korodexios.yml / korodex.yml also read)",
+        "  kdx.yml                project config (korodexios.yml also read)",
         "      v",
         "  kdx.local.yml          gitignored machine-local override",
         "      v",
-        "  environment            .env, then process env (KDX_ > KORODEXIOS_ > KORODEX_)",
+        "  environment            .env, then process env (KDX_ > KORODEXIOS_)",
         "      v",
         "  CLI overrides          --log-level, --ipc-host, --ipc-port, --auth ...",
         fence,
@@ -809,7 +809,7 @@ def _docs_architecture(project: ProjectTemplate) -> str:
         "- @BT@GET /health@BT@ is always open; @BT@GET /api/v1/status@BT@ and",
         "  @BT@POST /api/v1/shutdown@BT@ are gated by @BT@core.ipc.auth@BT@ and",
         "  @BT@core.ipc.allow_anonymous_shutdown@BT@. The header is",
-        "  @BT@X-Korodex-Token@BT@.",
+        "  @BT@X-Kdx-Token@BT@.",
         f"- Query it with @BT@{project.script} status@BT@, or from any machine that has the",
         "  chassis installed: @BT@kdx status --target http://HOST:PORT --token SECRET@BT@.",
         "",
@@ -965,8 +965,8 @@ def _gitignore() -> str:
             "*.log",
             ".env",
             ".env.local",
-            "kdx.local.yml",
-            "korodex.local.yml",
+            "kdx.local.*",
+            "korodexios.local.*",
             "node_modules/",
             "web/dist/",
             "*.mo",
@@ -979,7 +979,7 @@ def _env_example(project: ProjectTemplate) -> str:
     return "\n".join(
         [
             "# Env layer: copy to .env. KDX_CORE__FOO__BAR maps to the key core.foo.bar.",
-            "# KORODEXIOS_* and the legacy KORODEX_* prefixes are also understood.",
+            "# The canonical long prefix KORODEXIOS_* is also understood.",
             "KDX_CORE__LOG__LEVEL=INFO",
             "KDX_CORE__IPC__PORT=0",
             f"# KDX_MODULES__APP__GREETING=Hello from {project.title}",
@@ -1169,7 +1169,7 @@ def _app_manifest(project: ProjectTemplate) -> str:
         [
             "[module]",
             'name = "app"',
-            f'description = "Project module generated by korodex init for {project.title}."',
+            f'description = "Project module generated by kdx init for {project.title}."',
             'entrypoint = "module.MODULE"',
             'version = "0.1.0"',
             "priority = 100",
@@ -1210,7 +1210,7 @@ def _app_module(project: ProjectTemplate) -> str:
             '    """Greets on demand and counts how often it did."""',
             "",
             '    name = "app"',
-            f'    description = "Project module generated by korodex init for {project.title}."',
+            f'    description = "Project module generated by kdx init for {project.title}."',
             '    version = "0.1.0"',
             "",
             "    greetings = 0",
@@ -1449,7 +1449,7 @@ def _web_main(project: ProjectTemplate) -> str:
             'const report = document.querySelector("#report");',
             "",
             "async function load() {",
-            '  const response = await fetch(target, { headers: { "X-Korodex-Token": token } });',
+            '  const response = await fetch(target, { headers: { "X-Kdx-Token": token } });',
             "  if (!response.ok) {",
             '    report.textContent = "chassis answered HTTP " + response.status;',
             "    return;",
@@ -1541,7 +1541,7 @@ def _skill_cli_wizard(project: ProjectTemplate) -> str:
             f"- Reuse @BT@cli.ux.UserExperience@BT@ from the chassis; {project.script} stays thin.",
             "",
             "## Verification",
-            "@BT@echo | korodex wizard@BT@ and @BT@korodex --yes status@BT@ never block.",
+            "@BT@echo | kdx wizard@BT@ and @BT@kdx --yes status@BT@ never block.",
         ],
     ).replace("@BT@", chr(96))
 

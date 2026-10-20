@@ -45,12 +45,11 @@ dev = [
 [project.scripts]
 kdx = "korodexios_core.cli.entry:main"
 korodexios = "korodexios_core.cli.entry:main"
-korodex = "korodexios_core.cli.entry:main"
 
 [project.urls]
-Homepage = "https://github.com/korodexios/korodexios-core"
-Source = "https://github.com/korodexios/korodexios-core"
-Issues = "https://github.com/korodexios/korodexios-core/issues"
+Homepage = "https://github.com/korodexios/kdx-core"
+Source = "https://github.com/korodexios/kdx-core"
+Issues = "https://github.com/korodexios/kdx-core/issues"
 
 # Single source of truth for the version: src/korodexios_core/version.py.
 # The pattern tolerates the annotated assignment (__version__: Final[str] = "...").
@@ -60,7 +59,7 @@ pattern = '^__version__(?::\s*Final\[str\])?\s*=\s*"(?P<version>[^"]*)"'
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/korodexios_core"]
-artifacts = ["src/korodexios_core/modules/*/korodex_module.toml"]
+artifacts = ["src/korodexios_core/modules/*/kdx_module.toml"]
 
 [tool.hatch.build.targets.sdist]
 include = [

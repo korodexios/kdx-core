@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..config.layered import LayeredConfig, ScopedConfig
 from ..events.bus import EventBus
-from ..logging.engine import KorodexLogger, LoggerFactory
+from ..logging.engine import KorodexiosLogger, LoggerFactory
 from ..paths import AppPaths
 from ..version import CORE_API_VERSION, __version__
 
@@ -32,7 +32,7 @@ class CoreContext:
     registry: ModuleRegistry | None = None
     chassis: Any = None
 
-    def logger_for(self, name: str) -> KorodexLogger:
+    def logger_for(self, name: str) -> KorodexiosLogger:
         """Return a logger namespaced below the chassis namespace."""
         return self.logs.get(name)
 

@@ -25,8 +25,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, cast
 
+from ..constants import IPC_SCHEMA_VERSION
+from ..version import CORE_API_VERSION
+
 DISCOVERY_NAME = "chassis.ipc"
-TOKEN_HEADER = "X-Korodex-Token"
+TOKEN_HEADER = "X-Kdx-Token"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8123
 DEFAULT_TOKEN_BYTES = 16
@@ -35,7 +38,8 @@ LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 HEALTH_PATH = "/health"
 STATUS_PATH = "/api/v1/status"
 SHUTDOWN_PATH = "/api/v1/shutdown"
-ROUTES = (HEALTH_PATH, STATUS_PATH, SHUTDOWN_PATH)
+SCHEMA_PATH = "/api/v1/schema"
+ROUTES = (HEALTH_PATH, STATUS_PATH, SHUTDOWN_PATH, SCHEMA_PATH)
 
 
 def new_token() -> str:
@@ -135,7 +139,7 @@ class IpcDiscovery:
     ) -> IpcDiscovery:
         """Build a client-side endpoint from 'http://host:port', 'host:port', or 'host'.
 
-        Used by 'korodex status --target' so a LAN or VPN peer needs no local
+        Used by 'kdx status --target' so a LAN or VPN peer needs no local
         discovery file: the caller supplies the host and, when auth is on, the token.
         """
         text = str(target).strip()
@@ -249,7 +253,7 @@ class IpcOptions:
 class _ControlServer(ThreadingHTTPServer):
     """ThreadingHTTPServer that knows which chassis control plane it serves."""
 
-    korodex_ipc: IpcServer
+    kdx_ipc: IpcServer
 
 
 class _ControlHandler(BaseHTTPRequestHandler):
@@ -267,7 +271,7 @@ class _ControlHandler(BaseHTTPRequestHandler):
         self._dispatch("POST")
 
     def _dispatch(self, method: str) -> None:
-        ipc = cast("_ControlServer", self.server).korodex_ipc
+        ipc = cast("_ControlServer", self.server).kdx_ipc
         route = self.path.split("?", 1)[0]
         if route not in ROUTES:
             self._reply(404, {"error": f"no such endpoint: {route}"})
@@ -284,6 +288,12 @@ class _ControlHandler(BaseHTTPRequestHandler):
             return
         if route == HEALTH_PATH:
             self._reply(200, ipc.health())
+            return
+        if route == SCHEMA_PATH:
+            if method != "GET":
+                self._reply(405, {"error": "schema expects GET"})
+                return
+            self._reply(200, ipc.api_contract())
             return
         if route == STATUS_PATH:
             if method != "GET":
@@ -308,7 +318,7 @@ class _ControlHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: Any) -> None:
         """Route request logging to the chassis logger, never to stderr directly."""
-        ipc = getattr(self.server, "korodex_ipc", None)
+        ipc = getattr(self.server, "kdx_ipc", None)
         if ipc is not None and ipc.logger is not None:
             ipc.logger.debug("ipc " + (format % args), path=self.path)
 
@@ -378,10 +388,10 @@ class IpcServer:
             path=self._options.discovery_path,
         )
         self._bound_host = bound_host
-        httpd.korodex_ipc = self
+        httpd.kdx_ipc = self
         self._thread = threading.Thread(
             target=httpd.serve_forever,
-            name="korodex-ipc",
+            name="kdx-ipc",
             daemon=True,
         )
         self._thread.start()
@@ -429,11 +439,12 @@ class IpcServer:
     def requires_token(self, route: str) -> bool:
         """Return True when *route* must present the shared token.
 
-        Policy: /health is always open (it is the liveness probe). Reads follow
-        core.ipc.auth. Shutdown stays authenticated unless the operator explicitly
-        allows anonymous shutdown - a LAN-visible port must not be a stop button.
+        Policy: /health and /api/v1/schema are always open (liveness and static
+        metadata carry no state). Reads follow core.ipc.auth. Shutdown stays
+        authenticated unless the operator explicitly allows anonymous shutdown - a
+        LAN-visible port must not be a stop button.
         """
-        if route == HEALTH_PATH:
+        if route in (HEALTH_PATH, SCHEMA_PATH):
             return False
         if route == STATUS_PATH:
             return bool(self._options.auth)
@@ -477,6 +488,50 @@ class IpcServer:
         snapshot = dict(self._status_fn())
         snapshot["ipc"] = self.as_dict()
         return snapshot
+
+    def api_contract(self) -> dict[str, Any]:
+        """Return the machine-readable contract this control plane answers.
+
+        Route paths, auth flags, and the health and status field lists are read
+        from the live handlers, so the contract cannot drift from the server.
+        """
+        return {
+            "schema": IPC_SCHEMA_VERSION,
+            "core_api": CORE_API_VERSION,
+            "token_header": TOKEN_HEADER,
+            "auth": bool(self._options.auth),
+            "allow_anonymous_shutdown": bool(self._options.allow_anonymous_shutdown),
+            "routes": [
+                {
+                    "method": "GET",
+                    "path": HEALTH_PATH,
+                    "auth": False,
+                    "summary": "liveness probe; never needs a token",
+                    "fields": sorted(self.health()),
+                },
+                {
+                    "method": "GET",
+                    "path": SCHEMA_PATH,
+                    "auth": False,
+                    "summary": "this contract; static metadata",
+                    "fields": ["auth", "core_api", "routes", "schema", "token_header"],
+                },
+                {
+                    "method": "GET",
+                    "path": STATUS_PATH,
+                    "auth": bool(self._options.auth),
+                    "summary": "full chassis report over the control plane",
+                    "fields": sorted(self.status_snapshot()),
+                },
+                {
+                    "method": "POST",
+                    "path": SHUTDOWN_PATH,
+                    "auth": self.requires_token(SHUTDOWN_PATH),
+                    "summary": "operator stop; the process exits 0",
+                    "fields": ["accepted", "state"],
+                },
+            ],
+        }
 
     def request_shutdown(self) -> None:
         """Ask the chassis to shut down (the caller owns the lifecycle)."""

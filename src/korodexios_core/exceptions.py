@@ -7,7 +7,7 @@ from typing import ClassVar
 from .constants import TAG_ERROR, ExitCode
 
 
-class KorodexError(Exception):
+class KorodexiosError(Exception):
     """Base class for expected failures; never renders a Python traceback."""
 
     exit_code: ClassVar[int] = int(ExitCode.ERROR)
@@ -26,7 +26,7 @@ class KorodexError(Exception):
         return "\n".join(lines)
 
 
-class ConfigurationError(KorodexError):
+class ConfigurationError(KorodexiosError):
     """Configuration could not be loaded, parsed, or coerced."""
 
     exit_code: ClassVar[int] = int(ExitCode.CONFIG_ERROR)
@@ -63,11 +63,11 @@ class PathDiscoveryError(ConfigurationError):
     """The project root or one of its standard directories is unusable."""
 
 
-class ModuleContractError(KorodexError):
+class ModuleContractError(KorodexiosError):
     """A candidate object does not satisfy the module contract."""
 
 
-class ModuleDiscoveryError(KorodexError):
+class ModuleDiscoveryError(KorodexiosError):
     """A module could not be imported or resolved from disk."""
 
     def __init__(
@@ -83,7 +83,7 @@ class ModuleDiscoveryError(KorodexError):
         self.stage = stage
 
 
-class ModuleLifecycleError(KorodexError):
+class ModuleLifecycleError(KorodexiosError):
     """A module raised while the chassis drove one of its lifecycle hooks."""
 
     def __init__(
@@ -99,11 +99,11 @@ class ModuleLifecycleError(KorodexError):
         self.phase = phase
 
 
-class ChassisError(KorodexError):
+class ChassisError(KorodexiosError):
     """The chassis itself reached an unusable state."""
 
 
-class CliError(KorodexError):
+class CliError(KorodexiosError):
     """The command line was used incorrectly or a command failed politely."""
 
     exit_code: ClassVar[int] = int(ExitCode.USAGE_ERROR)

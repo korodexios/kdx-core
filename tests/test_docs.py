@@ -53,6 +53,13 @@ class RecordingSurface:
         self.commands.append(command)
 
 
+def test_changelog_exists_and_leads_with_unreleased() -> None:
+    changelog = read(REPO_ROOT / "CHANGELOG.md")
+    assert changelog.startswith("# Changelog"), "CHANGELOG.md must lead with its title"
+    assert "## [Unreleased]" in changelog, "the current change must be recorded"
+    assert "## [0.1.0]" in changelog, "the released version must be recorded"
+
+
 def test_documentation_suite_exists() -> None:
     for name, minimum in REQUIRED_DOCS.items():
         path = DOCS / name
@@ -88,7 +95,7 @@ def test_agent_guide_is_contract_first() -> None:
         "self.bus.publish",
         "self.bus.subscribe",
         "def health(self)",
-        "korodex_module.toml",
+        "kdx_module.toml",
         "requires_core",
         "entrypoint",
         "depends_on",
@@ -139,7 +146,7 @@ def test_architecture_explains_the_layers_and_planes() -> None:
         "kdx.local.yml",
         "KDX_",
         "chassis.ipc",
-        "X-Korodex-Token",
+        "X-Kdx-Token",
         "SIGTERM",
         "tick_interval",
         "stop_timeout",
@@ -154,7 +161,7 @@ def test_tutorial_ends_with_a_running_module() -> None:
     for needle in (
         "kdx init",
         "kdx modules create",
-        "korodex_module.toml",
+        "kdx_module.toml",
         "MODULE",
         "make check",
         "docs/AGENTS_GUIDE.md",
