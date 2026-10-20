@@ -1,0 +1,13 @@
+# Built-in module manifest, read by korodexios_core.kernel.discovery.
+[module]
+name = "heartbeat"
+description = "Publishes a periodic heartbeat event, proving background threads and clean shutdown."
+version = "0.1.0"
+entrypoint = "MODULE"
+enabled = true
+priority = 50
+requires_core = ">=0.1"
+
+[metadata]
+tags = ["lifecycle", "proof-of-concept"]
+owner = "korodexios"

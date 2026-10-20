@@ -1,0 +1,37 @@
+# korodexios-core project configuration (layer 3 of 4)
+# Precedence: CLI arguments > environment variables (.env) > this file > built-in defaults.
+# Every key below is optional; the shipped defaults live in
+# src/korodexios_core/config/defaults.py.
+core:
+  name: korodexios
+  log:
+    level: INFO
+    dir: var/log
+    file: korodex.log
+    file_enabled: true
+    json: false
+    color: true
+    utc: false
+    max_bytes: 1048576
+    backup_count: 5
+  modules:
+    autodiscover: true
+    enabled: []
+    disabled: []
+    extra_paths: []
+  lifecycle:
+    tick_interval: 1.0
+    stop_timeout: 5.0
+  cli:
+    color: true
+    interactive: true
+    confirmations: true
+    width: 100
+  env:
+    prefix: KORODEX
+
+# Per-module configuration. Each module receives a scoped view of "modules.<name>".
+modules:
+  heartbeat:
+    enabled: true
+    interval: 2.0

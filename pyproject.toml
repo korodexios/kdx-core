@@ -1,0 +1,104 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "korodexios-core"
+version = "0.1.0"
+description = "Industrial-grade, headless microkernel chassis that seeds every Korodexios project."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "Korodexios", email = "engineering@korodexios.dev" },
+]
+keywords = ["microkernel", "chassis", "cli", "daemon", "framework", "korodexios"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+dependencies = [
+  "pyyaml>=6.0",
+  "rich>=13.7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+  "ruff>=0.6",
+  "mypy>=1.10",
+  "types-PyYAML>=6.0",
+]
+
+[project.scripts]
+korodex = "korodexios_core.cli.entry:main"
+korodexios = "korodexios_core.cli.entry:main"
+
+[project.urls]
+Homepage = "https://github.com/korodexios/korodexios-core"
+Source = "https://github.com/korodexios/korodexios-core"
+Issues = "https://github.com/korodexios/korodexios-core/issues"
+
+[tool.hatch.version]
+path = "src/korodexios_core/version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/korodexios_core"]
+artifacts = ["src/korodexios_core/modules/*/korodex_module.toml"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/korodexios_core",
+  "tests",
+  "README.md",
+  "LICENSE",
+  "korodex.yml",
+  ".env.example",
+  "Makefile",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra --strict-markers"
+filterwarnings = [
+  "ignore::DeprecationWarning",
+]
+markers = [
+  "windows: tests that only behave on Windows",
+  "posix: tests that only behave on POSIX hosts",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+extend-exclude = ["var"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B018"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+packages = ["korodexios_core"]
+strict = true
+warn_unreachable = true
+show_error_codes = true
+
+[tool.uv]
+package = true

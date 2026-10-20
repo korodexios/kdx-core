@@ -1,0 +1,29 @@
+# Byte-compiled / caches
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+htmlcov.zip
+
+# Packaging / environments
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+.python-version
+
+# Chassis runtime state (logs, module data)
+var/
+*.log
+
+# Local overrides
+.env
+.env.local
+korodex.local.yml
