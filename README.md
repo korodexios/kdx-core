@@ -408,7 +408,8 @@ from korodexios_core import (
 | 8 | `kdx` as the primary short alias (`korodexios` canonical, `korodex` kept for backward compatibility), LAN-bindable control plane (`core.ipc.host`), optional auth (`core.ipc.auth`, `--no-auth`), static token (`core.ipc.token`), the anonymous-shutdown guard, and `kdx status --target` | **delivered** |
 | 9 | Naming alignment: `kdx.yml` / `korodexios.yml` config candidates with `korodex.yml` kept as a legacy fallback, a `kdx.local.yml` override layer, `KDX_` as the primary env prefix (`KORODEXIOS_`/`KORODEX_` understood), and `kdx`-first docs | **delivered** |
 | 10 | Production release: `v0.1.0` tagged with the version synchronized across `version.py`, docs, and artifacts | **delivered** |
-| 11 (next) | Publish `v0.1.0` to an index (`twine upload` / GitHub Releases) or a documented git bootstrap, a Textual/TUI front end over the same declarative `CliCommand` tree, and `kdx logs --rotate` | planned |
+| 11 | Release pipeline: a `v*` tag runs the full 3-OS x 3-Python matrix and the package audit, then publishes the audited wheel and sdist to a GitHub Release; a branch push runs a trimmed matrix for fast feedback | **delivered** |
+| 12 (next) | Publish to an index (PyPI via trusted publishing) or a documented git bootstrap, a Textual/TUI front end over the same declarative `CliCommand` tree, and `kdx logs --rotate` | planned |
 
 
 Status tags used across the UI: `[✓]` success, `[?]` question, `[!]` error, `[i]` note.

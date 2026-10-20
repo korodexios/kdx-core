@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -10,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: \${{ github.workflow }}-\${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -18,8 +19,15 @@ env:
 
 jobs:
   check:
-    name: check (\${{ matrix.os }} / Python \${{ matrix.python }})
-    runs-on: \${{ matrix.os }}
+    name: check (${{ matrix.os }} / Python ${{ matrix.python }})
+    # A branch push gets a fast subset; pull requests and release tags get the
+    # full 3-OS x 3-Python matrix, so a release is never cut on one platform.
+    if: >-
+      github.event_name != 'push'
+      || startsWith(github.ref, 'refs/tags/')
+      || matrix.os == 'ubuntu-latest'
+      || matrix.python == '3.13'
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -30,10 +38,10 @@ jobs:
       - name: Check out the chassis
         uses: actions/checkout@v4
 
-      - name: Install uv and Python \${{ matrix.python }}
+      - name: Install uv and Python ${{ matrix.python }}
         uses: astral-sh/setup-uv@v5
         with:
-          python-version: \${{ matrix.python }}
+          python-version: ${{ matrix.python }}
           enable-cache: true
 
       - name: Sync dependencies
@@ -146,3 +154,52 @@ jobs:
           test -f /tmp/korodex-audit-seed/pyproject.toml
           test -f /tmp/korodex-audit-seed/docs/AGENTS_GUIDE.md
           /tmp/korodex-audit/bin/kdx --home /tmp/korodex-audit-seed modules list --no-log-file
+
+  release:
+    name: release artifacts
+    needs: [check, package]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Build wheel and sdist
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv build --out-dir dist
+          ls -1 dist
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          notes="$(git tag -l --format='%(contents:subject)' "$tag" | head -1)"
+          if [ -z "$notes" ]; then
+            notes="korodexios-core $tag"
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/*.whl dist/*.tar.gz --clobber
+          else
+            gh release create "$tag" dist/*.whl dist/*.tar.gz \
+              --verify-tag \
+              --target "${GITHUB_SHA}" \
+              --title "korodexios-core $tag" \
+              --notes "$notes"
+          fi
+          gh release view "$tag" | head -12
