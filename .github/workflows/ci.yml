@@ -37,7 +37,7 @@ jobs:
           enable-cache: true
 
       - name: Sync dependencies
-        run: uv sync --extra dev
+        run: uv sync --extra dev --frozen
 
       - name: Verify the chassis (make check)
         if: runner.os != 'Windows'
@@ -54,16 +54,16 @@ jobs:
       - name: Boot the chassis
         shell: bash
         run: |
-          uv run korodex --version --no-log-file
-          uv run korodex doctor --no-log-file --no-color
-          uv run korodex run --once --no-log-file --no-color
-          uv run korodex logs -n 5 --raw --no-log-file --no-color
+          uv run kdx --version --no-log-file
+          uv run kdx doctor --no-log-file --no-color
+          uv run kdx run --once --no-log-file --no-color
+          uv run kdx logs -n 5 --raw --no-log-file --no-color
 
-      - name: Seed a project with korodex init
+      - name: Seed a project with kdx init
         shell: bash
         run: |
           rm -rf build/ci_probe
-          uv run korodex init ci_probe --path build/ci_probe --yes --no-log-file --no-color
+          uv run kdx init ci_probe --path build/ci_probe --yes --no-log-file --no-color
 
       - name: Verify the seeded project
         if: runner.os != 'Windows'
@@ -94,7 +94,7 @@ jobs:
           enable-cache: true
 
       - name: Sync dependencies
-        run: uv sync --extra dev
+        run: uv sync --extra dev --frozen
 
       - name: Build wheel and sdist
         run: uv build --out-dir dist
@@ -124,9 +124,14 @@ jobs:
           if missing:
               raise SystemExit("wheel is missing: " + ", ".join(missing))
           PY
-          tar -tzf "$sdist" | grep -q 'AGENTS.md'
-          tar -tzf "$sdist" | grep -q '.agents/skills/verification.md'
-          tar -tzf "$sdist" | grep -q 'tests/test_ipc.py'
+          sdist_listing="$(tar -tzf "$sdist")"
+          for required in AGENTS.md llms.txt docs/AGENTS_GUIDE.md docs/ARCHITECTURE.md \
+                          .agents/skills/verification.md tests/test_ipc.py; do
+            grep -F -q -- "$required" <<<"$sdist_listing" || {
+              echo "sdist is missing: $required"
+              exit 1
+            }
+          done
           echo "[OK] wheel carries py.typed and every module manifest; sdist carries docs, skills, and tests"
 
       - name: Install the wheel in an isolated environment
@@ -135,8 +140,9 @@ jobs:
           set -euo pipefail
           uv venv /tmp/korodex-audit --python 3.13
           uv pip install --python /tmp/korodex-audit/bin/python "$(ls dist/*.whl | head -1)"
-          /tmp/korodex-audit/bin/korodex --version --no-log-file
+          /tmp/korodex-audit/bin/kdx --version --no-log-file
           rm -rf /tmp/korodex-audit-seed
-          /tmp/korodex-audit/bin/korodex init audit_probe --path /tmp/korodex-audit-seed --yes --no-log-file
+          /tmp/korodex-audit/bin/kdx init audit_probe --path /tmp/korodex-audit-seed --yes --no-log-file
           test -f /tmp/korodex-audit-seed/pyproject.toml
-          /tmp/korodex-audit/bin/korodex --home /tmp/korodex-audit-seed modules list --no-log-file
+          test -f /tmp/korodex-audit-seed/docs/AGENTS_GUIDE.md
+          /tmp/korodex-audit/bin/kdx --home /tmp/korodex-audit-seed modules list --no-log-file
