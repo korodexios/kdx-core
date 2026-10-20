@@ -114,9 +114,36 @@ def test_disabled_module_is_skipped(tmp_path: Path) -> None:
                 return False
             return default
 
+        def get_bool(self, key: str, default: bool = True) -> bool:
+            return bool(self.get(key, default))
+
     report = ModuleDiscovery(paths, config=StubConfig(), logger=None).scan()
     assert "probe" not in report.names()
     assert ("probe", "disabled by manifest or configuration") in report.skipped
+
+
+def test_environment_can_disable_a_module(tmp_path: Path) -> None:
+    """An env-layer 'false' disables a module, not just a YAML boolean.
+
+    Precedence is sacred: KDX_MODULES__<name>__ENABLED=false must behave like
+    the same key in kdx.yml, so discovery reads it through the typed getter.
+    """
+    from korodexios_core.config.layered import LayeredConfig
+
+    plugins = build_plugins(tmp_path / "plugins")
+    config_root = tmp_path / "project"
+    config_root.mkdir()
+    paths = make_paths(plugins, config_root)
+    config = LayeredConfig.load(
+        config_file=None,
+        env_file=None,
+        environ={"KDX_MODULES__PROBE__ENABLED": "false"},
+    )
+
+    report = ModuleDiscovery(paths, config=config, logger=None).scan()
+    assert "probe" not in report.names()
+    assert ("probe", "disabled by manifest or configuration") in report.skipped
+    assert "solo" in report.names()
 
 
 def test_allowlist_and_blocklist(tmp_path: Path) -> None:

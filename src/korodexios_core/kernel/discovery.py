@@ -503,7 +503,7 @@ class ModuleDiscovery:
         if self._config is None:
             return True
         try:
-            return bool(self._config.get(f"modules.{spec.name}.enabled", True))
+            return bool(self._config.get_bool(f"modules.{spec.name}.enabled", True))
         except Exception:
             return True
 
