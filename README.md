@@ -43,14 +43,15 @@ korodexios-core/
 │   │   ├── surface.py          # CliCommand tree -> argparse subparsers
 │   │   ├── ux.py               # rich menus, bracketed defaults, validation loops
 │   │   ├── wizard.py           # root wizard over the registered command tree
+│   │   ├── init_project.py     # 'korodex init' project templating (zero-stub seed)
 │   │   ├── scaffold.py         # 'korodex modules create' package scaffolding
-│   │   ├── commands.py         # version / doctor / status / modules / config / run / wizard
+│   │   ├── commands.py         # version / doctor / status / init / modules / config / run / wizard
 │   │   └── entry.py            # two-pass parser, global flags, error rendering
 │   └── modules/                # discovery root (built-in plugins live here)
 │       ├── heartbeat/          # background thread, events, clean shutdown
 │       ├── system_info/        # OS / CPU / RAM / disk diagnostics (stdlib only)
 │       └── backup_engine/      # source -> destination backups with dry runs
-└── tests/                      # pytest suite: 140 tests across 14 modules
+└── tests/                      # pytest suite: 152 tests across 15 modules
 ```
 
 ### 1.1 The module contract
@@ -159,6 +160,7 @@ korodex system diagnostics         # interactive diagnostics menu (pick a sectio
 korodex backup plan                # validate + show what a backup would copy
 korodex backup run --dry-run       # simulate; --exclude '*.log' etc. are honoured
 korodex modules create my_plugin --path ./my_plugins   # scaffold a plugin package
+korodex init my_service --path ../my_service # seed a whole new project from the chassis
 korodex wizard                     # interactive numbered-menu wizard (TTY only)
 ```
 
@@ -228,17 +230,48 @@ memory — or \`[i] chassis daemon is not running\`. \`Chassis.shutdown()\` clos
 server and deletes the file inside the same \`core.lifecycle.stop_timeout\` budget
 as module \`stop()\` hooks, so a remote shutdown still runs every cleanup hook.
 
+### 2.3 Seeding a new project: \`korodex init\`
+
+The chassis is the seed, not the dependency you copy. \`korodex init my_service\`
+asks for a name, an author, and a target ecosystem (numbered menu, defaults in
+brackets, \`--yes\` for CI) and writes an independent, runnable repository:
+
+\`\`\`text
+my_service/
+  pyproject.toml            # src layout, korodexios-core dependency, ruff/mypy/pytest config
+  korodex.yml               # core.modules.extra_paths -> src/my_service/modules
+  Makefile                  # check: ruff + mypy --strict + pytest
+  README.md, AGENTS.md      # quickstart and the working agreement
+  .agents/skills/           # project-setup, cli-wizard-ux, verification (+ web-ui)
+  src/my_service/cli.py     # thin entry point: boots the chassis with --home at this root
+  src/my_service/modules/app/   # a real module: manifest, contract, CLI command, health()
+  tests/test_smoke.py       # discovery, config, and contract proven
+\`\`\`
+
+| Option | Effect |
+| --- | --- |
+| \`--path DIR\` | where to write (default: \`./<name>\`) |
+| \`--ecosystem python\|fullstack\` | fullstack adds \`web/\` (static client for the IPC endpoint) and the \`web-ui\` skill |
+| \`--minimal\` | bare chassis: no example module, \`heartbeat\` and \`backup_engine\` disabled in \`korodex.yml\` |
+| \`--force\` | write into a directory that already holds files |
+
+Nothing is a placeholder: the generated project passes \`ruff check\`, \`mypy
+--strict\`, and \`pytest\` immediately, and \`korodex --home <project> modules list\`
+shows the new \`app\` module as \`external\`.
+
+
 ## 3. Roadmap
 
 | Phase | Scope | State |
 | --- | --- | --- |
+| 6 | `korodex init <name>`: zero-stub project seed - pyproject, korodex.yml, Makefile, README, AGENTS.md, `.agents/skills/`, a first module, smoke tests, optional `web/` client; `--minimal`, `--force`, `--ecosystem` | **delivered** |
 | 5 | Daemon IPC: loopback HTTP control plane (`/health`, `/api/v1/status`, `POST /api/v1/shutdown`), discovery file with a shared token, and the `korodex status` command | **delivered** |
 | 4 | Review hardening (event-bus recursion guard, slow-handler timing, plugin import isolation, backup destination and symlink guards, ASCII tag fallback), module dependency DAG (`depends_on`), `korodex modules create` scaffolding | **delivered** |
-| --- | --- | --- |
-| 1 | Packaging, config hierarchy, logging, event bus, module contract, discovery, registry, signals, chassis, argparse CLI, `heartbeat` proof of concept, tests | **delivered** |
-| 2 | `rich` UX layer: numbered-menu wizard over the registered commands, `[default]` prompts, `while True` validation loops, validators (port/IP/path/size/duration), `--yes` + non-TTY auto-detection | **delivered** |
 | 3 | Built-in `system_info` (OS/CPU/RAM/disk diagnostics) and `backup_engine` (validated source to destination backups with dry runs), full test coverage, docs polish | **delivered** |
-| 6 (next) | `korodex init` project template, packaging the chassis as a reusable starting point, and a Windows named-pipe/HTTP parity pass on real CI | planned |
+| 2 | `rich` UX layer: numbered-menu wizard over the registered commands, `[default]` prompts, `while True` validation loops, validators (port/IP/path/size/duration), `--yes` + non-TTY auto-detection | **delivered** |
+| 1 | Packaging, config hierarchy, logging, event bus, module contract, discovery, registry, signals, chassis, argparse CLI, `heartbeat` proof of concept, tests | **delivered** |
+| 7 (next) | Publishing the chassis as a distribution (or a documented git bootstrap), a Windows parity pass on real CI, and a `korodex logs` helper for the rotating log file | planned |
+
 
 Status tags used across the UI: `[✓]` success, `[?]` question, `[!]` error, `[i]` note.
 Diagnostics always go to **stderr**; **stdout** stays clean for scripting.

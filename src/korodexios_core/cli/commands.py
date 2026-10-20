@@ -75,6 +75,50 @@ def core_commands(chassis: Chassis) -> list[CliCommand]:
             group="core",
         ),
         CliCommand(
+            name="init",
+            help="Scaffold a new project from the chassis template.",
+            args=(
+                CliArgument(
+                    ("name",),
+                    nargs="?",
+                    metavar="NAME",
+                    help="project name; prompted when omitted",
+                ),
+                CliArgument(
+                    ("--path",),
+                    dest="path",
+                    metavar="DIR",
+                    help="target directory (default: ./<name>)",
+                ),
+                CliArgument(
+                    ("--author",),
+                    dest="author",
+                    metavar="TEXT",
+                    help="author or owner [Korodexios]",
+                ),
+                CliArgument(
+                    ("--ecosystem",),
+                    dest="ecosystem",
+                    metavar="CHOICE",
+                    help="python | fullstack",
+                ),
+                CliArgument(
+                    ("--minimal",),
+                    dest="minimal",
+                    action="store_true",
+                    help="bare chassis: no example modules",
+                ),
+                CliArgument(
+                    ("--force",),
+                    dest="force",
+                    action="store_true",
+                    help="write into a directory that already holds files",
+                ),
+            ),
+            handler=_init_command,
+            group="core",
+        ),
+        CliCommand(
             name="status",
             help="Query the running chassis over its local control plane.",
             args=(
@@ -347,6 +391,46 @@ def _modules_list_command(request: CliRequest) -> int:
     return int(ExitCode.ERROR) if health["failed"] else int(ExitCode.SUCCESS)
 
 
+def _init_command(request: CliRequest) -> int:
+    """Scaffold a brand-new chassis project from a template."""
+    from .init_project import ECOSYSTEMS, ProjectError, init_project, prompt_project
+    from .ux import UserExperience
+
+    chassis = _chassis(request)
+    ux = UserExperience(chassis.config)
+    try:
+        project = prompt_project(
+            ux,
+            name=str(request.option("name") or "").strip(),
+            author=str(request.option("author") or "").strip(),
+            ecosystem=str(request.option("ecosystem") or "").strip(),
+            minimal=bool(request.flag("minimal")),
+        )
+        target_text = str(request.option("path") or "").strip()
+        target = Path(target_text).expanduser() if target_text else Path.cwd() / project.package
+        result = init_project(target, project, force=bool(request.flag("force")))
+    except ProjectError as exc:
+        write_line(f"{TAG_ERROR} {exc}")
+        if exc.hint:
+            write_line(f"{TAG_NOTE} {exc.hint}")
+        return int(ExitCode.ERROR)
+    write_status(f"project {project.name} created")
+    print_key_values(
+        [
+            ("root", str(result.root)),
+            ("package", project.package),
+            ("ecosystem", ECOSYSTEMS[project.ecosystem]),
+            ("modules", "(bare chassis)" if project.minimal else "app"),
+            ("files written", len(result.files)),
+            ("chassis", f"korodexios-core {project.core_version}"),
+        ]
+    )
+    write_line(
+        f"{TAG_NOTE} next: cd {result.root} && pip install -e '.[dev]' && {project.script} run"
+    )
+    return int(ExitCode.SUCCESS)
+
+
 def _status_command(request: CliRequest) -> int:
     """Query a running chassis through its loopback control plane."""
     chassis = _chassis(request)
@@ -569,7 +653,7 @@ def _run_command(request: CliRequest) -> int:
     if chassis.state.value == "failed":
         for name in chassis.registry.health()["failed"]:
             write_line(f"{TAG_ERROR} module {name} failed to initialize", stream=sys.stderr)
-    chassis.start()
+    chassis.start(ipc=not request.flag("once"))
     try:
         if request.flag("once"):
             chassis.run_once()
