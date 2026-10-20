@@ -14,6 +14,21 @@ korodex <command>                      # kept for backward compatibility
 Help text follows the alias you invoke (`usage: kdx ...`), so screenshots match the
 docs. `kdx --help` lists every command, including the ones modules contributed.
 
+## Distribution and installation
+
+| Install | Command | Notes |
+| --- | --- | --- |
+| pip in a venv | `pip install korodexios-core` | from an index, once published |
+| uv | `uv pip install korodexios-core` | the same wheel |
+| pipx / uv tool | `pipx install korodexios-core` | the three console scripts land on PATH |
+| git bootstrap | `pip install "korodexios-core @ git+ssh://git@github.com/korodexios/kdx-core.git@v0.1.0"` | the documented path before an index publish |
+| development | `pip install -e ".[dev]"` | the chassis repository itself |
+
+The wheel carries `py.typed` and every built-in module manifest
+(`korodex_module.toml`), so a plugin installed into the same environment can read the
+manifests it needs. The sdist carries `docs/`, `README.md`, `AGENTS.md`, `llms.txt`,
+`.agents/skills/`, `kdx.yml`, and the tests, so an sdist install can run `make check`.
+
 ## Global options
 
 | Option | Effect | Default |
@@ -77,10 +92,14 @@ kdx logs -f                   # follow until Ctrl-C
 kdx logs -f --timeout 5       # follow for 5 seconds (CI friendly)
 kdx logs --raw                # only log lines, no decorations
 kdx logs --clear              # truncate the log file (asks first; --yes accepts)
+kdx logs --rotate             # archive the file and start a fresh one
 ```
 
 No POSIX `tail` required: the file lives under the configured log directory and is
-resolved from configuration, not a hardcoded path.
+resolved from configuration, not a hardcoded path. Rotation names the archive
+`korodex.log.<timestamp>`, keeps the newest `core.log.backup_count` archives, and is
+cooperative: the running chassis notices the renamed file on its next write and
+reopens the path, so it never keeps appending into the archive.
 
 ## `kdx modules`
 

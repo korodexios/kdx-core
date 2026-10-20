@@ -38,6 +38,7 @@ REQUIRED_SDIST_ENTRIES = (
     "docs/ARCHITECTURE.md",
     "docs/CLI_REFERENCE.md",
     "docs/TUTORIAL.md",
+    "docs/ROADMAP.md",
     ".agents/skills/verification.md",
     "README.md",
     "LICENSE",

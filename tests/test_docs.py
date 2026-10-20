@@ -20,6 +20,7 @@ REQUIRED_DOCS = {
     "ARCHITECTURE.md": 110,
     "CLI_REFERENCE.md": 110,
     "TUTORIAL.md": 90,
+    "ROADMAP.md": 30,
 }
 
 
@@ -161,6 +162,16 @@ def test_tutorial_ends_with_a_running_module() -> None:
         assert needle in tutorial, f"tutorial lost {needle!r}"
 
 
+def test_roadmap_records_the_phase_history_and_the_next_step() -> None:
+    """The roadmap is a real document, not a README section that rots."""
+    roadmap = read(DOCS / "ROADMAP.md")
+    for needle in ("## Phases", "## Next", "| 1 |", "| 12 |", "make check"):
+        assert needle in roadmap, f"roadmap lost {needle!r}"
+    next_section = roadmap.split("## Next", 1)[1].split("## Release", 1)[0]
+    for needle in ("Publish to an index", "Textual/TUI", "Windows type check"):
+        assert needle in next_section, f"roadmap next lost {needle!r}"
+
+
 def test_readme_indexes_the_documentation_suite() -> None:
     readme = read(REPO_ROOT / "README.md")
     for target in (
@@ -168,6 +179,7 @@ def test_readme_indexes_the_documentation_suite() -> None:
         "docs/CLI_REFERENCE.md",
         "docs/ARCHITECTURE.md",
         "docs/AGENTS_GUIDE.md",
+        "docs/ROADMAP.md",
         "llms.txt",
         "AGENTS.md",
     ):

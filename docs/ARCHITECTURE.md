@@ -126,6 +126,7 @@ The chassis installs handlers so an interactive Ctrl-C never leaves a traceback:
 | --- | --- | --- |
 | `SIGINT` | operator interrupt | `130` |
 | `SIGTERM` | supervisor stop (systemd, containers) | `143` |
+| `SIGBREAK` | Windows console close; joins the same gate as `SIGINT` | `130` |
 | `POST /api/v1/shutdown` | planned stop | `0` |
 | `Chassis.request_clean_stop()` | in-process stop | `0` |
 
@@ -158,6 +159,11 @@ Discovery failures are data, not exceptions: a broken plugin is recorded in the
 `DiscoveryReport` (candidates, skipped, failures) and reported by `kdx doctor` and
 `kdx modules list`. The chassis boots with zero modules rather than dying with one.
 
+The contract is a `runtime_checkable` `Protocol` (`ModuleProtocol`) plus an optional
+`Module` base class that wires `config`, `logger`, `bus`, and `context` from the
+handed `CoreContext`. Registration checks the protocol and records a failure instead
+of raising, so one bad module never costs the chassis the rest.
+
 ## 9. Public API and versioning
 
 The package root `__all__` is the frozen public surface (core API `v1`): the module
@@ -166,6 +172,16 @@ lifecycle, paths, logging, exceptions, and the control plane. Additive changes a
 allowed inside `v1`; anything that breaks an import or a signature moves the major
 version. `korodexios_core.__version__` is the single version source; `pyproject.toml`
 reads it dynamically.
+
+The freeze policy is mechanical:
+
+| Change | Effect |
+| --- | --- |
+| New export, new optional keyword, new command | additive: `v1` keeps going |
+| Renamed or removed export, changed signature | breaking: the major version moves |
+| `korodexios_core.CORE_API_VERSION` | the string a module can assert against |
+
+The wheel ships a `py.typed` marker, so type information travels with the package.
 
 ## 10. Boundaries
 

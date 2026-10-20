@@ -61,6 +61,7 @@ In another:
 ```bash
 kdx status                 # live report over the control plane
 kdx logs -n 20             # the rotating log file, no tail required
+kdx logs --rotate          # archive it; the daemon reopens the path
 kdx doctor                 # config provenance and module states
 ```
 
