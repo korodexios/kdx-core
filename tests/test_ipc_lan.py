@@ -235,7 +235,7 @@ def test_status_command_explains_a_missing_remote_token(capsys, project_root) ->
         assert main(args) == int(ExitCode.ERROR)
         captured = capsys.readouterr()
         assert "requires a token" in captured.out
-        assert "KORODEX_CORE__IPC__TOKEN" in captured.out
+        assert "KDX_CORE__IPC__TOKEN" in captured.out
     finally:
         chassis.shutdown()
 

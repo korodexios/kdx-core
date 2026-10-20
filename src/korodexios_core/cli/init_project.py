@@ -255,7 +255,7 @@ def build_files(project: ProjectTemplate) -> dict[str, str]:
         "README.md": _readme(project),
         "AGENTS.md": _agents(project),
         "Makefile": _makefile(project),
-        "korodex.yml": _korodex_yml(project),
+        "kdx.yml": _config_yml(project),
         ".gitignore": _gitignore(),
         ".env.example": _env_example(project),
         ".agents/skills/project-setup.md": _skill_project_setup(project),
@@ -331,7 +331,7 @@ def _pyproject(project: ProjectTemplate) -> str:
     )
 
 
-def _korodex_yml(project: ProjectTemplate) -> str:
+def _config_yml(project: ProjectTemplate) -> str:
     disabled = ", ".join(EXAMPLE_MODULES) if project.minimal else ""
     module_lines: list[str] = (
         []
@@ -409,7 +409,7 @@ def _readme(project: ProjectTemplate) -> str:
     lines += [
         "tests/",
         "  test_smoke.py          # proves discovery, config, and the module contract",
-        "korodex.yml              # project configuration (the config layer)",
+        "kdx.yml                  # project configuration (the config layer)",
         ".env.example             # copy to .env for the env layer",
         "AGENTS.md                # working agreement for humans and coding agents",
         ".agents/skills/          # playbooks: how to extend this project safely",
@@ -421,7 +421,7 @@ def _readme(project: ProjectTemplate) -> str:
         ]
     lines += [fence, "", "## Configuration precedence", ""]
     lines += [
-        "@BT@CLI flags > .env (KORODEX_*) > korodex.yml > built-in defaults@BT@: every key is",
+        "@BT@CLI flags > .env (KDX_*) > kdx.yml > built-in defaults@BT@: every key is",
         "dotted (core.log.level) and @BT@kdx doctor@BT@ shows where each value came from.",
         "",
         "## Verification",
@@ -463,7 +463,7 @@ def _agents(project: ProjectTemplate) -> str:
         f"- @BT@src/{project.package}/modules/@BT@ - chassis modules, auto-discovered.",
         f"- @BT@src/{project.package}/cli.py@BT@ - the only entry point; keep it thin.",
         "- @BT@tests/@BT@ - pytest; no network, no sleeps longer than one tick.",
-        "- @BT@korodex.yml@BT@ - configuration; never hardcode what belongs here.",
+        "- @BT@kdx.yml@BT@ - configuration; never hardcode what belongs here.",
         "- @BT@var/@BT@ - runtime state (logs, IPC discovery file); never committed.",
         "",
         "## Rules",
@@ -538,6 +538,7 @@ def _gitignore() -> str:
             "*.log",
             ".env",
             ".env.local",
+            "kdx.local.yml",
             "korodex.local.yml",
             "node_modules/",
             "web/dist/",
@@ -549,10 +550,11 @@ def _gitignore() -> str:
 def _env_example(project: ProjectTemplate) -> str:
     return "\n".join(
         [
-            "# Env layer: copy to .env. KORODEX_FOO__BAR maps to the key foo.bar.",
-            "KORODEX_LOG__LEVEL=INFO",
-            "KORODEX_IPC__PORT=0",
-            f"# KORODEX_MODULES__APP__GREETING=Hello from {project.title}",
+            "# Env layer: copy to .env. KDX_CORE__FOO__BAR maps to the key core.foo.bar.",
+            "# KORODEXIOS_* and the legacy KORODEX_* prefixes are also understood.",
+            "KDX_CORE__LOG__LEVEL=INFO",
+            "KDX_CORE__IPC__PORT=0",
+            f"# KDX_MODULES__APP__GREETING=Hello from {project.title}",
             "",
         ]
     )
@@ -594,10 +596,10 @@ def _cli_source(project: ProjectTemplate) -> str:
             "",
             "",
             "def project_root() -> Path:",
-            '    """Return the repository root that owns korodex.yml."""',
+            '    """Return the repository root that owns kdx.yml."""',
             "    here = Path(__file__).resolve()",
             "    for candidate in (*here.parents[2:3], Path.cwd()):",
-            '        if (candidate / "korodex.yml").is_file():',
+            '        if (candidate / "kdx.yml").is_file():',
             "            return candidate",
             "    return Path.cwd()",
             "",
@@ -767,9 +769,9 @@ def _smoke_test(project: ProjectTemplate) -> str:
         "",
         "",
         "def test_project_root_holds_configuration() -> None:",
-        '    """The entry point must find korodex.yml next to the source tree."""',
+        '    """The entry point must find kdx.yml next to the source tree."""',
         "    root = project_root()",
-        '    assert (root / "korodex.yml").is_file()',
+        '    assert (root / "kdx.yml").is_file()',
         '    assert (root / "pyproject.toml").is_file()',
         "",
         "",
@@ -835,9 +837,9 @@ def _smoke_test(project: ProjectTemplate) -> str:
             "",
             "",
             "def test_configuration_declares_the_module_root() -> None:",
-            '    """korodex.yml points discovery at the project modules."""',
+            '    """kdx.yml points discovery at the project modules."""',
             "    data = yaml.safe_load(",
-            '        (project_root() / "korodex.yml").read_text(encoding="utf-8")',
+            '        (project_root() / "kdx.yml").read_text(encoding="utf-8")',
             "    )",
             "    assert data is not None",
             '    extra = data["core"]["modules"]["extra_paths"]',
@@ -968,7 +970,7 @@ def _skill_project_setup(project: ProjectTemplate) -> str:
             "",
             "## Steps",
             f"1. Code lives in @BT@src/{project.package}/@BT@, never at the root.",
-            "2. Module roots go in @BT@korodex.yml@BT@ under @BT@core.modules.extra_paths@BT@.",
+            "2. Module roots go in @BT@kdx.yml@BT@ under @BT@core.modules.extra_paths@BT@.",
             "3. Runtime state lives in @BT@var/@BT@ (gitignored); never write next to sources.",
             "4. Runtime deps go in @BT@[project].dependencies@BT@; tooling in @BT@dev@BT@.",
             "5. @BT@pip install -e ../korodexios-core@BT@ (or a git URL) provides the chassis.",

@@ -10,10 +10,36 @@ PACKAGE_IMPORT_NAME: Final[str] = "korodexios_core"
 MODULE_PACKAGE: Final[str] = "korodexios_core.modules"
 MODULES_DIR_NAME: Final[str] = "modules"
 MANIFEST_NAME: Final[str] = "korodex_module.toml"
-ENV_PREFIX: Final[str] = "KORODEX"
+ENV_PREFIX: Final[str] = "KDX"
+ENV_PREFIX_ALIASES: Final[tuple[str, ...]] = ("KDX", "KORODEXIOS", "KORODEX")
 
-CONFIG_CANDIDATES: Final[tuple[str, ...]] = ("korodex.yml", "korodex.yaml", "korodex.json")
-ROOT_MARKER_FILES: Final[tuple[str, ...]] = (".korodex-root", *CONFIG_CANDIDATES)
+CONFIG_CANDIDATES: Final[tuple[str, ...]] = (
+    "kdx.yml",
+    "kdx.yaml",
+    "kdx.json",
+    "korodexios.yml",
+    "korodexios.yaml",
+    "korodexios.json",
+    "korodex.yml",
+    "korodex.yaml",
+    "korodex.json",
+)
+LOCAL_CONFIG_CANDIDATES: Final[tuple[str, ...]] = (
+    "kdx.local.yml",
+    "kdx.local.yaml",
+    "kdx.local.json",
+    "korodexios.local.yml",
+    "korodexios.local.yaml",
+    "korodexios.local.json",
+    "korodex.local.yml",
+    "korodex.local.yaml",
+)
+ROOT_MARKER_FILES: Final[tuple[str, ...]] = (
+    ".kdx-root",
+    ".korodex-root",
+    *CONFIG_CANDIDATES,
+    *LOCAL_CONFIG_CANDIDATES,
+)
 ROOT_MARKER_PROJECTS: Final[tuple[str, ...]] = ("korodexios-core",)
 DOTENV_NAME: Final[str] = ".env"
 
@@ -26,10 +52,22 @@ KEY_SEPARATOR: Final[str] = "."
 ENV_NESTED_SEPARATOR: Final[str] = "__"
 ENV_LIST_SEPARATOR: Final[str] = ","
 
-HOME_ENV_VAR: Final[str] = "KORODEX_HOME"
-CONFIG_ENV_VAR: Final[str] = "KORODEX_CONFIG"
-ENV_FILE_ENV_VAR: Final[str] = "KORODEX_ENV_FILE"
-TRACEBACK_ENV_VAR: Final[str] = "KORODEX_TRACEBACK"
+HOME_ENV_VAR: Final[str] = "KDX_HOME"
+CONFIG_ENV_VAR: Final[str] = "KDX_CONFIG"
+ENV_FILE_ENV_VAR: Final[str] = "KDX_ENV_FILE"
+TRACEBACK_ENV_VAR: Final[str] = "KDX_TRACEBACK"
+HOME_ENV_VARS: Final[tuple[str, ...]] = ("KDX_HOME", "KORODEXIOS_HOME", "KORODEX_HOME")
+CONFIG_ENV_VARS: Final[tuple[str, ...]] = ("KDX_CONFIG", "KORODEXIOS_CONFIG", "KORODEX_CONFIG")
+ENV_FILE_ENV_VARS: Final[tuple[str, ...]] = (
+    "KDX_ENV_FILE",
+    "KORODEXIOS_ENV_FILE",
+    "KORODEX_ENV_FILE",
+)
+TRACEBACK_ENV_VARS: Final[tuple[str, ...]] = (
+    "KDX_TRACEBACK",
+    "KORODEXIOS_TRACEBACK",
+    "KORODEX_TRACEBACK",
+)
 
 TAG_OK: Final[str] = "[✓]"
 TAG_ASK: Final[str] = "[?]"

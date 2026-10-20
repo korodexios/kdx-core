@@ -34,8 +34,9 @@ kdx logs -n 50    # the rotating log file, no POSIX tail required
    shutdown. The CLI and any future TUI are thin clients of that core.
 2. **Zero stubs.** No TODO bodies, no `pass` placeholders, no mock returns. If a
    branch exists, it runs.
-3. **Precedence is sacred.** CLI > env (`KORODEX_*`) > `korodex.yml` > defaults.
-   Read configuration through `LayeredConfig`, never `os.environ`.
+3. **Precedence is sacred.** CLI > env (`KDX_*`, then `KORODEXIOS_*`, then legacy
+   `KORODEX_*`) > `kdx.local.yml` > `kdx.yml` > defaults. Read configuration through
+   `LayeredConfig`, never `os.environ`.
 4. **Clean shutdown.** Whatever `start()` acquires, `stop()` releases inside
    `core.lifecycle.stop_timeout`. SIGINT exits 130, SIGTERM 143, an operator stop
    (including `POST /api/v1/shutdown`) exits 0. No `KeyboardInterrupt` traceback.

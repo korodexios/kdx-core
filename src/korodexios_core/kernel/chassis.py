@@ -92,6 +92,7 @@ class Chassis:
         )
         config = LayeredConfig.load(
             config_file=paths.config_file,
+            local_config_file=paths.local_config_file,
             env_file=paths.env_file,
             environ=environ,
             cli_overrides=options.cli_overrides,

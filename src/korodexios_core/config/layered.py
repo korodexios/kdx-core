@@ -32,8 +32,9 @@ class ConfigSource(IntEnum):
 
     DEFAULT = 0
     FILE = 1
-    ENV = 2
-    CLI = 3
+    LOCAL = 2
+    ENV = 3
+    CLI = 4
 
     def label(self) -> str:
         """Return the human label used by 'korodex config show'."""
@@ -43,6 +44,7 @@ class ConfigSource(IntEnum):
 _SOURCE_LABELS: dict[ConfigSource, str] = {
     ConfigSource.DEFAULT: "built-in default",
     ConfigSource.FILE: "config file",
+    ConfigSource.LOCAL: "local override file",
     ConfigSource.ENV: "environment",
     ConfigSource.CLI: "CLI argument",
 }
@@ -172,7 +174,12 @@ class _Layer:
 
 
 class LayeredConfig:
-    """Read-only view over four configuration layers with strict precedence."""
+    """Read-only view over five configuration layers with strict precedence.
+
+    Precedence, lowest to highest: built-in defaults, the project config file, the
+    gitignored local override (kdx.local.yml), the environment (.env plus process
+    env), and CLI overrides.
+    """
 
     def __init__(
         self,
@@ -181,8 +188,10 @@ class LayeredConfig:
         env_values: Mapping[str, Any] | None = None,
         cli_values: Mapping[str, Any] | None = None,
         *,
+        local_values: Mapping[str, Any] | None = None,
         prefix: str = ENV_PREFIX,
         config_file: Path | None = None,
+        local_config_file: Path | None = None,
         env_file: Path | None = None,
     ) -> None:
         base = dict(CORE_DEFAULTS)
@@ -196,6 +205,11 @@ class LayeredConfig:
                 origin=str(config_file) if config_file else "(no config file)",
             ),
             _Layer(
+                values=dict(local_values or {}),
+                source=ConfigSource.LOCAL,
+                origin=str(local_config_file) if local_config_file else "(no local override)",
+            ),
+            _Layer(
                 values=dict(env_values or {}),
                 source=ConfigSource.ENV,
                 origin=str(env_file) if env_file else "process environment",
@@ -206,8 +220,10 @@ class LayeredConfig:
                 origin="command line",
             ),
         ]
+        self._index = {layer.source: position for position, layer in enumerate(self._layers)}
         self._prefix = prefix
         self._config_file = config_file
+        self._local_config_file = local_config_file
         self._env_file = env_file
 
     @classmethod
@@ -215,19 +231,24 @@ class LayeredConfig:
         cls,
         *,
         config_file: Path | None = None,
+        local_config_file: Path | None = None,
         env_file: Path | None = None,
         environ: Mapping[str, str] | None = None,
         cli_overrides: Mapping[str, Any] | None = None,
         runtime_defaults: Mapping[str, Any] | None = None,
         prefix: str | None = None,
     ) -> LayeredConfig:
-        """Load the file and environment layers from disk, then build the view."""
+        """Load the file, local override, and environment layers, then build the view."""
         import os
 
         env = os.environ if environ is None else environ
         file_values = load_config_file(config_file) if config_file else {}
+        local_values = load_config_file(local_config_file) if local_config_file else {}
         resolved_prefix = (
-            prefix or _prefix_from(file_values) or str(CORE_DEFAULTS["core.env.prefix"])
+            prefix
+            or _prefix_from(local_values)
+            or _prefix_from(file_values)
+            or str(CORE_DEFAULTS["core.env.prefix"])
         )
         dotenv_values = load_dotenv(env_file, resolved_prefix) if env_file else {}
         live_values = load_environment(env, resolved_prefix)
@@ -238,8 +259,10 @@ class LayeredConfig:
             file_values=file_values,
             env_values=env_layer,
             cli_values=cli_overrides,
+            local_values=local_values,
             prefix=resolved_prefix,
             config_file=config_file,
+            local_config_file=local_config_file,
             env_file=env_file,
         )
 
@@ -254,19 +277,31 @@ class LayeredConfig:
         return self._config_file
 
     @property
+    def local_config_file(self) -> Path | None:
+        """Return the gitignored local override that was loaded, when any."""
+        return self._local_config_file
+
+    @property
     def env_file(self) -> Path | None:
         """Return the .env file that was loaded, when any."""
         return self._env_file
 
+    def values_of(self, source: ConfigSource) -> dict[str, Any]:
+        """Return a copy of the values held by the *source* layer."""
+        return dict(self._layer(source).values)
+
+    def _layer(self, source: ConfigSource) -> _Layer:
+        return self._layers[self._index[source]]
+
     def with_cli_overrides(self, values: Mapping[str, Any]) -> LayeredConfig:
         """Return a copy whose CLI layer also contains *values*."""
-        merged = dict(self._layers[3].values)
+        merged = self.values_of(ConfigSource.CLI)
         merged.update({str(key): value for key, value in values.items()})
         return self._rebuild(cli_values=merged)
 
     def with_defaults(self, values: Mapping[str, Any]) -> LayeredConfig:
         """Return a copy whose default layer also contains *values*."""
-        merged = dict(self._layers[0].values)
+        merged = self.values_of(ConfigSource.DEFAULT)
         merged.update({str(key): value for key, value in values.items()})
         return self._rebuild(defaults=merged)
 
@@ -276,12 +311,14 @@ class LayeredConfig:
         cli_values: Mapping[str, Any] | None = None,
     ) -> LayeredConfig:
         return LayeredConfig(
-            defaults=defaults if defaults is not None else self._layers[0].values,
-            file_values=self._layers[1].values,
-            env_values=self._layers[2].values,
-            cli_values=cli_values if cli_values is not None else self._layers[3].values,
+            defaults=defaults if defaults is not None else self.values_of(ConfigSource.DEFAULT),
+            file_values=self.values_of(ConfigSource.FILE),
+            env_values=self.values_of(ConfigSource.ENV),
+            cli_values=cli_values if cli_values is not None else self.values_of(ConfigSource.CLI),
+            local_values=self.values_of(ConfigSource.LOCAL),
             prefix=self._prefix,
             config_file=self._config_file,
+            local_config_file=self._local_config_file,
             env_file=self._env_file,
         )
 
@@ -405,7 +442,8 @@ class LayeredConfig:
     def __repr__(self) -> str:
         return (
             f"LayeredConfig(keys={len(self.keys())}, config_file={self._config_file!s}, "
-            f"env_file={self._env_file!s}, prefix={self._prefix!r})"
+            f"local_file={self._local_config_file!s}, env_file={self._env_file!s}, "
+            f"prefix={self._prefix!r})"
         )
 
 
@@ -460,7 +498,7 @@ class ScopedConfig:
                 return entry
         raise ConfigurationError(
             f"configuration key {scoped!r} is not defined by any layer",
-            hint="Add the key under the matching 'modules' section of korodex.yml.",
+            hint="Add the key under the matching 'modules' section of kdx.yml.",
         )
 
     def get(self, key: str, default: Any = None) -> Any:

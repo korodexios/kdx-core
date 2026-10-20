@@ -10,11 +10,13 @@ from typing import Any
 
 from .constants import (
     CONFIG_CANDIDATES,
-    CONFIG_ENV_VAR,
+    CONFIG_ENV_VARS,
     DATA_DIR_NAME,
     DOTENV_NAME,
-    ENV_FILE_ENV_VAR,
+    ENV_FILE_ENV_VARS,
     HOME_ENV_VAR,
+    HOME_ENV_VARS,
+    LOCAL_CONFIG_CANDIDATES,
     LOG_DIR_NAME,
     MODULES_DIR_NAME,
     ROOT_MARKER_FILES,
@@ -48,13 +50,13 @@ def discover_root(
 ) -> Path:
     """Walk upward from 'start' looking for the project root marker."""
     env = os.environ if environ is None else environ
-    override = env.get(HOME_ENV_VAR, "").strip()
+    override = _env_lookup(env, HOME_ENV_VARS)
     if override:
         candidate = _coerce_path(override)
         if not candidate.is_absolute():
             raise PathDiscoveryError(
                 f"{HOME_ENV_VAR}={override!r} must be an absolute path",
-                hint="Point KORODEX_HOME at the directory that holds korodex.yml.",
+                hint="Point KDX_HOME at the directory that holds kdx.yml.",
             )
         return candidate.resolve()
 
@@ -74,6 +76,15 @@ def discover_root(
     return cursor
 
 
+def _env_lookup(env: Mapping[str, str], names: Sequence[str]) -> str:
+    """Return the first non-empty value among *names*, primary prefix first."""
+    for name in names:
+        value = env.get(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
 def _first_existing(directory: Path, names: Sequence[str]) -> Path | None:
     for name in names:
         candidate = directory / name
@@ -88,6 +99,7 @@ class AppPaths:
 
     root: Path
     config_file: Path | None = None
+    local_config_file: Path | None = None
     env_file: Path | None = None
     state_dir: Path = Path(".")
     log_dir: Path = Path(".")
@@ -111,10 +123,10 @@ class AppPaths:
         if not resolved_root.is_dir():
             raise PathDiscoveryError(
                 f"chassis root {resolved_root} is not a directory",
-                hint="Pass --home or set KORODEX_HOME to an existing directory.",
+                hint="Pass --home or set KDX_HOME to an existing directory.",
             )
 
-        explicit_config = config_file or env.get(CONFIG_ENV_VAR, "").strip()
+        explicit_config = config_file or _env_lookup(env, CONFIG_ENV_VARS)
         config_path: Path | None = None
         if explicit_config:
             candidate = _coerce_path(explicit_config)
@@ -128,8 +140,11 @@ class AppPaths:
             config_path = candidate
         else:
             config_path = _first_existing(resolved_root, CONFIG_CANDIDATES)
+        local_config_path = _first_existing(resolved_root, LOCAL_CONFIG_CANDIDATES)
+        if local_config_path is not None and local_config_path == config_path:
+            local_config_path = None  # never load the same file twice
 
-        explicit_env = env_file or env.get(ENV_FILE_ENV_VAR, "").strip()
+        explicit_env = env_file or _env_lookup(env, ENV_FILE_ENV_VARS)
         dotenv_path: Path | None = None
         if explicit_env:
             candidate = _coerce_path(explicit_env)
@@ -149,6 +164,7 @@ class AppPaths:
         return cls(
             root=resolved_root,
             config_file=config_path,
+            local_config_file=local_config_path,
             env_file=dotenv_path,
             state_dir=state_dir,
             log_dir=state_dir / Path(LOG_DIR_NAME).name,
@@ -185,6 +201,7 @@ class AppPaths:
         values: dict[str, Any] = {
             "root": self.root,
             "config_file": self.config_file,
+            "local_config_file": self.local_config_file,
             "env_file": self.env_file,
             "state_dir": self.state_dir,
             "log_dir": self.log_dir,
@@ -220,6 +237,7 @@ class AppPaths:
         return {
             "root": str(self.root),
             "config_file": str(self.config_file) if self.config_file else None,
+            "local_config_file": str(self.local_config_file) if self.local_config_file else None,
             "env_file": str(self.env_file) if self.env_file else None,
             "state_dir": str(self.state_dir),
             "log_dir": str(self.log_dir),
@@ -250,11 +268,13 @@ def paths_from_mapping(data: Mapping[str, Any]) -> AppPaths:
         return Path(str(value)) if value else Path(".")
 
     config_value = data.get("config_file")
+    local_value = data.get("local_config_file")
     env_value = data.get("env_file")
     extra = data.get("extra_module_dirs") or []
     return AppPaths(
         root=to_path("root"),
         config_file=Path(str(config_value)) if config_value else None,
+        local_config_file=Path(str(local_value)) if local_value else None,
         env_file=Path(str(env_value)) if env_value else None,
         state_dir=to_path("state_dir"),
         log_dir=to_path("log_dir"),

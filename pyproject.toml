@@ -70,7 +70,7 @@ include = [
   "AGENTS.md",
   ".agents",
   "LICENSE",
-  "korodex.yml",
+  "kdx.yml",
   ".env.example",
   "Makefile",
 ]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +13,7 @@ from ..constants import (
     ENV_LIST_SEPARATOR,
     ENV_NESTED_SEPARATOR,
     ENV_PREFIX,
+    ENV_PREFIX_ALIASES,
     KEY_SEPARATOR,
 )
 from ..exceptions import ConfigFileError
@@ -111,12 +112,30 @@ def load_config_file(path: Path) -> dict[str, Any]:
     return flatten_mapping({str(key): value for key, value in data.items()})
 
 
-def normalize_env_key(key: str, prefix: str = ENV_PREFIX) -> str | None:
-    """Translate an environment variable name into a dotted config key."""
+def env_prefixes(prefix: str | Sequence[str] | None = None) -> tuple[str, ...]:
+    """Return the environment prefixes to consult, in precedence order.
+
+    The built-in aliases are consulted together, in order: KDX_ (primary),
+    KORODEXIOS_ (canonical long name), KORODEX_ (legacy). An operator who sets a
+    private prefix such as core.env.prefix: MYAPP gets exactly MYAPP_ - no
+    implicit aliases - so a shared machine never leaks another project's keys.
+    """
+    if prefix is None:
+        return ENV_PREFIX_ALIASES
+    if isinstance(prefix, str):
+        token = prefix.strip().upper()
+        if not token or token in ENV_PREFIX_ALIASES:
+            return ENV_PREFIX_ALIASES
+        return (token,)
+    resolved = tuple(str(item).strip().upper() for item in prefix if str(item).strip())
+    return resolved or ENV_PREFIX_ALIASES
+
+
+def normalize_exact_key(key: str, token: str) -> str | None:
+    """Translate *key* through exactly one prefix *token*, with no alias expansion."""
     cleaned = key.strip()
     if not cleaned:
         return None
-    token = prefix.strip().upper()
     upper = cleaned.upper()
     if token:
         if not upper.startswith(f"{token}_"):
@@ -134,6 +153,22 @@ def normalize_env_key(key: str, prefix: str = ENV_PREFIX) -> str | None:
     if not segments:
         return None
     return KEY_SEPARATOR.join(segments)
+
+
+def normalize_env_key(
+    key: str,
+    prefix: str | Sequence[str] = ENV_PREFIX,
+) -> str | None:
+    """Translate an environment variable name into a dotted config key.
+
+    The first prefix that matches wins, so KDX_CORE__LOG__LEVEL and
+    KORODEX_CORE__LOG__LEVEL both map to core.log.level.
+    """
+    for token in env_prefixes(prefix):
+        dotted = normalize_exact_key(key, token)
+        if dotted is not None:
+            return dotted
+    return None
 
 
 def _strip_inline_comment(value: str) -> str:
@@ -166,7 +201,7 @@ def _unquote_env_value(value: str) -> str:
 def load_dotenv(path: Path, prefix: str = ENV_PREFIX) -> dict[str, str]:
     """Parse a .env file into flat dotted keys, ignoring foreign prefixes."""
     text = read_text(path)
-    values: dict[str, str] = {}
+    pairs: list[tuple[str, str]] = []
     for lineno, raw_line in enumerate(text.splitlines(), start=1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
@@ -185,21 +220,31 @@ def load_dotenv(path: Path, prefix: str = ENV_PREFIX) -> dict[str, str]:
                 f"{path.name}:{lineno} has an invalid key name: {key!r}",
                 hint="Keys use letters, digits, underscores, dots, and dashes.",
             )
-        dotted = normalize_env_key(key, prefix)
-        if dotted is None:
-            continue
-        values[dotted] = _unquote_env_value(raw_value.strip())
+        pairs.append((key, raw_value.strip()))
+    values: dict[str, str] = {}
+    for token in env_prefixes(prefix):
+        for key, raw_value in pairs:
+            dotted = normalize_exact_key(key, token)
+            if dotted is not None and dotted not in values:
+                values[dotted] = _unquote_env_value(raw_value)
     return values
 
 
-def load_environment(environ: Mapping[str, str], prefix: str = ENV_PREFIX) -> dict[str, str]:
-    """Collect chassis keys from a live environment mapping."""
+def load_environment(
+    environ: Mapping[str, str],
+    prefix: str = ENV_PREFIX,
+) -> dict[str, str]:
+    """Collect chassis keys from a live environment mapping.
+
+    Prefixes are consulted in precedence order, so KDX_CORE__IPC__HOST wins over a
+    legacy KORODEX_CORE__IPC__HOST when both are exported.
+    """
     values: dict[str, str] = {}
-    for key, value in environ.items():
-        dotted = normalize_env_key(str(key), prefix)
-        if dotted is None:
-            continue
-        values[dotted] = str(value)
+    for token in env_prefixes(prefix):
+        for key, value in environ.items():
+            dotted = normalize_exact_key(str(key), token)
+            if dotted is not None and dotted not in values:
+                values[dotted] = str(value)
     return values
 
 

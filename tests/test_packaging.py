@@ -36,7 +36,7 @@ REQUIRED_SDIST_ENTRIES = (
     ".agents/skills/verification.md",
     "README.md",
     "LICENSE",
-    "korodex.yml",
+    "kdx.yml",
     "pyproject.toml",
     "Makefile",
     "src/korodexios_core/py.typed",

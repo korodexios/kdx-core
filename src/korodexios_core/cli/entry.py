@@ -87,7 +87,7 @@ def _add_global_flags(parser: argparse.ArgumentParser) -> None:
         "--config",
         metavar="FILE",
         default=argparse.SUPPRESS,
-        help="Path to korodex.yml or korodex.json.",
+        help="Path to kdx.yml, korodexios.yml, or korodex.yml.",
     )
     group.add_argument(
         "--env-file",

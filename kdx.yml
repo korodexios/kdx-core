@@ -38,7 +38,7 @@ core:
     confirmations: true
     width: 100
   env:
-    prefix: KORODEX
+    prefix: KDX
 
 # Per-module configuration. Each module receives a scoped view of "modules.<name>".
 modules:

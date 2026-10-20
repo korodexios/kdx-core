@@ -646,7 +646,7 @@ def _status_command(request: CliRequest) -> int:
         write_line(f"{TAG_ERROR} the daemon rejected this client ({endpoint} requires a token)")
         if remote:
             write_line(
-                f"{TAG_NOTE} pass --token TOKEN, or set core.ipc.token / KORODEX_CORE__IPC__TOKEN"
+                f"{TAG_NOTE} pass --token TOKEN, or set core.ipc.token / KDX_CORE__IPC__TOKEN"
             )
         else:
             write_line(f"{TAG_NOTE} start 'korodex run' again so {discovery_path} is refreshed")

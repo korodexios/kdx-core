@@ -83,7 +83,7 @@ def test_generated_configuration_files_parse(tmp_path: Path) -> None:
     assert pyproject["project"]["name"] == "parse-check"
     assert pyproject["project"]["dependencies"][0].startswith("korodexios-core")
     assert pyproject["project"]["scripts"]["parse-check"] == "parse_check.cli:main"
-    config = yaml.safe_load(files["korodex.yml"])
+    config = yaml.safe_load(files["kdx.yml"])
     assert config["core"]["modules"]["extra_paths"] == ["src/parse_check/modules"]
     assert config["core"]["ipc"]["port"] == 0
     assert "\t" in files["Makefile"]
@@ -96,7 +96,7 @@ def test_minimal_variant_disables_the_example_modules(tmp_path: Path) -> None:
     assert result.root.name == "bare_things"
     assert not (result.root / "src/bare_things/modules/app").exists()
     assert (result.root / "src/bare_things/modules/.gitkeep").is_file()
-    config = yaml.safe_load((result.root / "korodex.yml").read_text(encoding="utf-8"))
+    config = yaml.safe_load((result.root / "kdx.yml").read_text(encoding="utf-8"))
     assert config["core"]["modules"]["disabled"] == list(EXAMPLE_MODULES)
     assert "modules" not in config
 

@@ -36,7 +36,7 @@ CORE_DEFAULTS: Final[dict[str, Any]] = {
     "core.cli.interactive": True,
     "core.cli.confirmations": True,
     "core.cli.width": 100,
-    "core.env.prefix": "KORODEX",
+    "core.env.prefix": "KDX",
 }
 
 RUNTIME_DEFAULT_KEYS: Final[tuple[str, ...]] = ("core.home",)
