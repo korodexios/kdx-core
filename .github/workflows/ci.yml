@@ -52,6 +52,10 @@ jobs:
   check:
     name: check (${{ matrix.os }} / Python ${{ matrix.python }})
     needs: [prepare]
+    # A failing Windows check publishes its first diagnostics line as a git note,
+    # which is readable over SSH without a signed-in browser.
+    permissions:
+      contents: write
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -60,6 +64,8 @@ jobs:
     steps:
       - name: Check out the chassis
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install uv and Python ${{ matrix.python }}
         uses: astral-sh/setup-uv@v5
@@ -97,6 +103,10 @@ jobs:
           if [ "$status" -ne 0 ]; then
             first="$(printf '%s\n' "$out" | grep -m 1 -E 'error' || true)"
             echo "::error::[win mypy] ${first:-mypy exited with status $status}"
+            git config user.name korodexios-ci
+            git config user.email ci@korodexios.dev
+            printf 'windows mypy exit %s\n%s\n' "$status" "$out" | head -40 | git notes --ref=ci add -f -F - "$GITHUB_SHA"
+            git push origin refs/notes/ci
             exit "$status"
           fi
 
