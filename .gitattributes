@@ -1,0 +1,4 @@
+# Store LF, check out LF: ruff, mypy and pytest must see the same bytes on
+# every platform. Without this, Windows runners check out CRLF and lint counts
+# differ between operating systems.
+* text=auto eol=lf

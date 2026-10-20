@@ -77,11 +77,29 @@ jobs:
       - name: Verify the chassis (Windows)
         if: runner.os == 'Windows'
         shell: bash
+        # Windows is the one platform nobody here can reproduce locally, so the
+        # first failing command is reported as an annotation with its first error
+        # line, not just an exit code. The full output still lands in the log.
         run: |
-          set -euo pipefail
-          uv run ruff check src tests
-          uv run mypy
-          uv run pytest -q
+          set -uo pipefail
+          report() {
+            local label="$1"
+            shift
+            local out
+            local status
+            out="$("$@" 2>&1)"
+            status=$?
+            printf '%s\n' "$out"
+            if [ "$status" -ne 0 ]; then
+              local first
+              first="$(printf '%s\n' "$out" | grep -m 1 -iE 'error|failed|warning' || true)"
+              echo "::error::[win $label] ${first:-command failed with exit $status}"
+              exit "$status"
+            fi
+          }
+          report ruff uv run ruff check src tests
+          report mypy uv run mypy
+          report pytest uv run pytest -q
 
       - name: Boot the chassis
         shell: bash
