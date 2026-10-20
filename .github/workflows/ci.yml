@@ -87,9 +87,18 @@ jobs:
       - name: Type check the chassis (Windows)
         if: runner.os == 'Windows'
         shell: bash
+        # The job log needs a signed-in browser, so the first mypy error is also
+        # published as an annotation on the run page.
         run: |
-          set -euo pipefail
-          uv run mypy
+          set -uo pipefail
+          out="$(uv run mypy 2>&1)"
+          status=$?
+          printf '%s\n' "$out"
+          if [ "$status" -ne 0 ]; then
+            first="$(printf '%s\n' "$out" | grep -m 1 -E 'error' || true)"
+            echo "::error::[win mypy] ${first:-mypy exited with status $status}"
+            exit "$status"
+          fi
 
       - name: Test the chassis (Windows)
         if: runner.os == 'Windows'
