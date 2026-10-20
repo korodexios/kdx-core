@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config.layered import LayeredConfig
-from ..constants import PACKAGE_NAME, TAG_ERROR, TAG_NOTE, TAG_OK
+from ..constants import DOCTOR_SCHEMA_VERSION, PACKAGE_NAME, TAG_ERROR, TAG_NOTE, TAG_OK
 from ..events.bus import EventBus
 from ..exceptions import ChassisError
 from ..logging.engine import KorodexLogger, build_logger, close_logger, ensure_utf8_streams
@@ -45,6 +45,19 @@ class ChassisState(Enum):
     RUNNING = "running"
     STOPPED = "stopped"
     FAILED = "failed"
+
+
+_CONFIG_WARNING_LIMIT = 4
+"""Warnings logged at boot before the rest is folded into one summary line."""
+
+
+def _advice(hint: str) -> str:
+    """Return the parenthetical hint shown next to an unknown configuration key."""
+    if not hint:
+        return ""
+    if hint.startswith("core."):
+        return f" (did you mean {hint}?)"
+    return f" (module {hint.partition('.')[2]} is discovered)"
 
 
 @dataclass(slots=True)
@@ -128,6 +141,12 @@ class Chassis:
             logger=log.child("discovery"),
         ).scan()
         registry.register_discovered(discovery)
+        unknown = config.unknown_keys(registry.names())
+        for key, hint in unknown[:_CONFIG_WARNING_LIMIT]:
+            log.warning(f"{TAG_NOTE} unknown configuration key {key}{_advice(hint)}")
+        if len(unknown) > _CONFIG_WARNING_LIMIT:
+            extra = ", ".join(key for key, _ in unknown[_CONFIG_WARNING_LIMIT:])
+            log.warning(f"{TAG_NOTE} more unknown configuration keys: {extra}")
 
         signals = SignalCoordinator(log.child("signals"))
         if options.install_signals:
@@ -349,6 +368,7 @@ class Chassis:
     def health_report(self) -> dict[str, Any]:
         """Return the inspection payload rendered by 'korodex doctor'."""
         return {
+            "schema": DOCTOR_SCHEMA_VERSION,
             "app": {
                 "name": self.context.app_name,
                 "distribution": PACKAGE_NAME,
@@ -372,6 +392,11 @@ class Chassis:
                 "env_file": str(self.config.env_file) if self.config.env_file else None,
                 "prefix": self.config.prefix,
                 "keys": len(self.config.keys()),
+                "unknown": [
+                    {"key": key, "suggestion": hint, "origin": self.config.origin_of(key)}
+                    for key, hint in self.config.unknown_keys(self.registry.names())
+                ],
+                "project_keys": list(self.config.project_keys()),
             },
             "logging": self.context.logs.stats(),
             "modules": self.registry.health(),

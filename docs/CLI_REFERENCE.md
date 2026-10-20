@@ -120,10 +120,20 @@ kdx config show                       # every resolved key with its source
 kdx config show --key core.log        # only keys under a prefix
 kdx config show --json                # mapping as JSON
 kdx config file                       # which file won, and the local override if any
+kdx config check                      # keys nothing reads, with the closest known key
+kdx config check --json               # the same report for machines
 ```
 
 Sources: `built-in default`, `config file`, `local override file`, `environment`,
 `CLI override`.
+
+`kdx config check` reports two high-confidence classes of typo: a `core.*` key with no
+built-in default, and a `modules.<name>.*` key whose module was never discovered. A
+foreign top-level key (`greeting`, `app.name`, `project.owner`) is the project's own
+it is listed as information and never fails the command. The chassis logs the same
+findings once at boot, on stderr, and `kdx doctor --json` carries them under
+`config.unknown`. The command exits `3` (configuration error) when it finds a key
+nothing reads, so CI can gate on it.
 
 ## `kdx init`
 
@@ -132,11 +142,18 @@ kdx init my_app                       # interactive wizard (name, ecosystem, aut
 kdx init my_app --path ../my_app --minimal --yes
 kdx init my_app --ecosystem fullstack # adds web/ static client and web-ui skill
 kdx init my_app --force               # write into a directory that already holds files
+kdx init my_app --chassis-source index # how the project resolves the chassis
 ```
 
 The seed ships `kdx.yml`, `.env.example`, `Makefile`, `README.md`, `AGENTS.md`,
 `docs/AGENTS_GUIDE.md`, `docs/ARCHITECTURE.md`, `.agents/skills/`, a first module, and
 smoke tests. It passes `make check` on arrival.
+
+The chassis dependency is pinned to the repository by default
+(`korodexios-core @ git+https://github.com/korodexios/kdx-core.git@v0.1.0`), so a fresh
+venv can `pip install -e .` the seeded project before any index publish. Pass
+`--chassis-source index` once the package is on an index; an unknown choice is refused
+with a hint.
 
 ## `kdx wizard`
 

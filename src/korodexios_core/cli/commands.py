@@ -166,6 +166,12 @@ def core_commands(chassis: Chassis) -> list[CliCommand]:
                     action="store_true",
                     help="write into a directory that already holds files",
                 ),
+                CliArgument(
+                    ("--chassis-source",),
+                    dest="chassis_source",
+                    metavar="CHOICE",
+                    help="how the project resolves the chassis: git | index [git]",
+                ),
             ),
             handler=_init_command,
             group="core",
@@ -282,7 +288,7 @@ def core_commands(chassis: Chassis) -> list[CliCommand]:
         ),
         CliCommand(
             name="config",
-            help="Show the resolved configuration and its provenance.",
+            help="Show, prove, and validate the resolved configuration.",
             group="core",
             subcommands=(
                 CliCommand(
@@ -306,6 +312,20 @@ def core_commands(chassis: Chassis) -> list[CliCommand]:
                     name="file",
                     help="Print the discovered config and env file paths.",
                     handler=_config_file_command,
+                    module_name="core",
+                ),
+                CliCommand(
+                    name="check",
+                    help="Report keys nothing reads; exit 3 when a key is a typo.",
+                    args=(
+                        CliArgument(
+                            ("--json",),
+                            dest="as_json",
+                            action="store_true",
+                            help="Emit the report as JSON.",
+                        ),
+                    ),
+                    handler=_config_check_command,
                     module_name="core",
                 ),
             ),
@@ -591,7 +611,13 @@ def _logs_command(request: CliRequest) -> int:
 
 def _init_command(request: CliRequest) -> int:
     """Scaffold a brand-new chassis project from a template."""
-    from .init_project import ECOSYSTEMS, ProjectError, init_project, prompt_project
+    from .init_project import (
+        CHASSIS_SOURCES,
+        ECOSYSTEMS,
+        ProjectError,
+        init_project,
+        prompt_project,
+    )
     from .ux import UserExperience
 
     chassis = _chassis(request)
@@ -603,6 +629,7 @@ def _init_command(request: CliRequest) -> int:
             author=str(request.option("author") or "").strip(),
             ecosystem=str(request.option("ecosystem") or "").strip(),
             minimal=bool(request.flag("minimal")),
+            chassis_source=str(request.option("chassis_source") or "").strip(),
         )
         target_text = str(request.option("path") or "").strip()
         target = Path(target_text).expanduser() if target_text else Path.cwd() / project.package
@@ -621,6 +648,7 @@ def _init_command(request: CliRequest) -> int:
             ("modules", "(bare chassis)" if project.minimal else "app"),
             ("files written", len(result.files)),
             ("chassis", f"korodexios-core {project.core_version}"),
+            ("chassis dependency", CHASSIS_SOURCES[project.chassis_source]),
         ]
     )
     write_line(
@@ -879,6 +907,63 @@ def _config_file_command(request: CliRequest) -> int:
         ]
     )
     return int(ExitCode.SUCCESS)
+
+
+def _config_check_command(request: CliRequest) -> int:
+    """Report configuration keys the chassis does not read."""
+    chassis = _chassis(request)
+    unknown = chassis.config.unknown_keys(chassis.registry.names())
+    project_keys = list(chassis.config.project_keys())
+    report = {
+        "config_file": (
+            str(chassis.config.config_file) if chassis.config.config_file else None
+        ),
+        "checked": len(chassis.config.keys()),
+        "unknown": [
+            {
+                "key": key,
+                "origin": chassis.config.origin_of(key),
+                "suggestion": hint,
+                "advice": _advice_for(hint),
+            }
+            for key, hint in unknown
+        ],
+        "project_keys": project_keys,
+    }
+    if request.flag("as_json"):
+        dump_json(report)
+        return int(ExitCode.CONFIG_ERROR) if unknown else int(ExitCode.SUCCESS)
+    print_key_values(
+        [
+            ("config file", report["config_file"] or "(none: defaults only)"),
+            ("keys checked", str(report["checked"])),
+            ("unknown keys", str(len(unknown))),
+            ("project keys", ", ".join(project_keys) or "(none)"),
+        ]
+    )
+    for key, hint in unknown:
+        write_status(
+            f"unknown configuration key {key} [{chassis.config.origin_of(key)}]"
+            + _advice_for(hint),
+            tag=TAG_ERROR,
+        )
+    if unknown:
+        write_status(
+            f"{len(unknown)} configuration keys are not read by the chassis",
+            tag=TAG_NOTE,
+        )
+        return int(ExitCode.CONFIG_ERROR)
+    write_status("configuration is understood", tag=TAG_OK)
+    return int(ExitCode.SUCCESS)
+
+
+def _advice_for(hint: str) -> str:
+    """Return the parenthetical hint for an unknown configuration key."""
+    if not hint:
+        return ""
+    if hint.startswith("core."):
+        return f" (did you mean {hint}?)"
+    return f" (module {hint.partition('.')[2]} is discovered)"
 
 
 def _run_command(request: CliRequest) -> int:

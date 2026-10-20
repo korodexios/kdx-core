@@ -6,6 +6,9 @@ from enum import IntEnum
 from typing import Final
 
 PACKAGE_NAME: Final[str] = "korodexios-core"
+
+DOCTOR_SCHEMA_VERSION: Final[int] = 1
+"""Version of the payload kdx doctor --json emits; bump on any removal."""
 PACKAGE_IMPORT_NAME: Final[str] = "korodexios_core"
 MODULE_PACKAGE: Final[str] = "korodexios_core.modules"
 MODULES_DIR_NAME: Final[str] = "modules"

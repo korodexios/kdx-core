@@ -151,3 +151,46 @@ def test_modules_create_refuses_to_clobber_without_force(capsys, project_root, t
     second = [*base_args(project_root), "modules", "create", "demo", "--path", str(plugins)]
     assert main(second) == int(ExitCode.ERROR)
     assert "--force" in capsys.readouterr().out
+
+
+def test_config_check_accepts_a_clean_configuration(capsys, project_root) -> None:
+    """The throwaway project holds only chassis keys, so the check passes."""
+    args = [*base_args(project_root), "config", "check"]
+    assert main(args) == int(ExitCode.SUCCESS)
+    assert "configuration is understood" in capsys.readouterr().out
+
+
+def test_config_check_flags_a_typo(capsys, tmp_path) -> None:
+    """A key nothing reads exits with the configuration error code."""
+    (tmp_path / "kdx.yml").write_text(
+        "core:\n  ipc:\n    enabled: false\n  lg:\n    level: WARNING\n",
+        encoding="utf-8",
+    )
+    args = ["--home", str(tmp_path), "--no-log-file", "--no-color", "config", "check"]
+    assert main(args) == int(ExitCode.CONFIG_ERROR)
+    captured = capsys.readouterr()
+    assert "core.lg.level" in captured.out
+    assert "did you mean core.log.level?" in captured.out
+
+
+def test_config_check_json_lists_project_keys(capsys, tmp_path) -> None:
+    """Project-owned keys are reported as information, not as errors."""
+    (tmp_path / "kdx.yml").write_text(
+        "core:\n  ipc:\n    enabled: false\n  lg:\n    level: WARNING\ngreeting: Hello\n",
+        encoding="utf-8",
+    )
+    args = ["--home", str(tmp_path), "--no-log-file", "--no-color", "config", "check", "--json"]
+    assert main(args) == int(ExitCode.CONFIG_ERROR)
+    report = json.loads(capsys.readouterr().out)
+    assert report["project_keys"] == ["greeting"]
+    assert report["unknown"][0]["key"] == "core.lg.level"
+    assert str(tmp_path) in report["unknown"][0]["origin"]
+
+
+def test_doctor_json_declares_its_schema(capsys, project_root) -> None:
+    """Machines can depend on the payload shape because it is versioned."""
+    args = [*base_args(project_root), "doctor", "--json"]
+    assert main(args) == int(ExitCode.SUCCESS)
+    report = json.loads(capsys.readouterr().out)
+    assert report["schema"] == 1
+    assert report["config"]["unknown"] == []

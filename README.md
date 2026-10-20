@@ -65,7 +65,8 @@ non-TTY stdin and forces `core.cli.interactive=false`. Development shortcuts:
 
 - **Precedence is sacred.** `CLI > env > kdx.local.yml > kdx.yml > defaults`. The env
   layer maps `KDX_CORE__IPC__PORT` to `core.ipc.port`; `KORODEXIOS_` and the legacy
-  `KORODEX_` prefixes are understood too. `kdx config show` names the layer of every key.
+  `KORODEX_` prefixes are understood too. `kdx config show` names the layer of every
+  key, and `kdx config check` fails CI on a key nothing reads.
 - **Clean shutdown.** `SIGINT` exits `130`, `SIGTERM` exits `143`, an operator stop
   (including `POST /api/v1/shutdown`) exits `0`; `SIGBREAK` on Windows joins the same
   gate. Module `stop()` hooks always run, in reverse order, inside `stop_timeout`.
@@ -114,7 +115,8 @@ the LAN, and `kdx status --target host:port` to query a remote chassis.
 `kdx.yml`, `Makefile`, `README.md`, `AGENTS.md`, `docs/`, `.agents/skills/`,
 `src/<pkg>/cli.py`, a first module with a manifest, and smoke tests that boot the
 chassis in-process. Nothing is a placeholder: the generated tree passes `ruff`, strict
-`mypy`, and `pytest` on arrival. The project owns its user-facing language through
+`mypy`, and `pytest` on arrival, and its chassis dependency is pinned to the
+repository, so `pip install -e .` works before any index publish. The project owns its user-facing language through
 `i18n.translate()` (stdlib gettext, source strings as the fallback), so the chassis
 stays locale-neutral and English logs and IPC payloads stay machine-readable.
 

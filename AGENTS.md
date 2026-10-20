@@ -11,6 +11,7 @@ make check        # ruff + mypy --strict + pytest, in that order
 make lint         # ruff check src tests
 make typecheck    # mypy, strict, over korodexios_core
 make test         # pytest -q
+make coverage     # pytest -q with the coverage floor (82%) enforced
 make demo         # scripted end-to-end tour of the CLI
 kdx doctor        # environment, config provenance, modules, control plane
 kdx status        # live daemon report over the IPC endpoint
@@ -46,6 +47,11 @@ kdx logs -n 50    # the rotating log file, no POSIX tail required
 7. **Stdlib first.** A new dependency needs a paragraph of justification, not a line.
 
 ## Verification
+
+Coverage is a ratchet, not a report: `make check` runs `pytest --cov` with
+`--cov-fail-under=82`, one point under the measured total, so a new untested
+branch fails the bar. `pytest-cov` is a dev-extra tool only - the runtime stays
+PyYAML and rich.
 
 Quote the failing command before and after the fix. `make check` is the bar;
 `kdx init` output must stay lint-clean, type-clean, and runnable. The console installs

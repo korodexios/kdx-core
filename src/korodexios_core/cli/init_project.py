@@ -33,6 +33,17 @@ RESERVED_NAMES = frozenset(
 )
 DEFAULT_AUTHOR = "Korodexios"
 EXAMPLE_MODULES = ("heartbeat", "backup_engine")
+CHASSIS_REPOSITORY: str = "https://github.com/korodexios/kdx-core"
+"""A git+https reference installs the chassis before any index publish."""
+
+CHASSIS_SOURCES: dict[str, str] = {
+    "git": f"korodexios-core @ git+{CHASSIS_REPOSITORY}.git@v{CORE_VERSION}",
+    "index": "korodexios-core>=0.1,<1.0",
+}
+"""How a seeded project names its chassis dependency."""
+
+CHASSIS_SOURCE_DEFAULT = "git"
+"""The chassis is not on an index yet, so seeds pin it to the repository."""
 ECOSYSTEMS: dict[str, str] = {
     "python": "Python (uv-managed)",
     "fullstack": "Fullstack (Python Core + Node/Web UI)",
@@ -64,6 +75,7 @@ class ProjectTemplate:
     minimal: bool
     description: str
     core_version: str = CORE_VERSION
+    chassis_source: str = CHASSIS_SOURCE_DEFAULT
 
     @property
     def script(self) -> str:
@@ -87,6 +99,7 @@ class ProjectTemplate:
             "minimal": self.minimal,
             "description": self.description,
             "core_version": self.core_version,
+            "chassis_source": self.chassis_source,
         }
 
 
@@ -147,6 +160,7 @@ def project_from_inputs(
     ecosystem: str = "",
     minimal: bool = False,
     description: str = "",
+    chassis_source: str = "",
 ) -> ProjectTemplate:
     """Build a ProjectTemplate from CLI input, validating the name strictly."""
     validated = validate_project_name(name)
@@ -162,6 +176,12 @@ def project_from_inputs(
             f"unknown ecosystem {ecosystem!r}", hint="choose 'python' or 'fullstack'"
         )
     key = key or "python"
+    source = str(chassis_source).strip().lower() or CHASSIS_SOURCE_DEFAULT
+    if source not in CHASSIS_SOURCES:
+        raise ProjectError(
+            f"unknown chassis source {chassis_source!r}",
+            hint="choose " + " or ".join(repr(key) for key in CHASSIS_SOURCES),
+        )
     title = " ".join(part.capitalize() for part in package.split("_")) or package
     return ProjectTemplate(
         name=package,
@@ -172,6 +192,7 @@ def project_from_inputs(
         ecosystem=key,
         minimal=bool(minimal),
         description=str(description).strip() or f"{title}: a korodexios chassis project.",
+        chassis_source=source,
     )
 
 
@@ -182,8 +203,12 @@ def prompt_project(
     author: str = "",
     ecosystem: str = "",
     minimal: bool = False,
+    chassis_source: str = "",
 ) -> ProjectTemplate:
-    """Ask the operator for the project identity, re-prompting on bad input."""
+    """Ask the operator for the project identity, re-prompting on bad input.
+
+    The chassis source is a flag, not a question: it is about how the project
+    resolves the dependency, not about what the project is."""
     validated = validate_project_name(name)
     while ux.is_interactive() and not validated.ok:
         answer = ux.ask_text(
@@ -214,6 +239,7 @@ def prompt_project(
         author=author_value,
         ecosystem=ecosystem_value,
         minimal=minimal_flag,
+        chassis_source=chassis_source,
     )
 
 
@@ -286,7 +312,18 @@ def build_files(project: ProjectTemplate) -> dict[str, str]:
     return files
 
 
+def _chassis_dependency(project: ProjectTemplate) -> tuple[str, str]:
+    """Return (requirement, comment) naming the chassis dependency."""
+    requirement = CHASSIS_SOURCES.get(
+        project.chassis_source, CHASSIS_SOURCES[CHASSIS_SOURCE_DEFAULT]
+    )
+    if project.chassis_source == "index":
+        return (requirement, "resolved from a package index")
+    return (requirement, "pinned to the chassis repository: not on an index yet")
+
+
 def _pyproject(project: ProjectTemplate) -> str:
+    requirement, comment = _chassis_dependency(project)
     return "\n".join(
         [
             "[build-system]",
@@ -300,8 +337,8 @@ def _pyproject(project: ProjectTemplate) -> str:
             'requires-python = ">=3.11"',
             f'authors = [{{name = "{project.author}"}}]',
             "dependencies = [",
-            "  # korodexios-core is not published yet: pip install -e ../korodexios-core",
-            '  "korodexios-core>=0.1,<1.0",',
+            f"  # {comment}",
+            f'  "{requirement}",',
             "]",
             "",
             "[project.scripts]",
@@ -395,6 +432,11 @@ def _readme(project: ProjectTemplate) -> str:
         f"{project.script} run            # boot the chassis (Ctrl-C exits 130)",
         f"{project.script} status         # query the running daemon",
         fence,
+        "",
+        f"The chassis dependency is pinned to @BT@{CHASSIS_REPOSITORY}@BT@, so the "
+        "chassis arrives straight from the repository: @BT@pip install -e .@BT@ works "
+        "before the chassis is on an index. Pass @BT@--chassis-source index@BT@ for the "
+        "index pin instead.",
         "",
         "## Layout",
         "",

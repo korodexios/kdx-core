@@ -26,9 +26,13 @@ _SKIP_PREFIXES = ("_", ".")
 
 @contextlib.contextmanager
 def _temporary_sys_path(directory: Path) -> Iterator[str]:
-    """Expose *directory* on sys.path so a plugin can import sibling helpers."""
+    """Expose *directory* on sys.path so a plugin can import sibling helpers.
+
+    A missing directory is skipped, so a project without a ``src`` layout simply
+    adds nothing to the import path.
+    """
     entry = str(directory)
-    added = entry not in sys.path
+    added = entry not in sys.path and directory.is_dir()
     if added:
         sys.path.insert(0, entry)
     try:
@@ -372,7 +376,10 @@ class ModuleDiscovery:
         module_obj = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module_obj
         sibling_dir = package_dir if package_dir is not None else entry_file.parent
-        with _temporary_sys_path(sibling_dir):
+        # A module may import its own project package: expose <root>/src while
+        # the module is executed, then take it away again.
+        project_src = self._paths.root / "src"
+        with _temporary_sys_path(sibling_dir), _temporary_sys_path(project_src):
             try:
                 spec.loader.exec_module(module_obj)
             except Exception as exc:

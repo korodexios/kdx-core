@@ -21,12 +21,13 @@ the short list of what ships next; the README keeps one sentence about it.
 | 10 | Production release: `v0.1.0` tagged with the version synchronized across `version.py`, docs, and artifacts | **delivered** |
 | 11 | Release pipeline: a `v*` tag runs the full 3-OS x 3-Python matrix and the package audit, then publishes the audited wheel and sdist to a GitHub Release; a branch push runs a trimmed matrix for fast feedback | **delivered** |
 | 12 | Operator ergonomics: `kdx logs --rotate` (archive the file, the running chassis reopens the path), `kdx doctor --json` for machines, and the i18n convention for seeded projects (stdlib gettext, source strings as the fallback) | **delivered** |
+| 13 | Configuration honesty: unknown-key detection at boot, `kdx config check` as a CI gate, a versioned `doctor --json` payload (`schema: 1`), a seed that installs the chassis from the repository today (`--chassis-source`), a CI workflow contract test, and a coverage ratchet in `make check` | **delivered** |
 
 ## Next
 
-1. **Publish to an index.** PyPI through trusted publishing, or a documented git
-   bootstrap (`pip install "korodexios-core @ git+ssh://..."`) while the core earns
-   its place in an index.
+1. **Publish to an index.** PyPI through trusted publishing. The git bootstrap is
+   already live in the seed: `kdx init` pins the chassis to the repository, so a
+   freshly seeded project installs today without waiting for an index.
 2. **A Textual/TUI front end** over the same declarative `CliCommand` tree the wizard
    already reads - no module knows a second surface exists.
 3. **Windows type check in CI** is red: `mypy` on `windows-latest` exits in about three

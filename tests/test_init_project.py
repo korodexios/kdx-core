@@ -239,3 +239,16 @@ def test_generated_project_passes_its_own_checks(tmp_path: Path) -> None:
             check=False,
         )
         assert completed.returncode == 0, f"{tool}: {completed.stdout}\n{completed.stderr}"
+
+
+def test_chassis_dependency_follows_the_source_choice() -> None:
+    """A seeded project must resolve the chassis today, not after an index publish."""
+    git = build_files(project_from_inputs("git_child"))  # type: ignore[arg-type]
+    index = build_files(project_from_inputs("index_child", chassis_source="index"))  # type: ignore[arg-type]
+    assert "git+https://github.com/korodexios/kdx-core.git@v" in git["pyproject.toml"]
+    assert "korodexios-core>=0.1,<1.0" not in git["pyproject.toml"]
+    assert "korodexios-core>=0.1,<1.0" in index["pyproject.toml"]
+    assert "git+" not in index["pyproject.toml"]
+    assert project_from_inputs("dflt").chassis_source == "git"  # type: ignore[arg-type]
+    with pytest.raises(ProjectError, match="unknown chassis source"):
+        project_from_inputs("bad", chassis_source="svn")  # type: ignore[arg-type]

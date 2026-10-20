@@ -160,3 +160,26 @@ def test_describe_rows_report_provenance(config: LayeredConfig) -> None:
     rows = {row[0]: (row[1], row[2]) for row in config.describe_rows()}
     assert rows["core.log.level"] == ("DEBUG", "environment")
     assert rows["core.log.file_enabled"] == ("false", "config file")
+
+
+def test_unknown_keys_come_from_files_and_environment(tmp_path) -> None:
+    """A typo in kdx.yml and in the environment are both reported, with a hint."""
+    from korodexios_core.config import LayeredConfig
+    from korodexios_core.paths import AppPaths
+
+    (tmp_path / "kdx.yml").write_text(
+        "core:\n  lg:\n    level: WARNING\n"
+        "modules:\n  greeter:\n    greeting: Ahoj\ngreeting: Hello\n",
+        encoding="utf-8",
+    )
+    resolved = AppPaths.discover(root=str(tmp_path), environ={})
+    layered = LayeredConfig.load(
+        config_file=resolved.config_file,
+        env_file=resolved.env_file,
+        environ={"KDX_CORE__LG__COLOR": "no"},
+    )
+    unknown = dict(layered.unknown_keys())
+    assert unknown["core.lg.level"] == "core.log.level"
+    assert unknown["core.lg.color"] == "core.log.color"
+    assert "modules.greeter.greeting" in unknown
+    assert list(layered.project_keys()) == ["greeting"]

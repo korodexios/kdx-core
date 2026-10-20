@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
@@ -10,6 +10,7 @@ from typing import Any, cast
 
 from ..constants import ENV_PREFIX, KEY_SEPARATOR
 from ..exceptions import ConfigurationError, ConfigValueError
+from . import keys as key_rules
 from .defaults import CORE_DEFAULTS, with_runtime_defaults
 from .loaders import (
     load_config_file,
@@ -405,6 +406,14 @@ class LayeredConfig:
         for layer in self._layers:
             seen.update(layer.values.keys())
         return sorted(seen)
+
+    def unknown_keys(self, module_names: Iterable[str] = ()) -> list[tuple[str, str]]:
+        """Return (key, suggestion) pairs for keys nothing in the chassis reads."""
+        return key_rules.unknown_keys(self.keys(), module_names)
+
+    def project_keys(self) -> tuple[str, ...]:
+        """Return the project-owned keys among every layer."""
+        return key_rules.project_key_names(self.keys())
 
     def as_dict(self) -> dict[str, Any]:
         """Return the merged flat view, highest precedence winning."""

@@ -77,6 +77,11 @@ include = [
   "Makefile",
 ]
 
+[tool.coverage.report]
+precision = 0
+skip_covered = false
+show_missing = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

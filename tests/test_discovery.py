@@ -52,6 +52,29 @@ requires_core = ">=0.1,<1.0"
 owner = "tests"
 """
 
+OWN_MODULE = '''"""A plugin that imports the package it lives in."""
+
+from korodexios_core.kernel.contract import Module
+from own_pkg import MARK  # the project package, not installed
+
+
+class OwnModule(Module):
+    name = "own"
+    description = f"Imports {MARK}."
+    version = "0.1.0"
+
+
+MODULE = OwnModule()
+'''
+
+OWN_MANIFEST = """
+[module]
+name = "own"
+description = "Imports its own project package."
+version = "0.1.0"
+entrypoint = "module.MODULE"
+"""
+
 
 def build_plugins(root: Path) -> Path:
     """Write a package plugin, a single-file plugin, and a broken plugin."""
@@ -224,3 +247,20 @@ def test_single_file_plugin_can_import_a_sibling_helper(tmp_path: Path) -> None:
     assert (
         not [key for key in sys.modules if key.endswith("_solo") and "helpers" not in key] or True
     )
+
+def test_a_plugin_can_import_its_own_project_package(tmp_path: Path) -> None:
+    """<root>/src is exposed while a plugin runs, then taken away again."""
+    project = tmp_path / "project"
+    package = project / "src" / "own_pkg"
+    plugin = package / "modules" / "own"
+    plugin.mkdir(parents=True)
+    (package / "__init__.py").write_text('MARK = "the project package"\n', encoding="utf-8")
+    (plugin / "module.py").write_text(OWN_MODULE, encoding="utf-8")
+    (plugin / "__init__.py").write_text("from . import module\n", encoding="utf-8")
+    (plugin / "korodex_module.toml").write_text(OWN_MANIFEST, encoding="utf-8")
+    paths = AppPaths.discover(
+        root=str(project), environ={}, extra_module_dirs=[str(package / 'modules')]
+    )
+    report = ModuleDiscovery(paths, logger=None).scan()
+    assert "own" in report.names()
+    assert not report.failures
