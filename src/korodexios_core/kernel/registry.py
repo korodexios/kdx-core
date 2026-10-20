@@ -94,6 +94,7 @@ class RegisteredModule:
             "description": self.spec.description,
             "origin": self.spec.origin,
             "priority": self.spec.priority,
+            "depends_on": list(self.spec.depends_on),
             "state": self.state.value,
             "error": self.error,
             "timings_ms": {
@@ -116,6 +117,67 @@ class _RecordingSurface:
         """Forward to the real surface and remember the command."""
         self._sink.append(command)
         self._inner.add_command(command)
+
+
+def _topological(records: list[RegisteredModule]) -> list[RegisteredModule]:
+    """Order records so every module starts after the modules it depends on.
+
+    Ties keep the (priority, name) order, so behaviour stays predictable across
+    boots. A dependency cycle cannot be ordered, so those records keep their
+    priority position instead of failing the whole chassis.
+    """
+    by_name = {record.spec.name: record for record in records}
+    order: dict[str, int] = {}
+    position = 0
+
+    def visit(record: RegisteredModule, trail: tuple[str, ...]) -> None:
+        nonlocal position
+        name = record.spec.name
+        if name in order or name in trail:
+            return
+        for dependency in record.spec.depends_on:
+            target = by_name.get(dependency)
+            if target is not None:
+                visit(target, (*trail, name))
+        order[name] = position
+        position += 1
+
+    for record in records:
+        visit(record, ())
+    return sorted(
+        records,
+        key=lambda record: (
+            order.get(record.spec.name, 0),
+            record.spec.priority,
+            record.spec.name,
+        ),
+    )
+
+
+def _dependency_cycles(records: list[RegisteredModule]) -> list[str]:
+    """Return the dependency edges that close a cycle, if any."""
+    by_name = {record.spec.name: record for record in records}
+    finished: set[str] = set()
+    visiting: set[str] = set()
+    edges: list[str] = []
+
+    def walk(record: RegisteredModule) -> None:
+        visiting.add(record.spec.name)
+        for dependency in record.spec.depends_on:
+            target = by_name.get(dependency)
+            if target is None:
+                continue
+            if target.spec.name in visiting:
+                edges.append(f"{record.spec.name} -> {target.spec.name}")
+            elif target.spec.name not in finished:
+                walk(target)
+        visiting.discard(record.spec.name)
+        finished.add(record.spec.name)
+
+    for record in records:
+        if record.spec.name not in finished:
+            walk(record)
+    return sorted(set(edges))
 
 
 class ModuleRegistry:
@@ -186,11 +248,26 @@ class ModuleRegistry:
         return [record.spec.name for record in self.ordered()]
 
     def ordered(self) -> list[RegisteredModule]:
-        """Return records sorted by (priority, name)."""
+        """Return records in lifecycle order: dependencies first, then priority."""
         with self._lock:
-            return sorted(
-                self._records.values(), key=lambda item: (item.spec.priority, item.spec.name)
-            )
+            return _topological(self._by_priority())
+
+    def _by_priority(self) -> list[RegisteredModule]:
+        """Return records sorted by (priority, name); callers hold the lock."""
+        return sorted(self._records.values(), key=lambda item: (item.spec.priority, item.spec.name))
+
+    def dependency_report(self) -> dict[str, list[str]]:
+        """Return unknown dependencies and cycles so diagnostics can show them."""
+        with self._lock:
+            records = self._by_priority()
+            names = {record.spec.name for record in records}
+            missing = [
+                f"{record.spec.name} -> {dependency}"
+                for record in records
+                for dependency in record.spec.depends_on
+                if dependency not in names
+            ]
+            return {"missing": missing, "cycles": _dependency_cycles(records)}
 
     def active(self) -> list[RegisteredModule]:
         """Return records that are not disabled."""

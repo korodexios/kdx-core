@@ -95,3 +95,47 @@ def test_help_lists_module_and_wizard_commands(capsys, project_root) -> None:
     captured = capsys.readouterr()
     for marker in ("wizard", "heartbeat", "doctor"):
         assert marker in captured.out
+
+
+def test_modules_create_scaffolds_and_reports(capsys, project_root, tmp_path) -> None:
+    plugins = tmp_path / "plugins"
+    args = [
+        *base_args(project_root),
+        "modules",
+        "create",
+        "demo",
+        "--path",
+        str(plugins),
+        "--title",
+        "Scaffolded demo.",
+        "--json",
+    ]
+    assert main(args) == int(ExitCode.SUCCESS)
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["module"] == "demo"
+    assert len(payload["created"]) == 3
+    assert (plugins / "demo" / "korodex_module.toml").is_file()
+
+
+def test_modules_create_rejects_bad_names(capsys, project_root, tmp_path) -> None:
+    args = [
+        *base_args(project_root),
+        "modules",
+        "create",
+        "BadName",
+        "--path",
+        str(tmp_path / "plugins"),
+    ]
+    assert main(args) == int(ExitCode.ERROR)
+    captured = capsys.readouterr()
+    assert "[!]" in captured.out
+    assert "[i]" in captured.out
+
+
+def test_modules_create_refuses_to_clobber_without_force(capsys, project_root, tmp_path) -> None:
+    plugins = tmp_path / "plugins"
+    first = [*base_args(project_root), "modules", "create", "demo", "--path", str(plugins)]
+    assert main(first) == int(ExitCode.SUCCESS)
+    second = [*base_args(project_root), "modules", "create", "demo", "--path", str(plugins)]
+    assert main(second) == int(ExitCode.ERROR)
+    assert "--force" in capsys.readouterr().out

@@ -19,7 +19,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from ..constants import TAG_ASK, TAG_ERROR, TAG_NOTE, TAG_OK
+from ..constants import TAG_ASK, TAG_ERROR, TAG_NOTE, TAG_OK, tags_for
 from ..validate import ValidationResult, Validator
 from ..validate import require_float as _require_float
 from ..validate import require_int as _require_int
@@ -91,6 +91,11 @@ class UserExperience:
         """Return the rich console bound to stdout."""
         return self._console
 
+    def _resolve_tag(self, tag: str) -> str:
+        """Return an ASCII tag when the console stream cannot encode the unicode one."""
+        encoding = getattr(self._console.file, "encoding", None)
+        return tags_for(encoding).get(tag, tag)
+
     @property
     def color(self) -> bool:
         """Return True when ANSI colour is enabled."""
@@ -98,6 +103,7 @@ class UserExperience:
 
     def status(self, message: str, *, tag: str = TAG_OK, style: str = "") -> None:
         """Print a tagged status line on stdout."""
+        tag = self._resolve_tag(tag)
         rendered = Text.assemble((f"{tag} ", _TAG_STYLES.get(tag, "white")), (message, style))
         self._console.print(rendered, markup=False)
 

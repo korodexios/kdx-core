@@ -47,10 +47,33 @@ class Subscription:
         return bus.unsubscribe(self)
 
 
+DEFAULT_MAX_DEPTH = 16
+DEFAULT_SLOW_HANDLER_SECONDS = 0.5
+
+
+def _enter_depth(local: threading.local) -> int:
+    """Record that this thread entered one more publish level."""
+    depth = int(getattr(local, "depth", 0)) + 1
+    local.depth = depth
+    return depth
+
+
+def _leave_depth(local: threading.local) -> None:
+    """Record that this thread left a publish level."""
+    local.depth = max(0, int(getattr(local, "depth", 1)) - 1)
+
+
 class EventBus:
     """Publish/subscribe hub; handler failures never break the publisher."""
 
-    def __init__(self, *, history_limit: int = 256, logger: Any = None) -> None:
+    def __init__(
+        self,
+        *,
+        history_limit: int = 256,
+        logger: Any = None,
+        max_depth: int = DEFAULT_MAX_DEPTH,
+        slow_handler_seconds: float = DEFAULT_SLOW_HANDLER_SECONDS,
+    ) -> None:
         self._lock = threading.RLock()
         self._subscriptions: list[Subscription] = []
         self._history: deque[Event] = deque(maxlen=max(0, int(history_limit)))
@@ -58,6 +81,11 @@ class EventBus:
         self._published = 0
         self._delivered = 0
         self._errors = 0
+        self._slow = 0
+        self._max_depth_seen = 0
+        self._max_depth = max(1, int(max_depth))
+        self._slow_seconds = max(0.0, float(slow_handler_seconds))
+        self._depth = threading.local()
         self._logger = logger
 
     def subscribe(
@@ -100,43 +128,71 @@ class EventBus:
         *,
         source: str | None = None,
     ) -> int:
-        """Publish an event and return how many handlers ran successfully."""
+        """Publish an event and return how many handlers ran successfully.
+
+        Handler code runs outside the bus lock, so a handler may subscribe,
+        unsubscribe, or publish further events. Nested publishing is bounded by
+        *max_depth* to keep an event cycle from exhausting the stack, and every
+        handler is timed so a blocking one is visible in the diagnostics.
+        """
         clean = str(name).strip(".")
         if not clean:
             raise ValueError("event name must not be empty")
-        with self._lock:
-            self._sequence += 1
-            event = Event(
-                name=clean,
-                payload=dict(payload) if isinstance(payload, Mapping) else payload,
-                source=source,
-                at=time.time(),
-                sequence=self._sequence,
-            )
-            self._history.append(event)
-            self._published += 1
-            matches = [sub for sub in self._subscriptions if _matches(sub.pattern, clean)]
-            if any(sub.once for sub in matches):
-                for sub in matches:
-                    if sub.once:
-                        self._subscriptions.remove(sub)
-                        sub.active = False
-        delivered = 0
-        for subscription in matches:
-            try:
-                subscription.handler(event)
-                delivered += 1
-            except Exception as exc:
-                self._errors += 1
-                if self._logger is not None:
-                    self._logger.warning(
-                        "event handler failed",
-                        event=clean,
-                        handler=subscription.name,
-                        error=str(exc),
+        depth = _enter_depth(self._depth)
+        try:
+            with self._lock:
+                if depth > self._max_depth_seen:
+                    self._max_depth_seen = depth
+                if depth > self._max_depth:
+                    raise RecursionError(
+                        f"event publishing nested deeper than {self._max_depth} levels at '{clean}'"
                     )
-        self._delivered += delivered
-        return delivered
+                self._sequence += 1
+                event = Event(
+                    name=clean,
+                    payload=dict(payload) if isinstance(payload, Mapping) else payload,
+                    source=source,
+                    at=time.time(),
+                    sequence=self._sequence,
+                )
+                self._history.append(event)
+                self._published += 1
+                matches = [sub for sub in self._subscriptions if _matches(sub.pattern, clean)]
+                if any(sub.once for sub in matches):
+                    for sub in matches:
+                        if sub.once:
+                            self._subscriptions.remove(sub)
+                            sub.active = False
+            delivered = 0
+            for subscription in matches:
+                started = time.perf_counter()
+                try:
+                    subscription.handler(event)
+                    delivered += 1
+                except Exception as exc:
+                    self._bump("errors")
+                    if self._logger is not None:
+                        self._logger.warning(
+                            "event handler failed",
+                            event=clean,
+                            handler=subscription.name,
+                            error=str(exc),
+                        )
+                elapsed = time.perf_counter() - started
+                if elapsed > self._slow_seconds:
+                    self._bump("slow")
+                    if self._logger is not None:
+                        self._logger.warning(
+                            "event handler slow",
+                            event=clean,
+                            handler=subscription.name,
+                            seconds=round(elapsed, 3),
+                            limit=self._slow_seconds,
+                        )
+            self._bump("delivered", delivered)
+            return delivered
+        finally:
+            _leave_depth(self._depth)
 
     def wait_for(self, name: str, timeout: float | None = None) -> Event | None:
         """Block until an event matching *name* is published, or *timeout* elapses."""
@@ -168,6 +224,12 @@ class EventBus:
                 subscription.active = False
             self._subscriptions.clear()
 
+    def _bump(self, counter: str, amount: int = 1) -> None:
+        """Add *amount* to a counter under the lock (counters are shared state)."""
+        with self._lock:
+            current: int = getattr(self, "_" + counter)
+            setattr(self, "_" + counter, current + amount)
+
     def stats(self) -> dict[str, Any]:
         """Return counters describing bus activity."""
         with self._lock:
@@ -176,6 +238,8 @@ class EventBus:
                 "published": self._published,
                 "delivered": self._delivered,
                 "errors": self._errors,
+                "slow_handlers": self._slow,
+                "max_depth": self._max_depth_seen,
                 "history": len(self._history),
                 "sequence": self._sequence,
             }

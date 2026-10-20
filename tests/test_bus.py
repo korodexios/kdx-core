@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import time
 
-from korodexios_core.events.bus import EventBus, matches, pattern_help
+from korodexios_core.events.bus import Event, EventBus, matches, pattern_help
 
 
 def test_publish_reaches_matching_subscribers() -> None:
@@ -89,3 +89,50 @@ def test_clear_drops_history_and_subscriptions() -> None:
     bus.clear()
     assert bus.history() == []
     assert len(bus) == 0
+
+
+def test_event_recursion_is_bounded() -> None:
+    bus = EventBus(max_depth=3)
+
+    def loop(event: Event) -> None:
+        bus.publish(event.name, source="loop")
+
+    bus.subscribe("tick", loop)
+    bus.publish("tick")
+    stats = bus.stats()
+    assert stats["max_depth"] >= 4
+    assert stats["errors"] >= 1
+
+
+def test_slow_handler_is_reported() -> None:
+    import time
+
+    bus = EventBus(slow_handler_seconds=0.01)
+
+    def slow(event: Event) -> None:
+        time.sleep(0.05)
+
+    bus.subscribe("tick", slow)
+    assert bus.publish("tick") == 1
+    assert bus.stats()["slow_handlers"] == 1
+
+
+def test_concurrent_publishing_keeps_counters_exact() -> None:
+    import threading
+
+    bus = EventBus()
+    bus.subscribe("work", lambda event: None)
+
+    def worker() -> None:
+        for index in range(200):
+            bus.publish("work", {"index": index})
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    stats = bus.stats()
+    assert stats["published"] == 1600
+    assert stats["delivered"] == 1600
+    assert stats["errors"] == 0

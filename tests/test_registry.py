@@ -159,3 +159,56 @@ def test_call_with_timeout_paths() -> None:
 
     completed, error = call_with_timeout(lambda: None, 0.05, description="never")
     assert completed and error is None
+
+
+def make_dependency_module(name: str, depends_on: list[str]) -> ScriptedModule:
+    module = ScriptedModule(name)
+    module.depends_on = tuple(depends_on)
+    return module
+
+
+def test_dependencies_start_before_dependents() -> None:
+    registry = ModuleRegistry(DummyLogger())
+    registry.register(
+        make_dependency_module("gateway", ["api"]),
+        make_spec("gateway", priority=10, depends_on=("api",)),
+    )
+    registry.register(
+        make_dependency_module("api", ["database"]),
+        make_spec("api", priority=30, depends_on=("database",)),
+    )
+    registry.register(
+        make_dependency_module("database", []),
+        make_spec("database", priority=90),
+    )
+    assert [record.spec.name for record in registry.ordered()] == ["database", "api", "gateway"]
+    assert registry.dependency_report() == {"missing": [], "cycles": []}
+
+
+def test_dependency_cycle_falls_back_without_failing_the_boot() -> None:
+    registry = ModuleRegistry(DummyLogger())
+    registry.register(
+        make_dependency_module("a", ["b"]), make_spec("a", priority=10, depends_on=("b",))
+    )
+    registry.register(
+        make_dependency_module("b", ["a"]), make_spec("b", priority=20, depends_on=("a",))
+    )
+    first = [record.spec.name for record in registry.ordered()]
+    second = [record.spec.name for record in registry.ordered()]
+    assert sorted(first) == ["a", "b"]  # a cycle cannot be ordered
+    assert first == second  # but the fallback is deterministic
+    assert registry.dependency_report()["cycles"] == ["b -> a"]
+
+
+def test_unknown_dependency_is_reported_without_breaking_order() -> None:
+    registry = ModuleRegistry(DummyLogger())
+    registry.register(
+        make_dependency_module("solo", ["ghost"]), make_spec("solo", depends_on=("ghost",))
+    )
+    assert [record.spec.name for record in registry.ordered()] == ["solo"]
+    assert registry.dependency_report()["missing"] == ["solo -> ghost"]
+
+
+def test_spec_validates_dependency_names() -> None:
+    with pytest.raises(ModuleContractError, match="not a valid module name"):
+        make_spec("worker", depends_on=("Bad Name",)).validate()

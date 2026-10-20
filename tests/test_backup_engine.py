@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -186,3 +187,34 @@ def test_cli_backup_plan_reports_missing_source(capsys, project_root) -> None:
 def test_shared_module_instance() -> None:
     assert isinstance(MODULE, BackupEngineModule)
     assert MODULE.name == "backup_engine"
+
+
+def test_destination_inside_source_is_auto_excluded(tmp_path: Path) -> None:
+    source = tmp_path / "project"
+    (source / "src").mkdir(parents=True)
+    (source / "src" / "a.txt").write_text("a", encoding="utf-8")
+    dest = source / "backups"
+    plan = build_plan(
+        BackupSettings(source=source, dest=dest, include=("*",), exclude=()),
+        stamp="run-1",
+    )
+    assert plan.auto_excluded == ["backups"]
+    assert sorted(str(item.relative_to(source)) for item in plan.files) == ["src/a.txt"]
+    assert plan.as_dict()["auto_excluded"] == ["backups"]
+
+
+def test_symlink_cycles_are_pruned(tmp_path: Path) -> None:
+    if os.name == "nt":
+        pytest.skip("creating directory symlinks needs privileges on Windows")
+    source = tmp_path / "loop"
+    source.mkdir()
+    (source / "a.txt").write_text("a", encoding="utf-8")
+    os.symlink(str(source), str(source / "self"))
+    plan = build_plan(
+        BackupSettings(
+            source=source, dest=tmp_path / "out", include=("*",), exclude=(), follow_symlinks=True
+        ),
+        stamp="run-1",
+    )
+    assert plan.skipped == ["self (symlink cycle)"]
+    assert [item.name for item in plan.files] == ["a.txt"]

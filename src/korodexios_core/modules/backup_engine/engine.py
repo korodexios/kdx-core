@@ -77,6 +77,7 @@ class BackupPlan:
     files: list[Path] = field(default_factory=list)
     total_bytes: int = 0
     skipped: list[str] = field(default_factory=list)
+    auto_excluded: list[str] = field(default_factory=list)
 
     @property
     def file_count(self) -> int:
@@ -90,6 +91,7 @@ class BackupPlan:
             "files": self.file_count,
             "total_bytes": self.total_bytes,
             "skipped": len(self.skipped),
+            "auto_excluded": list(self.auto_excluded),
             "sample": [str(path.relative_to(self.settings.source)) for path in self.files[:10]],
         }
 
@@ -133,15 +135,33 @@ def build_plan(settings: BackupSettings, *, stamp: str | None = None) -> BackupP
     if not source.is_dir():
         raise BackupError(f"backup source {source} is not a directory", hint="Backups copy trees.")
     label = stamp or settings.stamp or default_stamp()
-    target = Path(settings.dest) / label
+    dest = Path(settings.dest)
+    target = dest / label
     plan = BackupPlan(settings=settings, target=target)
+    patterns = list(settings.exclude)
+    guard = _destination_guard(source, dest)
+    if guard is not None:
+        patterns.append(guard)
+        plan.auto_excluded.append(guard)
+    visited: set[tuple[int, int]] = set()
+    source_stat = source.stat()
+    visited.add((source_stat.st_dev, source_stat.st_ino))
     for root, dirs, files in os.walk(source, followlinks=settings.follow_symlinks):
         root_path = Path(root)
-        dirs[:] = sorted(
-            name
-            for name in dirs
-            if not _excluded(_relative(source, root_path / name), settings.exclude)
-        )
+        kept: list[str] = []
+        for name in sorted(dirs):
+            child = root_path / name
+            relative = _relative(source, child)
+            if _excluded(relative, patterns):
+                continue
+            marker = _directory_marker(child) if settings.follow_symlinks else None
+            if marker is not None:
+                if marker in visited:
+                    plan.skipped.append(f"{relative} (symlink cycle)")
+                    continue
+                visited.add(marker)
+            kept.append(name)
+        dirs[:] = kept
         for name in sorted(files):
             candidate = root_path / name
             relative = _relative(source, candidate)
@@ -202,6 +222,7 @@ def describe_plan(plan: BackupPlan) -> list[tuple[str, Any]]:
         ("destination", str(plan.target)),
         ("include", ", ".join(plan.settings.include) or "-"),
         ("exclude", ", ".join(plan.settings.exclude) or "-"),
+        *([("auto-excluded", ", ".join(plan.auto_excluded))] if plan.auto_excluded else []),
         ("files", plan.file_count),
         ("total size", _human(plan.total_bytes)),
         ("skipped", len(plan.skipped)),
@@ -219,6 +240,35 @@ def describe_result(result: BackupResult) -> list[tuple[str, Any]]:
         ("elapsed", f"{result.elapsed:.3f} s"),
         ("errors", ", ".join(result.errors) if result.errors else "none"),
     ]
+
+
+def _destination_guard(source: Path, dest: Path) -> str | None:
+    """Return the source-relative destination path when the destination sits inside the source.
+
+    Backing up "." into "./var/lib/backups" would otherwise walk into the very
+    folder the engine is writing to, so the planner prunes that subtree itself.
+    """
+    if not dest.exists() and not dest.parent.exists():
+        return None
+    try:
+        source_root = source.resolve()
+        dest_root = dest.resolve()
+    except OSError:
+        return None
+    if source_root == dest_root or source_root not in dest_root.parents:
+        return None
+    return dest_root.relative_to(source_root).as_posix()
+
+
+def _directory_marker(child: Path) -> tuple[int, int] | None:
+    """Return an identity for a symlinked directory so cycles can be pruned."""
+    if not child.is_symlink():
+        return None
+    try:
+        info = child.stat()
+    except OSError:
+        return None
+    return (info.st_dev, info.st_ino)
 
 
 def _relative(source: Path, candidate: Path) -> str:

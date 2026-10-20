@@ -42,13 +42,14 @@ korodexios-core/
 │   │   ├── surface.py          # CliCommand tree -> argparse subparsers
 │   │   ├── ux.py               # rich menus, bracketed defaults, validation loops
 │   │   ├── wizard.py           # root wizard over the registered command tree
+│   │   ├── scaffold.py         # 'korodex modules create' package scaffolding
 │   │   ├── commands.py         # version / doctor / modules / config / run / wizard
 │   │   └── entry.py            # two-pass parser, global flags, error rendering
 │   └── modules/                # discovery root (built-in plugins live here)
 │       ├── heartbeat/          # background thread, events, clean shutdown
 │       ├── system_info/        # OS / CPU / RAM / disk diagnostics (stdlib only)
 │       └── backup_engine/      # source -> destination backups with dry runs
-└── tests/                      # pytest suite: 104 tests across 11 modules
+└── tests/                      # pytest suite: 127 tests across 13 modules
 ```
 
 ### 1.1 The module contract
@@ -86,12 +87,17 @@ description = "Publishes a periodic heartbeat event."
 version = "0.1.0"
 entrypoint = "MODULE"        # attribute, factory, or class inside the module
 enabled = true
+depends_on = []          # these modules init/start first (topological order)
 priority = 50                # lower starts first, stops last
 requires_core = ">=0.1,<1.0"
 
 [metadata]
 tags = ["lifecycle"]
 ```
+`depends_on` is honoured by the registry: dependencies run `init()` and `start()`
+before their dependents (priority stays as the tie-break), and `korodex doctor`
+reports unknown dependencies and dependency cycles instead of failing the boot.
+
 
 Discovery imports each candidate in isolation, resolves the entrypoint, instantiates it,
 validates the contract, and checks `requires_core`. **A broken plugin becomes a logged
@@ -150,6 +156,7 @@ korodex system info                # OS / CPU / memory / disk / uptime
 korodex system diagnostics         # interactive diagnostics menu (pick a section)
 korodex backup plan                # validate + show what a backup would copy
 korodex backup run --dry-run       # simulate; --exclude '*.log' etc. are honoured
+korodex modules create my_plugin --path ./my_plugins   # scaffold a plugin package
 korodex wizard                     # interactive numbered-menu wizard (TTY only)
 ```
 
@@ -199,10 +206,12 @@ UX rules enforced by `cli/ux.py` and `validate.py`:
 
 | Phase | Scope | State |
 | --- | --- | --- |
+| 4 | Review hardening (event-bus recursion guard, slow-handler timing, plugin import isolation, backup destination and symlink guards, ASCII tag fallback), module dependency DAG (`depends_on`), `korodex modules create` scaffolding | **delivered** |
+| --- | --- | --- |
 | 1 | Packaging, config hierarchy, logging, event bus, module contract, discovery, registry, signals, chassis, argparse CLI, `heartbeat` proof of concept, tests | **delivered** |
 | 2 | `rich` UX layer: numbered-menu wizard over the registered commands, `[default]` prompts, `while True` validation loops, validators (port/IP/path/size/duration), `--yes` + non-TTY auto-detection | **delivered** |
 | 3 | Built-in `system_info` (OS/CPU/RAM/disk diagnostics) and `backup_engine` (validated source to destination backups with dry runs), full test coverage, docs polish | **delivered** |
-| 4 (next) | `korodex init` project scaffolding, a long-running daemon mode with a status socket, and packaging the chassis as a reusable cookiecutter-style starting point | planned |
+| 5 (next) | Daemon IPC: a status socket or local health probe so `korodex status` can query a running chassis; `korodex init` project template; packaging the chassis as a reusable starting point | planned |
 
 Status tags used across the UI: `[✓]` success, `[?]` question, `[!]` error, `[i]` note.
 Diagnostics always go to **stderr**; **stdout** stays clean for scripting.

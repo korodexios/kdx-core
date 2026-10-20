@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from ..constants import TAG_ERROR, TAG_NOTE, TAG_OK, ExitCode
@@ -89,6 +90,41 @@ def core_commands(chassis: Chassis) -> list[CliCommand]:
                         ),
                     ),
                     handler=_modules_list_command,
+                    module_name="core",
+                ),
+                CliCommand(
+                    name="create",
+                    help="Scaffold a new module package (asks for a name when omitted).",
+                    args=(
+                        CliArgument(
+                            ("name",), nargs="?", help="Module name, for example backup_engine."
+                        ),
+                        CliArgument(
+                            ("--path",),
+                            dest="path",
+                            metavar="DIR",
+                            help="Directory to create the module in.",
+                        ),
+                        CliArgument(
+                            ("--title",),
+                            dest="title",
+                            metavar="TEXT",
+                            help="One-line module description.",
+                        ),
+                        CliArgument(
+                            ("--force",),
+                            dest="force",
+                            action="store_true",
+                            help="Replace an existing module directory.",
+                        ),
+                        CliArgument(
+                            ("--json",),
+                            dest="as_json",
+                            action="store_true",
+                            help="Emit the created files as JSON.",
+                        ),
+                    ),
+                    handler=_modules_create_command,
                     module_name="core",
                 ),
                 CliCommand(
@@ -218,7 +254,15 @@ def _doctor_command(request: CliRequest) -> int:
     print_key_values([(key, value) for key, value in report["signals"].items()])
     print_section("Modules")
     modules = report["modules"]
-    print_key_values([("total", modules["total"]), ("failed", modules["failed"] or "(none)")])
+    dependencies = chassis.registry.dependency_report()
+    print_key_values(
+        [
+            ("total", modules["total"]),
+            ("failed", modules["failed"] or "(none)"),
+            ("unknown dependencies", ", ".join(dependencies["missing"]) or "(none)"),
+            ("dependency cycles", ", ".join(dependencies["cycles"]) or "(none)"),
+        ]
+    )
     if modules["modules"]:
         print_table(
             [
@@ -228,10 +272,11 @@ def _doctor_command(request: CliRequest) -> int:
                     item["state"],
                     item["origin"],
                     ", ".join(item["commands"]) or "-",
+                    ", ".join(item.get("depends_on", [])) or "-",
                 ]
                 for item in modules["modules"]
             ],
-            headers=("name", "version", "state", "origin", "commands"),
+            headers=("name", "version", "state", "origin", "commands", "depends"),
         )
     if report["discovery"]["failures"]:
         write_line()
@@ -253,16 +298,86 @@ def _modules_list_command(request: CliRequest) -> int:
         return int(ExitCode.SUCCESS)
     print_table(
         [
-            [item["name"], item["version"], item["state"], item["origin"], item["description"]]
+            [
+                item["name"],
+                item["version"],
+                item["state"],
+                item["origin"],
+                ", ".join(item.get("depends_on", [])) or "-",
+                item["description"],
+            ]
             for item in health["modules"]
         ],
-        headers=("name", "version", "state", "origin", "description"),
+        headers=("name", "version", "state", "origin", "depends", "description"),
     )
     write_line()
     write_line(f"{TAG_OK} {chassis.discovery.summary()}")
     for failure in chassis.discovery.failures:
         write_line(f"  {TAG_ERROR} {failure.describe()}")
     return int(ExitCode.ERROR) if health["failed"] else int(ExitCode.SUCCESS)
+
+
+def _modules_create_command(request: CliRequest) -> int:
+    """Scaffold a new module package and report what landed on disk."""
+    from .scaffold import ScaffoldError, scaffold_module, validate_module_name
+    from .ux import UserExperience
+
+    chassis = _chassis(request)
+    ux = UserExperience(chassis.config)
+    raw_name = str(request.option("name") or "").strip()
+    if not raw_name:
+        raw_name = ux.ask_text("Module name", default="", required=True, example="backup_engine")
+    try:
+        name = validate_module_name(raw_name)
+    except ScaffoldError as exc:
+        write_line(f"{TAG_ERROR} {exc}")
+        if exc.hint:
+            write_line(f"{TAG_NOTE} {exc.hint}")
+        return int(ExitCode.ERROR)
+    raw_path = str(request.option("path") or "").strip()
+    parent = Path(raw_path).expanduser() if raw_path else Path(chassis.paths.builtin_modules_dir)
+    if not parent.is_absolute():
+        parent = Path.cwd() / parent
+    title = str(request.option("title") or "").strip()
+    force = bool(request.flag("force"))
+    directory = parent / name
+    exists = directory.exists() and any(directory.iterdir())
+    if exists and not force:
+        if not ux.interactive:
+            write_line(f"{TAG_ERROR} {directory} already holds a module")
+            write_line(f"{TAG_NOTE} pass --force to replace its files")
+            return int(ExitCode.ERROR)
+        if not ux.confirm(f"Replace existing module {name}?", default=False):
+            write_line(f"{TAG_NOTE} nothing written")
+            return int(ExitCode.SUCCESS)
+    try:
+        result = scaffold_module(
+            parent, name, title=title, force=force, project_root=chassis.paths.root
+        )
+    except ScaffoldError as exc:
+        write_line(f"{TAG_ERROR} {exc}")
+        if exc.hint:
+            write_line(f"{TAG_NOTE} {exc.hint}")
+        return int(ExitCode.ERROR)
+    rows: list[tuple[str, Any]] = [
+        ("directory", str(result.directory)),
+        ("files", ", ".join(item.name for item in result.created)),
+    ]
+    if result.test_file is not None:
+        rows.append(("test", str(result.test_file)))
+    if request.flag("as_json"):
+        dump_json({"module": name, **result.as_dict()})
+        return int(ExitCode.SUCCESS)
+    write_status(f"module {name} created")
+    print_key_values(rows)
+    builtin = Path(chassis.paths.builtin_modules_dir)
+    if result.directory.parent.resolve() != builtin.resolve():
+        write_line(
+            f"{TAG_NOTE} discovery needs {result.directory.parent} in core.modules.extra_paths "
+            "or passed as --modules-dir"
+        )
+    write_line(f"{TAG_NOTE} next: korodex modules list")
+    return int(ExitCode.SUCCESS)
 
 
 def _modules_show_command(request: CliRequest) -> int:

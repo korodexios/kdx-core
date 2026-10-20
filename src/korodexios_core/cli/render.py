@@ -7,13 +7,23 @@ import sys
 from collections.abc import Sequence
 from typing import Any
 
-from ..constants import TAG_ERROR, TAG_NOTE, TAG_OK
+from ..constants import TAG_ERROR, TAG_NOTE, TAG_OK, tags_for
+
+
+def _ascii_tags(message: str, stream: Any) -> str:
+    """Replace status tags the target stream cannot encode with their ASCII aliases."""
+    aliases = tags_for(getattr(stream, "encoding", None))
+    if not aliases:
+        return message
+    for tag, alias in aliases.items():
+        message = message.replace(tag, alias)
+    return message
 
 
 def write_line(message: str = "", *, stream: Any = None) -> None:
     """Write one line to stdout (the UI channel) unless *stream* says otherwise."""
     target = sys.stdout if stream is None else stream
-    print(message, file=target)
+    print(_ascii_tags(message, target), file=target)
 
 
 def write_status(message: str, *, tag: str = TAG_OK, stream: Any = None) -> None:
@@ -140,6 +150,7 @@ __all__ = [
     "render_key_values",
     "render_section",
     "render_table",
+    "tags_for",
     "write_line",
     "write_status",
 ]

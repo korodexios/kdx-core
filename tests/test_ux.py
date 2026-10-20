@@ -127,3 +127,12 @@ def test_menu_requires_options() -> None:
     ux, _ = interactive_ux([])
     with pytest.raises(ValueError, match="at least one option"):
         ux.menu("Empty", [])
+
+
+def test_status_falls_back_to_ascii_tags_on_legacy_streams() -> None:
+    stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+    config = make_config(**{"core.cli.interactive": False, "core.cli.color": False})
+    ux = UserExperience(config, stdout=stream)
+    ux.status("chassis stopped")
+    stream.flush()
+    assert stream.buffer.getvalue().decode("cp1252").strip() == "[OK] chassis stopped"

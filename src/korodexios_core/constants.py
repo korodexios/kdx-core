@@ -36,6 +36,30 @@ TAG_ASK: Final[str] = "[?]"
 TAG_ERROR: Final[str] = "[!]"
 TAG_NOTE: Final[str] = "[i]"
 
+TAG_ALIASES: Final[dict[str, str]] = {
+    TAG_OK: "[OK]",
+    TAG_ASK: "[?]",
+    TAG_ERROR: "[!]",
+    TAG_NOTE: "[i]",
+}
+
+
+def tags_for(encoding: str | None) -> dict[str, str]:
+    """Return the ASCII tag aliases a stream with *encoding* needs, if any.
+
+    Legacy Windows consoles (CP1250/CP1252) cannot encode the check mark, and a
+    UnicodeEncodeError in the middle of a friendly CLI is unacceptable, so the
+    renderers swap in ASCII tags when the stream cannot take the unicode ones.
+    """
+    if not encoding:
+        return {}
+    try:
+        TAG_OK.encode(encoding)
+    except (UnicodeEncodeError, LookupError):
+        return dict(TAG_ALIASES)
+    return {}
+
+
 SIGNAL_EXIT_BASE: Final[int] = 128
 DEFAULT_STOP_TIMEOUT: Final[float] = 5.0
 DEFAULT_TICK_INTERVAL: Final[float] = 1.0

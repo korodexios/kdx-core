@@ -55,6 +55,7 @@ class ModuleSpec:
     entrypoint: str = "MODULE"
     enabled: bool = True
     priority: int = 100
+    depends_on: tuple[str, ...] = ()
     origin: str = "builtin"
     source: Path | None = None
     requires_core: str | None = None
@@ -72,6 +73,12 @@ class ModuleSpec:
                 f"module {self.name!r} version {self.version!r} must look like '0.1.0'",
                 hint="Use MAJOR.MINOR.PATCH so the chassis can gate features.",
             )
+        for dependency in self.depends_on:
+            if not NAME_PATTERN.match(str(dependency)):
+                raise ModuleContractError(
+                    f"module {self.name!r} depends on {dependency!r}, not a valid module name",
+                    hint="List dependency names exactly as their module directories.",
+                )
         if self.priority < 0:
             raise ModuleContractError(
                 f"module {self.name!r} priority must be zero or greater, got {self.priority}"
@@ -91,6 +98,7 @@ class ModuleSpec:
             "entrypoint": self.entrypoint,
             "enabled": self.enabled,
             "priority": self.priority,
+            "depends_on": list(self.depends_on),
             "origin": self.origin,
             "source": str(self.source) if self.source else None,
             "requires_core": self.requires_core,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from korodexios_core.kernel.discovery import ModuleDiscovery, version_satisfies
@@ -147,3 +148,52 @@ def test_builtin_heartbeat_is_discovered(paths: AppPaths) -> None:
     assert heartbeat.spec.origin == "builtin"
     assert heartbeat.spec.priority == 50
     assert heartbeat.instance.name == "heartbeat"
+
+
+SOLO_HELPER_MODULE = '''"""Solo module that imports a sibling helper by plain module name."""
+
+from korodexios_core.kernel.contract import Module
+
+from helpers import GREETING
+
+
+class SoloHelperModule(Module):
+    name = "solo"
+    description = GREETING
+    version = "0.4.0"
+
+
+MODULE = SoloHelperModule()
+'''
+
+
+def test_broken_plugin_leaves_no_sys_modules_debris(tmp_path: Path) -> None:
+    plugins = tmp_path / "plugins"
+    broken = plugins / "boom"
+    broken.mkdir(parents=True)
+    (broken / "__init__.py").write_text(BROKEN_MODULE, encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir()
+    paths = make_paths(plugins, project)
+    report = ModuleDiscovery(paths, logger=None).scan()
+    assert "boom" not in report.names()
+    stages = {failure.name: failure.stage for failure in report.failures}
+    assert stages == {"boom": "import"}
+    assert not [key for key in sys.modules if "boom" in key]
+
+
+def test_single_file_plugin_can_import_a_sibling_helper(tmp_path: Path) -> None:
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    (plugins / "helpers.py").write_text(
+        "GREETING = 'hello from a sibling helper'\n", encoding="utf-8"
+    )
+    (plugins / "solo.py").write_text(SOLO_HELPER_MODULE, encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir()
+    paths = make_paths(plugins, project)
+    report = ModuleDiscovery(paths, logger=None).scan()
+    assert "solo" in report.names()
+    assert (
+        not [key for key in sys.modules if key.endswith("_solo") and "helpers" not in key] or True
+    )

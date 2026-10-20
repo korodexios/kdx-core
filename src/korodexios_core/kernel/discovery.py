@@ -9,7 +9,7 @@ import inspect
 import re
 import sys
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -22,6 +22,21 @@ from .contract import ModuleSpec, check_contract
 
 _REQUIREMENT_PATTERN = re.compile(r"^\s*(==|>=|<=|!=|>|<)?\s*([0-9][A-Za-z0-9._+-]*)\s*$")
 _SKIP_PREFIXES = ("_", ".")
+
+
+@contextlib.contextmanager
+def _temporary_sys_path(directory: Path) -> Iterator[str]:
+    """Expose *directory* on sys.path so a plugin can import sibling helpers."""
+    entry = str(directory)
+    added = entry not in sys.path
+    if added:
+        sys.path.insert(0, entry)
+    try:
+        yield entry
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(entry)
 
 
 def _slug(text: str) -> str:
@@ -356,7 +371,18 @@ class ModuleDiscovery:
             )
         module_obj = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module_obj
-        spec.loader.exec_module(module_obj)
+        sibling_dir = package_dir if package_dir is not None else entry_file.parent
+        with _temporary_sys_path(sibling_dir):
+            try:
+                spec.loader.exec_module(module_obj)
+            except Exception as exc:
+                sys.modules.pop(module_name, None)
+                raise ModuleDiscoveryError(
+                    f"import of {module_name} failed: {type(exc).__name__}: {exc}",
+                    module_name=name,
+                    stage="import",
+                    hint="Check the plugin for syntax errors and missing dependencies.",
+                ) from exc
         return module_obj
 
     def _resolve_entrypoint(self, module_obj: Any, entrypoint: str, name: str) -> Any:
@@ -443,6 +469,18 @@ class ModuleDiscovery:
                 module_name=name,
                 stage="manifest",
             ) from exc
+        declared = table.get("depends_on")
+        if declared is None:
+            declared = getattr(instance, "depends_on", ())
+        if isinstance(declared, str):
+            declared = [declared]
+        if not isinstance(declared, (list, tuple)):
+            raise ModuleDiscoveryError(
+                f"manifest depends_on must be a list of module names, got {declared!r}",
+                module_name=name,
+                stage="manifest",
+            )
+        dependencies = tuple(str(item).strip() for item in declared if str(item).strip())
         return ModuleSpec(
             name=str(table.get("name") or name),
             description=description,
@@ -450,6 +488,7 @@ class ModuleDiscovery:
             entrypoint=entrypoint,
             enabled=bool(table.get("enabled", True)),
             priority=priority,
+            depends_on=dependencies,
             origin=origin,
             source=source,
             requires_core=str(requires) if requires else None,
