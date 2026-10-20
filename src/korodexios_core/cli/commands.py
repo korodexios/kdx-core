@@ -75,6 +75,46 @@ def core_commands(chassis: Chassis) -> list[CliCommand]:
             group="core",
         ),
         CliCommand(
+            name="logs",
+            help="Show, follow, or truncate the chassis log file.",
+            args=(
+                CliArgument(
+                    ("-n", "--lines"),
+                    dest="lines",
+                    metavar="N",
+                    type="int",
+                    help="print the last N lines [50]",
+                ),
+                CliArgument(
+                    ("-f", "--follow"),
+                    dest="follow",
+                    action="store_true",
+                    help="stream newly appended lines until Ctrl-C",
+                ),
+                CliArgument(
+                    ("--clear",),
+                    dest="clear",
+                    action="store_true",
+                    help="truncate the log file (asks first)",
+                ),
+                CliArgument(
+                    ("--raw",),
+                    dest="raw",
+                    action="store_true",
+                    help="print only log lines, no decorations",
+                ),
+                CliArgument(
+                    ("--timeout",),
+                    dest="timeout",
+                    metavar="SECONDS",
+                    type="float",
+                    help="stop --follow after SECONDS (CI friendly)",
+                ),
+            ),
+            handler=_logs_command,
+            group="core",
+        ),
+        CliCommand(
             name="init",
             help="Scaffold a new project from the chassis template.",
             args=(
@@ -389,6 +429,90 @@ def _modules_list_command(request: CliRequest) -> int:
     for failure in chassis.discovery.failures:
         write_line(f"  {TAG_ERROR} {failure.describe()}")
     return int(ExitCode.ERROR) if health["failed"] else int(ExitCode.SUCCESS)
+
+
+def _logs_command(request: CliRequest) -> int:
+    """Show, follow, or truncate the chassis log file."""
+    import signal
+    import time
+
+    from ..logging.engine import DEFAULT_TAIL_LINES, LogTailer, tail_lines, truncate_log
+    from .ux import UserExperience
+
+    chassis = _chassis(request)
+    ux = UserExperience(chassis.config)
+    log_path = Path(chassis.paths.log_dir) / chassis.config.get_str("core.log.file", "korodex.log")
+    raw = bool(request.flag("raw"))
+    follow = bool(request.flag("follow"))
+    lines_value = request.option("lines")
+    count = int(str(lines_value)) if lines_value is not None else DEFAULT_TAIL_LINES
+    if count < 1:
+        write_line(f"{TAG_ERROR} --lines must be at least 1, got {count}")
+        write_line(f"{TAG_NOTE} korodex logs -n 200")
+        return int(ExitCode.ERROR)
+    timeout_value = request.option("timeout")
+    timeout = float(str(timeout_value)) if timeout_value is not None else None
+
+    def emit(line: str) -> None:
+        write_line(line)
+
+    def note(message: str) -> None:
+        if not raw:
+            write_line(f"{TAG_NOTE} {message}")
+
+    if not log_path.is_file():
+        reason = (
+            "file logging is disabled (core.log.file_enabled=false)"
+            if not chassis.config.get_bool("core.log.file_enabled", True)
+            else "the chassis has not written a log line yet"
+        )
+        write_line(f"{TAG_NOTE} no log file found at {log_path}")
+        note(reason)
+        return int(ExitCode.SUCCESS)
+
+    if request.flag("clear"):
+        proceed = True
+        if ux.is_interactive():
+            proceed = ux.confirm(f"Truncate log file {log_path}?", default=False)
+        if not proceed:
+            note("log file left alone")
+            return int(ExitCode.SUCCESS)
+        removed = truncate_log(log_path)
+        write_status(f"log file truncated ({removed} bytes freed)")
+        return int(ExitCode.SUCCESS)
+
+    if follow:
+        poll = chassis.config.get_float("core.logs.poll_interval", 0.5)
+        tailer = LogTailer(log_path, poll_interval=poll)
+        for line in tail_lines(log_path, min(count, 10)):
+            emit(line)
+        tailer.seek_end()
+        deadline = time.monotonic() + timeout if timeout is not None and timeout > 0 else None
+        note(f"following {log_path} (Ctrl-C to stop)")
+        interrupted = False
+        try:
+            while not chassis.signals.shutdown_requested:
+                for line in tailer.read_new():
+                    emit(line)
+                if deadline is not None and time.monotonic() >= deadline:
+                    break
+                tailer.wait()
+        except KeyboardInterrupt:
+            interrupted = True
+        # The chassis owns the signal handlers, so Ctrl-C arrives as a shutdown
+        # request rather than a KeyboardInterrupt; honour the recorded signal.
+        signalled = chassis.signals.shutdown_requested
+        stop_signal = chassis.signals.signal_number if signalled else None
+        if interrupted or signalled:
+            note(f"stopped following {log_path.name}")
+            return int(ExitCode.from_signal(stop_signal or signal.SIGINT))
+        return int(ExitCode.SUCCESS)
+
+    if not raw:
+        note(f"{log_path} ({log_path.stat().st_size} bytes)")
+    for line in tail_lines(log_path, count):
+        emit(line)
+    return int(ExitCode.SUCCESS)
 
 
 def _init_command(request: CliRequest) -> int:

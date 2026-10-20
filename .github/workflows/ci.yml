@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: \${{ github.workflow }}-\${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  check:
+    name: check (\${{ matrix.os }} / Python \${{ matrix.python }})
+    runs-on: \${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - name: Check out the chassis
+        uses: actions/checkout@v4
+
+      - name: Install uv and Python \${{ matrix.python }}
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: \${{ matrix.python }}
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: Verify the chassis (make check)
+        if: runner.os != 'Windows'
+        run: make check PYTHON="$PWD/.venv/bin/python"
+
+      - name: Verify the chassis (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          uv run ruff check src tests
+          uv run mypy
+          uv run pytest -q
+
+      - name: Boot the chassis
+        shell: bash
+        run: |
+          uv run korodex --version --no-log-file
+          uv run korodex doctor --no-log-file --no-color
+          uv run korodex run --once --no-log-file --no-color
+          uv run korodex logs -n 5 --raw --no-log-file --no-color
+
+      - name: Seed a project with korodex init
+        shell: bash
+        run: |
+          rm -rf build/ci_probe
+          uv run korodex init ci_probe --path build/ci_probe --yes --no-log-file --no-color
+
+      - name: Verify the seeded project
+        if: runner.os != 'Windows'
+        working-directory: build/ci_probe
+        run: make check PYTHON="$GITHUB_WORKSPACE/.venv/bin/python"
+
+      - name: Verify the seeded project (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        working-directory: build/ci_probe
+        run: |
+          uv run --project ../.. ruff check src tests
+          uv run --project ../.. mypy
+          uv run --project ../.. pytest -q
+
+  package:
+    name: package audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the chassis
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: Build wheel and sdist
+        run: uv build --out-dir dist
+
+      - name: Audit the artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheel="$(ls dist/*.whl | head -1)"
+          sdist="$(ls dist/*.tar.gz | head -1)"
+          echo "wheel: $wheel"
+          echo "sdist: $sdist"
+          python - "$wheel" <<'PY'
+          import sys
+          import zipfile
+          with zipfile.ZipFile(sys.argv[1]) as archive:
+              names = set(archive.namelist())
+          required = {
+              "korodexios_core/py.typed",
+              "korodexios_core/kernel/ipc.py",
+              "korodexios_core/cli/init_project.py",
+              "korodexios_core/modules/heartbeat/korodex_module.toml",
+              "korodexios_core/modules/system_info/korodex_module.toml",
+              "korodexios_core/modules/backup_engine/korodex_module.toml",
+          }
+          missing = sorted(required - names)
+          if missing:
+              raise SystemExit("wheel is missing: " + ", ".join(missing))
+          PY
+          tar -tzf "$sdist" | grep -q 'AGENTS.md'
+          tar -tzf "$sdist" | grep -q '.agents/skills/verification.md'
+          tar -tzf "$sdist" | grep -q 'tests/test_ipc.py'
+          echo "[OK] wheel carries py.typed and every module manifest; sdist carries docs, skills, and tests"
+
+      - name: Install the wheel in an isolated environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv venv /tmp/korodex-audit --python 3.13
+          uv pip install --python /tmp/korodex-audit/bin/python "$(ls dist/*.whl | head -1)"
+          /tmp/korodex-audit/bin/korodex --version --no-log-file
+          rm -rf /tmp/korodex-audit-seed
+          /tmp/korodex-audit/bin/korodex init audit_probe --path /tmp/korodex-audit-seed --yes --no-log-file
+          test -f /tmp/korodex-audit-seed/pyproject.toml
+          /tmp/korodex-audit/bin/korodex --home /tmp/korodex-audit-seed modules list --no-log-file

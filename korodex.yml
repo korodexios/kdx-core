@@ -27,6 +27,8 @@ core:
     host: 127.0.0.1            # the shared token is only meaningful on loopback
     port: 8123                 # 0 takes an ephemeral port; a busy port falls back
     timeout: 2.0               # client timeout used by 'korodex status'
+  logs:
+    poll_interval: 0.5         # seconds between reads for 'korodex logs --follow'
   cli:
     color: true
     interactive: true

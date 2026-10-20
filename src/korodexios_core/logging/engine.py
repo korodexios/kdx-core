@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import sys
+import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
@@ -382,3 +384,125 @@ def close_logger(logger: logging.Logger) -> None:
         except OSError:
             continue
         logger.removeHandler(handler)
+
+
+DEFAULT_TAIL_LINES = 50
+DEFAULT_POLL_INTERVAL = 0.5
+_TAIL_CHUNK = 8192
+
+
+def tail_lines(path: Path, count: int = DEFAULT_TAIL_LINES) -> list[str]:
+    """Return the last *count* lines of *path* without reading the whole file.
+
+    A missing or unreadable file yields an empty list: the CLI decides what the
+    operator deserves to hear, the helper never raises.
+    """
+    if count <= 0:
+        return []
+    target = Path(path)
+    try:
+        size = target.stat().st_size
+    except OSError:
+        return []
+    if size == 0:
+        return []
+    wanted = int(count)
+    with target.open("rb") as handle:
+        position = size
+        chunks: list[bytes] = []
+        seen = 0
+        while position > 0 and seen <= wanted:
+            step = min(_TAIL_CHUNK, position)
+            position -= step
+            handle.seek(position)
+            block = handle.read(step)
+            chunks.append(block)
+            seen += block.count(b"\n")
+            if position == 0 and seen > wanted:
+                break
+        blob = b"".join(reversed(chunks))
+    decoded = blob.decode(ENCODING, errors="replace")
+    lines = decoded.splitlines()
+    return lines[-wanted:]
+
+
+def truncate_log(path: Path) -> int:
+    """Empty *path* in place (same inode) and return the bytes removed."""
+    target = Path(path)
+    try:
+        before = target.stat().st_size
+    except OSError:
+        return 0
+    with target.open("w", encoding=ENCODING) as handle:
+        handle.write("")
+    return int(before)
+
+
+class LogTailer:
+    """Follow an appending log file, tolerating truncation and rotation.
+
+    Polling is deliberate: it is identical on Linux, macOS, and Windows, needs no
+    extra dependency, and a 0.5 s cadence is invisible to an operator reading logs.
+    """
+
+    def __init__(self, path: Path, *, poll_interval: float = DEFAULT_POLL_INTERVAL) -> None:
+        self.path = Path(path)
+        self.poll_interval = max(0.05, float(poll_interval))
+        self._position = 0
+        self._inode: int | None = None
+        self._partial = ""
+
+    def seek_end(self) -> None:
+        """Start following from the end of the current file."""
+        self._partial = ""
+        with contextlib.suppress(OSError):
+            stat = self.path.stat()
+            self._position = int(stat.st_size)
+            self._inode = int(stat.st_ino)
+
+    def read_new(self) -> list[str]:
+        """Return complete lines appended since the last call."""
+        try:
+            stat = self.path.stat()
+        except OSError:
+            return []
+        size = int(stat.st_size)
+        inode = int(stat.st_ino)
+        if self._inode is not None and inode != self._inode:
+            self._inode = inode
+            self._position = 0
+            self._partial = ""
+        elif size < self._position:
+            self._position = 0
+            self._partial = ""
+        if size <= self._position:
+            return []
+        with self.path.open("rb") as handle:
+            handle.seek(self._position)
+            blob = handle.read(size - self._position)
+        self._position = size
+        self._inode = inode
+        text = self._partial + blob.decode(ENCODING, errors="replace")
+        if not text.endswith("\n"):
+            head, _, tail = text.rpartition("\n")
+            if not head:
+                self._partial = text
+                return []
+            self._partial = tail
+            text = head
+        else:
+            self._partial = ""
+        return text.splitlines()
+
+    def wait(self) -> None:
+        """Sleep one polling interval."""
+        time.sleep(self.poll_interval)
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return a JSON-friendly view for status output."""
+        return {
+            "path": str(self.path),
+            "position": self._position,
+            "poll_interval": self.poll_interval,
+            "exists": self.path.is_file(),
+        }

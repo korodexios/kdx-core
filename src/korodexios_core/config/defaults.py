@@ -28,6 +28,7 @@ CORE_DEFAULTS: Final[dict[str, Any]] = {
     "core.ipc.host": "127.0.0.1",
     "core.ipc.port": 8123,
     "core.ipc.timeout": 2.0,
+    "core.logs.poll_interval": 0.5,
     "core.cli.color": True,
     "core.cli.interactive": True,
     "core.cli.confirmations": True,
