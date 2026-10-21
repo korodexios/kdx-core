@@ -1,0 +1,5 @@
+windows mypy exit 1 for 6889001817935cd3633de5ece0e1b30cc94dd2bd
+
+src\korodexios_core\kernel\ipc.py:84: error: Module has no attribute "getrusage"  [attr-defined]
+src\korodexios_core\kernel\ipc.py:84: error: Module has no attribute "RUSAGE_SELF"  [attr-defined]
+Found 2 errors in 1 file (checked 43 source files)
