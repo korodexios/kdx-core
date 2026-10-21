@@ -101,13 +101,21 @@ jobs:
           status=$?
           printf '%s\n' "$out"
           if [ "$status" -ne 0 ]; then
-            first="$(printf '%s\n' "$out" | grep -m 1 -E 'error' || true)"
+            # Workflow commands need escaping: strip CR, '%' and newlines, then
+            # truncate, so the annotation cannot be dropped by the runner.
+            first="$(printf '%s\n' "$out" | grep -m 1 -E 'error' | tr -d '\r%\n' | cut -c1-160 || true)"
             echo "::error::[win mypy] ${first:-mypy exited with status $status}"
             git config user.name korodexios-ci
             git config user.email ci@korodexios.dev
+            # The branch channel cannot fail silently: the pushed file is the evidence.
+            mkdir -p build
+            { printf 'windows mypy exit %s for %s\n\n' "$status" "$GITHUB_SHA"; printf '%s\n' "$out" | head -200; } > build/windows-mypy.txt
+            git add -f build/windows-mypy.txt
+            git commit -qm "windows mypy diagnostics for $GITHUB_SHA"
+            git push -f origin "HEAD:refs/heads/ci/windows-mypy" || echo "::warning::[win mypy] the diagnostics branch push failed"
             git fetch origin '+refs/notes/ci:refs/notes/ci' || true
-            printf 'windows mypy exit %s\n%s\n' "$status" "$out" | head -40 | git notes --ref=ci add -f -F - "$GITHUB_SHA"
-            git push --force origin refs/notes/ci || echo "::warning::[win mypy] the notes push failed; read the annotation line instead"
+            printf 'windows mypy exit %s\n%s\n' "$status" "$out" | head -40 | git notes --ref=ci add -f -F - "$GITHUB_SHA" || true
+            git push --force origin refs/notes/ci || true
             exit "$status"
           fi
 
