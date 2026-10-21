@@ -105,8 +105,9 @@ jobs:
             echo "::error::[win mypy] ${first:-mypy exited with status $status}"
             git config user.name korodexios-ci
             git config user.email ci@korodexios.dev
+            git fetch origin '+refs/notes/ci:refs/notes/ci' || true
             printf 'windows mypy exit %s\n%s\n' "$status" "$out" | head -40 | git notes --ref=ci add -f -F - "$GITHUB_SHA"
-            git push origin refs/notes/ci
+            git push --force origin refs/notes/ci || echo "::warning::[win mypy] the notes push failed; read the annotation line instead"
             exit "$status"
           fi
 
