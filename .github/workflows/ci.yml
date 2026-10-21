@@ -97,17 +97,19 @@ jobs:
         # published as an annotation on the run page.
         run: |
           set -uo pipefail
-          # Redirect to a file: a huge command substitution can die on the
-          # Windows runner before any diagnostic line is reached.
+          # The runner starts bash with -e, so a failing mypy aborts the step
+          # before any diagnostic line runs. Capture the status instead.
           mkdir -p build
+          set +e
           uv run mypy > build/mypy-raw.txt 2>&1
           status=$?
+          set -e
           first="$(grep -m 1 -E 'error' build/mypy-raw.txt | tr -d '\r%\n' | cut -c1-160 || true)"
           if [ "$status" -ne 0 ]; then
             echo "::error::[win mypy] ${first:-mypy exited with status $status}"
           fi
           head -60 build/mypy-raw.txt
-          git config --global --add safe.directory "$PWD"
+          git config --global --add safe.directory "$PWD" || true
           git config user.name korodexios-ci
           git config user.email ci@korodexios.dev
           { printf 'windows mypy exit %s for %s\n\n' "$status" "$GITHUB_SHA"; head -200 build/mypy-raw.txt; } > build/windows-mypy.txt
