@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ...units import format_bytes as core_format_bytes
+from ...units import page_size, sysconf_value
 
 __all__ = [
     "cpu_snapshot",
@@ -73,13 +74,10 @@ def memory_snapshot() -> dict[str, Any]:
         available = meminfo.get("MemAvailable", meminfo.get("MemFree"))
         source = "proc/meminfo"
     if total is None:
-        try:
-            page_size = os.sysconf("SC_PAGE_SIZE")
-            pages = os.sysconf("SC_PHYS_PAGES")
-            total = int(page_size) * int(pages)
+        pages = sysconf_value("SC_PHYS_PAGES")
+        if pages is not None:
+            total = page_size() * pages
             source = "sysconf"
-        except (ValueError, OSError, AttributeError):
-            total = None
     used = max(0, total - available) if total is not None and available is not None else None
     percent = round(100.0 * used / total, 1) if total and used is not None else None
     return {

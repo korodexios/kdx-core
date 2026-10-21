@@ -31,9 +31,11 @@ the short list of what ships next; the README keeps one sentence about it.
    freshly seeded project installs today without waiting for an index.
 2. **A Textual/TUI front end** over the same declarative `CliCommand` tree the wizard
    already reads - no module knows a second surface exists.
-3. **Windows type check in CI** is red: `mypy` on `windows-latest` exits in about three
-   seconds, before any chassis test runs. The check matrix keeps `fail-fast: false`, so
-   Linux and macOS stay green and the release job waits for the whole set.
+3. **Windows in CI** waits for one more run. The red was ours, not mypy's: the runner
+   starts bash with `-e`, so the failing mypy call ended the step before any diagnostic
+   ran, and the POSIX-only `os.sysconf` / `os.getrusage` reads failed the Windows
+   platform check. What remains is the Windows runtime path - test, boot, and seed steps
+   now get to run there for the first time.
 
 ## Release cadence
 

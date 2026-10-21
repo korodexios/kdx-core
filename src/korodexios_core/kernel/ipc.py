@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from ..constants import IPC_SCHEMA_VERSION
+from ..units import page_size
 from ..version import CORE_API_VERSION
 
 DISCOVERY_NAME = "chassis.ipc"
@@ -72,8 +73,7 @@ def process_memory() -> dict[str, Any]:
     try:
         if statm.is_file():
             resident_pages = int(statm.read_text(encoding="utf-8").split()[1])
-            page_size = os.sysconf("SC_PAGE_SIZE")
-            rss = max(0, resident_pages) * int(page_size)
+            rss = max(0, resident_pages) * page_size()
             result.update(rss_bytes=rss, rss=_human_bytes(rss), source="proc/statm")
             return result
     except (OSError, ValueError, IndexError):

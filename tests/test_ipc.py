@@ -26,6 +26,7 @@ from korodexios_core.kernel.ipc import (
     process_memory,
 )
 from korodexios_core.paths import AppPaths
+from korodexios_core.units import DEFAULT_PAGE_SIZE
 from korodexios_core.version import CORE_API_VERSION
 
 from .test_chassis import build_chassis
@@ -203,6 +204,18 @@ def test_process_memory_reports_resident_size() -> None:
     if memory["source"] != "unavailable":
         assert memory["rss_bytes"] and memory["rss_bytes"] > 0
         assert memory["rss"] != "-"
+
+
+def test_process_memory_falls_back_to_default_page_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Windows host has no sysconf: the 4 KiB default keeps /proc math honest."""
+    monkeypatch.setattr(Path, "is_file", lambda self: True)
+    monkeypatch.setattr(Path, "read_text", lambda self, **kwargs: "100 200 300 400")
+    monkeypatch.delattr(os, "sysconf", raising=False)
+    memory = process_memory()
+    assert memory["source"] == "proc/statm"
+    assert memory["rss_bytes"] == 200 * DEFAULT_PAGE_SIZE
 
 
 def test_chassis_lifecycle_opens_and_closes_the_endpoint(project_root) -> None:

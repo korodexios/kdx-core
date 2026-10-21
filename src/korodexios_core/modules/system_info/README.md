@@ -19,6 +19,12 @@ registration. Built-in; discovered from `korodexios_core/modules/system_info/`.
 | `disk_path` | `.` | filesystem reported by `kdx system disk` |
 | `include_cpu_model` | `true` | include the CPU model string in snapshots |
 
+## Portability
+
+Total memory resolves in order: `/proc/meminfo`, then POSIX `sysconf`
+(`SC_PHYS_PAGES` x `SC_PAGE_SIZE`), then `unavailable`. Windows has no
+`sysconf`, so `kdx system info` reports `-` there instead of guessing.
+
 ## How to test
 
 `pytest -q tests/test_system_info.py` (collector boundaries and CLI handlers); the

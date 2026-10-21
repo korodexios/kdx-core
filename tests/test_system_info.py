@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+
+import pytest
 
 from korodexios_core.cli.entry import main
 from korodexios_core.constants import ExitCode
 from korodexios_core.kernel.cli_contract import CliCommand
-from korodexios_core.modules.system_info import MODULE, SystemInfoModule
+from korodexios_core.modules.system_info import MODULE, SystemInfoModule, collector
 from korodexios_core.modules.system_info.collector import (
     cpu_snapshot,
     disk_snapshot,
@@ -18,6 +21,7 @@ from korodexios_core.modules.system_info.collector import (
     os_snapshot,
     uptime_snapshot,
 )
+from korodexios_core.units import DEFAULT_PAGE_SIZE, page_size, sysconf_value
 from tests.test_chassis import build_chassis
 
 
@@ -47,6 +51,30 @@ def test_memory_snapshot_reports_total_bytes() -> None:
     if memory["source"] != "unavailable":
         assert memory["total_bytes"] and memory["total_bytes"] > 0
         assert memory["total"] != "-"
+
+
+def test_sysconf_helpers_fall_back_without_posix(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert sysconf_value("SC_PAGE_SIZE") is not None
+    assert page_size() == sysconf_value("SC_PAGE_SIZE")
+    monkeypatch.delattr(os, "sysconf", raising=False)
+    assert sysconf_value("SC_PAGE_SIZE") is None
+    assert page_size() == DEFAULT_PAGE_SIZE
+
+
+def test_memory_snapshot_without_meminfo_uses_sysconf(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(collector, "_meminfo_values", lambda: {})
+    memory = memory_snapshot()
+    assert memory["source"] == "sysconf"
+    assert memory["total_bytes"] and memory["total_bytes"] > 0
+
+
+def test_memory_snapshot_without_posix_reports_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(collector, "_meminfo_values", lambda: {})
+    monkeypatch.delattr(os, "sysconf", raising=False)
+    memory = memory_snapshot()
+    assert memory["source"] == "unavailable"
+    assert memory["total_bytes"] is None
+    assert memory["total"] == "-"
 
 
 def test_disk_snapshot_targets_the_requested_path(tmp_path: Path) -> None:

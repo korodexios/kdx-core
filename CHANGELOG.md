@@ -28,6 +28,17 @@ history lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 - Per-module READMEs, this changelog, and `.gitignore` coverage for
   `kdx.local.*` and `korodexios.local.*`.
 
+### Fixed
+
+- Windows portability of the memory probes: `os.sysconf`, `os.getrusage`, and
+  `os.RUSAGE_SELF` exist only on POSIX, so page size and physical memory now
+  resolve through `korodexios_core.units` helpers with an explicit fallback
+  (4 KiB page, `unavailable` source) instead of bare attribute access that the
+  Windows platform check rejects.
+- CI: the Windows type-check step published nothing because the runner starts
+  bash with `-e`; the mypy status is captured before errexit ends the step, and
+  the output is published on the `ci/windows-mypy` branch.
+
 ## [0.1.0] - 2026-10-20
 
 Production release of the chassis: microkernel lifecycle, layered configuration
