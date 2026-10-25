@@ -286,7 +286,8 @@ class BackupEngineModule(Module):
         )
 
     def start(self) -> None:
-        """Announce the resolved configuration on the event bus."""
+        """Mark the module running and announce the resolved configuration."""
+        super().start()
         settings = self.settings()
         self.bus.publish(
             CONFIGURED_EVENT,
@@ -301,7 +302,8 @@ class BackupEngineModule(Module):
         )
 
     def stop(self) -> None:
-        """Report counters; no files or handles stay open between runs."""
+        """Mark the module stopped; no files or handles stay open between runs."""
+        super().stop()
         self.logger.info(
             f"{TAG_NOTE} backup engine stopped",
             runs=self._runs,

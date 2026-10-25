@@ -17,8 +17,10 @@ __all__ = [
     "disk_snapshot",
     "format_bytes",
     "full_snapshot",
+    "load_reading",
     "memory_snapshot",
     "os_snapshot",
+    "supports_load_average",
     "uptime_snapshot",
 ]
 
@@ -47,14 +49,28 @@ def os_snapshot() -> dict[str, Any]:
     }
 
 
+def load_reading() -> list[float] | None:
+    """Return the one, five, and fifteen minute load average, or None.
+
+    The load average is a Unix idea: a platform without `os.getloadavg()`, or one that
+    refuses the reading, answers None and the caller decides what that means.
+    """
+    if not hasattr(os, "getloadavg"):
+        return None
+    try:
+        return [round(value, 2) for value in os.getloadavg()]
+    except OSError:
+        return None
+
+
+def supports_load_average() -> bool:
+    """Return whether this platform can answer load_reading() at all."""
+    return hasattr(os, "getloadavg")
+
+
 def cpu_snapshot(*, include_model: bool = True) -> dict[str, Any]:
     """Return CPU count, load average, and (on Linux) the model name."""
-    load: list[float] | None = None
-    if hasattr(os, "getloadavg"):
-        try:
-            load = [round(value, 2) for value in os.getloadavg()]
-        except OSError:
-            load = None
+    load = load_reading()
     return {
         "logical_cores": os.cpu_count(),
         "load_average": load,

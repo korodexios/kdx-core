@@ -22,6 +22,7 @@ from korodexios_core.kernel.cli_contract import CliArgument, CliCommand
 from korodexios_core.kernel.contract import ModuleSpec
 from korodexios_core.kernel.diagnostics import DiagnosticCheck, DiagnosticSeverity
 from korodexios_core.kernel.ipc import IpcDiscovery, IpcRoute
+from korodexios_core.modules.system_info.module import WATCH_LOAD_DEFAULT, WATCHER_NAME
 from korodexios_core.paths import AppPaths
 
 PROJECT_CONFIG = """
@@ -348,17 +349,21 @@ def test_supervision_marks_a_dead_worker_failed(project_root: Path) -> None:
         chassis.signals.uninstall()
 
 
-def test_builtin_heartbeat_needs_no_thread_supervision(project_root: Path) -> None:
-    """v0.2.3: the ticker is a scheduled task, so nothing is left to watch or join."""
+def test_builtins_schedule_and_supervise_their_own_workers(project_root: Path) -> None:
+    """v0.2.3 scheduled the ticker; v0.2.4 gave a built-in a thread worth watching."""
     write_root(project_root, PROJECT_CONFIG.replace("autodiscover: false", "autodiscover: true"))
     chassis = make_chassis(project_root)
     chassis.start(ipc=False)
     try:
-        module = chassis.registry.require("heartbeat").module
-        assert module.workers() == {}, "the ticker must not leave a thread behind"
-        assert chassis.supervisor.records() == []
-        assert chassis.health_report()["supervision"]["watched"] == 0
-        assert chassis.supervise() == []
+        ticker = chassis.registry.require("heartbeat").module
+        assert ticker.workers() == {}, "the scheduled ticker leaves no thread behind"
+        watcher = chassis.registry.require("system_info").module
+        expected = 1 if WATCH_LOAD_DEFAULT else 0
+        assert bool(watcher.workers()) is bool(expected)
+        watched = [(record.module, record.name) for record in chassis.supervisor.records()]
+        assert watched == ([("system_info", WATCHER_NAME)] if expected else [])
+        assert chassis.health_report()["supervision"]["watched"] == expected
+        assert chassis.supervise() == [], "a live worker is not a loss"
         tasks = chassis.context.scheduler.tasks()
         assert [task.name for task in tasks] == ["ticker"]
         assert tasks[0].module == "heartbeat"

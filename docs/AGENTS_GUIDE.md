@@ -13,7 +13,7 @@ section is a contract, not a suggestion. Human-oriented narrative lives in
 | Distribution | `korodexios-core` |
 | Import root | `korodexios_core` |
 | Console scripts | `kdx` (primary short alias), `korodexios` (canonical) |
-| Version | `0.2.3` (production), core API frozen at `v2` (additive changes only inside v2) |
+| Version | `0.2.4` (production), core API frozen at `v2` (additive changes only inside v2) |
 | Runtime | CPython 3.11+, stdlib first (PyYAML for config, rich for the CLI surface) |
 | Config file | `kdx.yml` / `kdx.yaml` / `kdx.json` (then `korodexios.*`) |
 | Env prefix | `KDX_` primary; `KORODEXIOS_` is the canonical long prefix |
@@ -111,6 +111,12 @@ opportunities, never requirements - the chassis `getattr`s them and moves on:
 - `kdx doctor` also reports the chassis' own checks (log file, state dirs, stale lock,
   control-plane errors, failing scheduled tasks, abandoned named locks), so a module only
   contributes what the core cannot know.
+- Since `v0.2.4` the built-ins report their runtime habits as well as their declarations:
+  `system_info` starts a load sampler thread when `modules.system_info.watch_load` is on - the
+  default wherever the platform can answer a load average - and hands that thread to
+  supervision through `workers()`, so a shipped module's thread is what `kdx doctor` and
+  `core.worker.lost` are pointed at. `heartbeat` schedules its ticker instead and reports no
+  thread at all: the two hooks answer two different questions and neither is a formality.
 - The base class hands over two chassis services without any plumbing: the read-only
   `scheduler` property (declare recurring work in `start()`, see section 16) and
   `context.paths.durable_dir` for files that must survive a moved state directory.
@@ -521,6 +527,9 @@ dependency order -> lifecycle loop -> `stop()` in reverse -> close logging.
   unauthenticated client stop the daemon.
 - `kdx status --target http://host:port [--token SECRET]` queries any reachable
   daemon; `--json` is the machine contract.
+- Every answer ends the connection: the handler sends `Connection: close` and sets its own
+  `close_connection` flag, so a client that offered HTTP/1.1 keep-alive gets one response and
+  a closed socket instead of waiting for a second answer (`v0.2.4`).
 - `POST /api/v1/reload` re-reads the configuration in the running daemon; the reply
   carries `reloaded` and the list of `changed` keys.
 - `POST /api/v1/rpc` with `{"command": "heartbeat status", "args": {...}}` runs one
@@ -718,7 +727,10 @@ drops the task, its place in the declaration order, and its suffix bookkeeping, 
 `sweep-2` in an old log line is never a different task tomorrow. `heartbeat` is the shipped
 dogfood for the primitive (`v0.2.3`): its ticker is one `ticker` task on the chassis clock, so
 the module owns no thread, supervision has no worker to join, and a stopped module leaves no
-task behind.
+task behind. A callback may take scheduler decisions of its own - schedule another task,
+unschedule a neighbour, or withdraw its own name mid-run - because a sweep works from a
+snapshot of what was due, taken with the guard held, and calls each task with the guard
+released: self-cancellation is a decision, not a missed beat (`v0.2.4`).
 
 ### 16.4 Configuration and public surface
 

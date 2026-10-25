@@ -5,7 +5,58 @@ history lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## [Unreleased]
 
-_Nothing pending: the working tree is the `v0.2.3` tag._
+_Nothing pending: the working tree is the `v0.2.4` tag._
+
+## [0.2.4] - 2026-10-26
+
+The supervision dogfood closes: a shipped built-in module now runs a worker thread the
+chassis watches, joins on shutdown, and can report when it dies. Two edges that only a
+running system could find are fixed, and the coverage ratchet moves up a point. Nothing in
+the frozen surface changed shape - no new export, no changed signature, no renamed
+configuration key.
+
+### Added
+
+- **`system_info` samples the load average on a watched worker**: the module starts a
+  `kdx-system-info-load` daemon thread that reads `os.getloadavg()` on an interval, caches the
+  reading, and publishes `system.load.sampled`. It reports that thread through `workers()`, so for
+  the first time `WorkerSupervisor`, `core.worker.lost`, and `kdx doctor` are pointed at shipped code
+  rather than a test fixture: a sampler that stops on its own moves `system_info` to `failed` the
+  way the roadmap always claimed it would. Two scoped keys control it - `watch_load` (default
+  `true` where the platform has a load average, `false` where it does not) and `load_interval`
+  (default `5.0` seconds, clamped) - and a platform that cannot answer the reading parks the
+  watcher with one warning in the log instead of spinning a thread that reads nothing.
+
+### Fixed
+
+- **A scheduled task may withdraw itself mid-sweep**: a callback that called `unschedule()` on
+  its own name, or on a neighbour, was acting on tables the running sweep was still reading.
+  `run_due()` now takes its list of due tasks as a snapshot with the guard held, calls each
+  callback with the guard released, and skips a task an earlier callback withdrew or replaced -
+  so self-cancellation is a decision the sweep honours, not a missed beat, and `tasks()`,
+  `task()`, `pending()`, and `next_due_in()` answer from an atomic copy even while the scheduler
+  thread and a CLI thread both reach for the same tables.
+- **The control plane means its own `Connection: close`**: `_ControlHandler` sent the header
+  without setting `close_connection`, so an HTTP/1.1 client that offered keep-alive got its
+  answer and then waited on a socket the chassis was never going to reuse. The handler sets the
+  flag on every response: one request, one answer, one closed socket - a keep-alive client can
+  hang up now instead of timing out.
+- **The built-in modules report the state they are in**: `backup_engine` and `system_info` overrode
+  `start()` and `stop()` without the base hooks, so a running module answered `initialized` to
+  `health()`, `kdx doctor`, and `kdx modules show`, and a stopped one never answered `stopped`. Both
+  call `super()` now, which is also what makes a supervision finding readable: a module whose
+  worker died is `failed`, not a module that never started.
+
+### Changed
+
+- **The coverage floor moved from 86 to 87.**: the ratchet is one point under the measured
+  total, `v0.2.3` measured 87.63%, so `COVERAGE_FLOOR` in the `Makefile` and the working agreement now
+  read `87` and a new untested branch fails the bar.
+- **`system_info` speaks for itself in `kdx doctor`**: the module declares `diagnostics()` - the
+  configured disk path and the watcher thread, alive, parked by configuration, parked for the
+  platform, or stopped - and its `health()` block carries `watch_load`, `load_interval_seconds`,
+  `load_reads`, `load_average`, and `load_watcher`. Counters describe the current run: a chassis that
+  re-initializes the module starts counting again.
 
 ## [0.2.3] - 2026-10-26
 

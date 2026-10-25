@@ -237,7 +237,9 @@ class TaskScheduler:
 
         Every internal record of that task goes with it - the task table, the
         declaration order, and its entry in the suffix bookkeeping - so the tables
-        stay the size of the work that is actually scheduled. A suffix this
+        stay the size of the work that is actually scheduled. Calling it from a task
+        callback, including on the callback's own name, is safe: a running sweep
+        already works from a snapshot of what was due. A suffix this
         scheduler handed out is never recycled while another task of the same base
         is running, so 'sweep-2' in an old log line never names a new task.
         """
@@ -274,11 +276,17 @@ class TaskScheduler:
 
     def task(self, name: str) -> ScheduledTask | None:
         """Return the task named *name*, or None."""
-        return self._tasks.get(str(name).strip())
+        with self._guard:
+            return self._tasks.get(str(name).strip())
 
     def tasks(self) -> tuple[ScheduledTask, ...]:
-        """Return every declared task, in declaration order."""
-        return tuple(self._tasks[key] for key in self._order if key in self._tasks)
+        """Return a snapshot of every declared task, in declaration order.
+
+        The copy is taken with the guard held, so a reader on the CLI thread and a
+        sweep on the scheduler thread never watch `_order` change size underneath them.
+        """
+        with self._guard:
+            return tuple(self._tasks[key] for key in self._order if key in self._tasks)
 
     def pending(self, *, now: float | None = None) -> list[ScheduledTask]:
         """Return the tasks due at *now*; the scheduler's clock decides by default."""
@@ -304,9 +312,12 @@ class TaskScheduler:
     def run_due(self, *, now: float | None = None) -> list[str]:
         """Run every task due at *now*; return the names that ran.
 
-        The clock is sampled once, so a slow callback cannot make its own task
-        look overdue twice. A task that raised keeps its slot: the failure is
-        counted, logged, and published, and the interval still applies.
+        The clock is sampled once and the due list is a snapshot taken with the
+        guard held, so a slow callback cannot make its own task look overdue twice
+        and a table that changes size mid-sweep cannot skip a task. Callbacks run
+        with the guard released: a task may schedule another one, unschedule its
+        neighbour, or withdraw its own name - and this sweep honours that decision
+        instead of running a task that is already gone.
         """
         if not self._enabled:
             return []
@@ -316,6 +327,10 @@ class TaskScheduler:
         for task in due:
             if self._stop.is_set():
                 break
+            if self.task(task.name) is not task:
+                # An earlier callback withdrew this task, or replaced it under the
+                # same name: the withdrawal is a decision, not a missed beat.
+                continue
             if self.run_task(task.name, now=moment):
                 ran.append(task.name)
         return ran
@@ -324,9 +339,11 @@ class TaskScheduler:
         """Run one task by name right now, ignoring the clock; return True on success.
 
         This is also the manual trigger a CLI or a control-plane route uses to ask
-        for work immediately, which is why the clock is optional here.
+        for work immediately, which is why the clock is optional here. The task is
+        looked up under the guard and then called with it released, so the callback
+        may take scheduler decisions of its own.
         """
-        task = self._tasks.get(str(name).strip())
+        task = self.task(name)
         if task is None:
             return False
         if not self._enabled or task.done:

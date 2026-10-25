@@ -85,10 +85,18 @@ def test_heartbeat_and_system_info_declare_their_keys() -> None:
     assert interval.kind is ConfigKind.FLOAT
     assert interval.default == 2.0
     system_info = SystemInfoModule().config_schema()
-    assert system_info.keys() == ("disk_path", "include_cpu_model")
+    # v0.2.4 added the load watcher keys to the same module.
+    assert system_info.keys() == (
+        "disk_path",
+        "include_cpu_model",
+        "watch_load",
+        "load_interval",
+    )
     assert {field.key: field.kind for field in system_info.fields} == {
         "disk_path": ConfigKind.PATH,
         "include_cpu_model": ConfigKind.BOOL,
+        "watch_load": ConfigKind.BOOL,
+        "load_interval": ConfigKind.FLOAT,
     }
 
 

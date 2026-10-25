@@ -174,6 +174,10 @@ cannot order.
   are folded to one separator, Windows drive letters, alternate data streams, and reserved
   device names are refused, and containment is verified on the resolved path - case-folded
   on a case-insensitive filesystem, so a real file is never answered with a 404.
+- **One request, one connection.** The control plane answers with `Connection: close` and the
+  handler sets its own `close_connection` flag, so an HTTP/1.1 client that offered keep-alive
+  receives exactly one answer and a closed socket; the dispatch loop never waits for a
+  request that will not come (`v0.2.4`).
 
 ## 6. Signal handling and exit codes
 
@@ -213,14 +217,19 @@ error.
   through `workers()`. The first time a watched thread dies, its module moves to `failed`
   and `core.worker.lost` is published - once per worker, so a thread that dies at boot
   does not flood the log. Since `v0.2.3` the built-in ticker is a scheduled task rather than a
-thread, so a stock chassis has no worker to watch and nothing to join at shutdown.
+thread; since `v0.2.4` the built-in load sampler is a real thread that `system_info` reports
+through `workers()`, so supervision watches shipped code and `stop()` joins what `start()`
+started.
 - **The periodic scheduler** (`core.scheduler.enabled`, default `true`) holds the tasks
   modules declare with `context.schedule(interval_seconds, callback)`. By default it owns no
   thread at all: the lifecycle tick calls `run_due()`, so recurring work runs on the chassis
   clock and needs no join. `core.scheduler.threaded` instead runs one named `kdx-scheduler`
   thread that `stop()` joins inside `stop_timeout`. A callback that raises is counted and
   logged; it never ends the loop. `heartbeat` schedules its ticker through this primitive (`v0.2.3`),
-so the built-in needs no thread of its own and the beats stop with the clock.
+so the built-in needs no thread of its own and the beats stop with the clock. A callback
+may also take scheduler decisions of its own: a sweep runs from a snapshot taken with the
+guard held and calls each task with the guard released, so a task may schedule another one,
+unschedule its neighbour, or withdraw its own name (`v0.2.4`).
 - The bus is lock-protected; handlers run outside the lock, so a handler may do
   anything the bus API allows without deadlocking.
 - Logging is thread-safe by construction (one `LoggerFactory`, stdlib handlers).
@@ -279,7 +288,7 @@ The freeze policy is mechanical:
 | `korodexios_core.CORE_API_VERSION` | the string a module can assert against |
 
 The wheel ships a `py.typed` marker, so type information travels with the package. A patch
-release on the `0.2` line (`0.2.1`, `0.2.2`, `0.2.3`) carries hardening and dogfooding under the same
+release on the `0.2` line (`0.2.1`, `0.2.2`, `0.2.3`, `0.2.4`) carries hardening and dogfooding under the same
 `v2` surface: no new export, no changed signature, no renamed configuration key.
 Core API v2 added, without breaking a single existing import: `InstanceLock` and
 `LockHolder`, `AsyncRuntime`, `WorkerSupervisor` and `WorkerRecord`, `DiagnosticCheck` and

@@ -932,6 +932,11 @@ class _ControlHandler(BaseHTTPRequestHandler):
         for key, value in headers:
             self.send_header(str(key), str(value))
         self.send_header("Connection", "close")
+        # The header alone does not end the dispatch loop. A client that asked for
+        # HTTP/1.1 keep-alive would leave this handler waiting for the next request on
+        # a socket the chassis never reuses, so the handler says the same thing the
+        # header says and the connection closes after this response.
+        self.close_connection = True
         self.end_headers()
         if body and code != 304:
             self.wfile.write(raw)

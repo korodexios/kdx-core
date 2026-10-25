@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+from pathlib import Path
 from typing import Any, cast
 
 from ...cli.render import dump_json, print_key_values, print_section, write_line
@@ -9,17 +11,30 @@ from ...config.schema import ConfigField, ConfigKind, ConfigSchema
 from ...constants import TAG_NOTE, TAG_OK
 from ...kernel.cli_contract import CliArgument, CliCommand, CliRequest, CliSurface
 from ...kernel.context import CoreContext
-from ...kernel.contract import Module
+from ...kernel.contract import Module, ModuleState
+from ...kernel.diagnostics import DiagnosticCheck, DiagnosticSeverity
 from ...kernel.ipc import IpcRequest, IpcRoute
-from .collector import disk_snapshot, full_snapshot
+from .collector import disk_snapshot, full_snapshot, load_reading, supports_load_average
 
 DEFAULT_DISK_KEY = "disk_path"
 SNAPSHOT_EVENT = "system.info.collected"
+LOAD_EVENT = "system.load.sampled"
 SECTIONS = ("all", "os", "cpu", "memory", "disk", "uptime")
+WATCHER_NAME = "load watcher"
+WATCHER_THREAD = "kdx-system-info-load"
+DEFAULT_LOAD_INTERVAL = 5.0
+MIN_LOAD_INTERVAL = 0.05
+# The load average is a Unix reading; ask the platform before promising a watcher.
+WATCH_LOAD_DEFAULT = supports_load_average()
 
 
 class SystemInfoModule(Module):
-    """Collects OS/CPU/RAM/disk facts and exposes them through the root CLI."""
+    """Collects OS/CPU/RAM/disk facts, samples the load average, and serves the CLI.
+
+    Its load watcher is the built-in that reports a real thread through `workers()`, so
+    `WorkerSupervisor` and `kdx doctor` are pointed at shipped code: a sampler that dies is a
+    finding, and shutdown joins what it started.
+    """
 
     name = "system_info"
     description = "Inspects host OS, CPU, RAM, and disk, and adds system diagnostics commands."
@@ -31,16 +46,33 @@ class SystemInfoModule(Module):
         self._include_model = True
         self._snapshots = 0
         self._last: dict[str, Any] | None = None
+        self._load: list[float] | None = None
+        self._load_reads = 0
+        self._watch_load = False
+        self._load_interval = DEFAULT_LOAD_INTERVAL
+        self._thread: threading.Thread | None = None
+        self._stop_worker = threading.Event()
 
     def init(self, context: CoreContext) -> None:
         """Read scoped settings: which filesystem to report and how verbose to be."""
         super().init(context)
         self._disk_path = str(self.config.get_str(DEFAULT_DISK_KEY, "."))
         self._include_model = bool(self.config.get_bool("include_cpu_model", True))
+        self._watch_load = bool(self.config.get_bool("watch_load", WATCH_LOAD_DEFAULT))
+        self._load_interval = max(
+            MIN_LOAD_INTERVAL, float(self.config.get_float("load_interval", DEFAULT_LOAD_INTERVAL))
+        )
+        # A chassis that re-initializes this module starts counting again: the
+        # counters describe the run the operator is looking at, not the last one.
+        self._load = None
+        self._load_reads = 0
+        self._stop_worker.clear()
         self.logger.debug(
             "system_info configured",
             disk_path=self._disk_path,
             include_cpu_model=self._include_model,
+            watch_load=self._watch_load,
+            load_interval_seconds=round(self._load_interval, 3),
         )
 
     def config_schema(self) -> ConfigSchema:
@@ -59,6 +91,21 @@ class SystemInfoModule(Module):
                     kind=ConfigKind.BOOL,
                     default=True,
                     description="Ask the platform for the CPU model string.",
+                ),
+                ConfigField(
+                    "watch_load",
+                    kind=ConfigKind.BOOL,
+                    default=WATCH_LOAD_DEFAULT,
+                    description="Sample the load average on a watched background thread.",
+                ),
+                ConfigField(
+                    "load_interval",
+                    kind=ConfigKind.FLOAT,
+                    default=DEFAULT_LOAD_INTERVAL,
+                    description=(
+                        "Seconds between load readings; clamped to at least "
+                        f"{MIN_LOAD_INTERVAL}."
+                    ),
                 ),
             ),
         )
@@ -143,7 +190,8 @@ class SystemInfoModule(Module):
         )
 
     def start(self) -> None:
-        """Take the first snapshot and announce it on the event bus."""
+        """Take the first snapshot, announce it, and start the load watcher."""
+        super().start()
         snapshot = self.snapshot()
         self.bus.publish(
             SNAPSHOT_EVENT,
@@ -157,13 +205,17 @@ class SystemInfoModule(Module):
             memory_total=memory.get("total", "-"),
             disk_used=snapshot.get("disk", {}).get("used", "-"),
         )
+        self._start_watcher()
 
     def stop(self) -> None:
-        """Release the cached snapshot; nothing else is held open."""
+        """Join the load watcher and release the cached snapshot."""
+        self._stop_watcher()
+        super().stop()
         self.logger.info(
             f"{TAG_NOTE} system_info released",
             snapshots=self._snapshots,
             last_sections=len(self._last or {}),
+            load_reads=self._load_reads,
         )
         self._last = None
 
@@ -174,6 +226,150 @@ class SystemInfoModule(Module):
         self._last = data
         return data
 
+    def workers(self) -> dict[str, threading.Thread]:
+        """Report the sampler thread while it runs, so supervision can watch it."""
+        worker = self._thread
+        if worker is not None and worker.is_alive():
+            return {WATCHER_NAME: worker}
+        return {}
+
+    def diagnostics(self) -> tuple[DiagnosticCheck, ...]:
+        """Report where disk readings come from and whether the watcher is alive."""
+        if self.context is None:
+            # A module that was only discovered reports its state and nothing else.
+            return (
+                DiagnosticCheck(
+                    name="watcher",
+                    message=f"system_info is {self.state.value}",
+                    module=self.name,
+                ),
+            )
+        checks: list[DiagnosticCheck] = []
+        if not Path(self._disk_path).exists():
+            checks.append(
+                DiagnosticCheck(
+                    name="collector",
+                    message=f"disk path {self._disk_path!r} does not exist",
+                    severity=DiagnosticSeverity.WARNING,
+                    hint="point modules.system_info.disk_path at a real filesystem",
+                    module=self.name,
+                )
+            )
+        worker = self._thread
+        if self.state is not ModuleState.RUNNING:
+            checks.append(
+                DiagnosticCheck(
+                    name="watcher",
+                    message=f"system_info is {self.state.value}",
+                    hint="the load watcher starts with the module",
+                    module=self.name,
+                )
+            )
+        elif not self._watch_load:
+            checks.append(
+                DiagnosticCheck(
+                    name="watcher",
+                    message="load watcher is parked",
+                    hint="set modules.system_info.watch_load to sample load in the background",
+                    module=self.name,
+                )
+            )
+        elif worker is None:
+            checks.append(
+                DiagnosticCheck(
+                    name="watcher",
+                    message="load watcher read no load average",
+                    severity=DiagnosticSeverity.WARNING,
+                    hint="this platform has no load average; turn watch_load off",
+                    module=self.name,
+                )
+            )
+        elif worker.is_alive():
+            checks.append(
+                DiagnosticCheck(
+                    name="watcher",
+                    message=f"load watcher alive after {self._load_reads} reads",
+                    hint=f"one reading every {round(self._load_interval, 3)} seconds",
+                    module=self.name,
+                )
+            )
+        elif self._load_reads == 0:
+            checks.append(
+                DiagnosticCheck(
+                    name="watcher",
+                    message="load watcher read no load average",
+                    severity=DiagnosticSeverity.WARNING,
+                    hint="this platform has no load average; turn watch_load off",
+                    module=self.name,
+                )
+            )
+        else:
+            checks.append(
+                DiagnosticCheck(
+                    name="watcher",
+                    message=f"load watcher stopped after {self._load_reads} reads",
+                    severity=DiagnosticSeverity.WARNING,
+                    hint="worker supervision reported it; read the log for the reason",
+                    module=self.name,
+                )
+            )
+        return tuple(checks)
+
+    def _start_watcher(self) -> None:
+        """Start the load sampler when the configuration asked for one.
+
+        The thread is reported through `workers()`, so a sampler that stops on its own is a
+        supervision finding rather than a silent absence of work.
+        """
+        if not self._watch_load:
+            self.logger.debug("load watcher parked", watch_load=False)
+            return
+        if load_reading() is None:
+            # The reading is the whole job; a platform that cannot answer it
+            # parks the watcher with a word instead of spinning a thread.
+            self.logger.warning(
+                "load average is not available here; watcher parked",
+                watch_load=True,
+            )
+            return
+        self._stop_worker.clear()
+        worker = threading.Thread(
+            target=self._watch_load_loop, name=WATCHER_THREAD, daemon=True
+        )
+        self._thread = worker
+        worker.start()
+        self.logger.info(
+            "system_info load watcher started",
+            interval_seconds=round(self._load_interval, 3),
+        )
+
+    def _stop_watcher(self) -> None:
+        """Ask the sampler for its thread back: what start() acquired, stop() joins."""
+        self._stop_worker.set()
+        worker = self._thread
+        self._thread = None
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=self.stop_timeout)
+
+    def _watch_load_loop(self) -> None:
+        """Read the load average until stop() asks for the thread back."""
+        while not self._stop_worker.is_set():
+            self._sample_load()
+            self._stop_worker.wait(self._load_interval)
+
+    def _sample_load(self) -> None:
+        """Cache one reading and publish it; None means this platform cannot answer."""
+        reading = load_reading()
+        if reading is None:
+            return
+        self._load = reading
+        self._load_reads += 1
+        self.bus.publish(
+            LOAD_EVENT,
+            {"load_average": list(reading), "reads": self._load_reads},
+            source=self.name,
+        )
+
     def health(self) -> dict[str, Any]:
         """Return module counters for 'kdx modules show'."""
         base = super().health()
@@ -182,6 +378,11 @@ class SystemInfoModule(Module):
                 "snapshots": self._snapshots,
                 "disk_path": self._disk_path,
                 "last_sections": sorted(self._last) if self._last else [],
+                "watch_load": self._watch_load,
+                "load_interval_seconds": round(self._load_interval, 3),
+                "load_reads": self._load_reads,
+                "load_average": self._load,
+                "load_watcher": self._thread is not None and self._thread.is_alive(),
             }
         )
         return base

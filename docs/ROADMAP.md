@@ -50,6 +50,16 @@ is a polite `BackupError`, a `lock` row in `kdx doctor`, and exit `1` from `kdx 
 container types, and a named lock that cannot write its payload withdraws the claim |
 **delivered** |
 
+| 20 | `v0.2.4` closes the supervision dogfood and hardens two edges: `system_info` samples the
+load average on a real background thread it reports through `workers()` (`modules.system_info
+.watch_load`, defaulted where the platform has a load average), so `WorkerSupervisor` and `kdx
+doctor` point at shipped code and shutdown joins what it started; a scheduled task may
+`unschedule()` itself or its neighbour mid-sweep because `run_due()` works from a guarded
+snapshot and calls callbacks unlocked; the control plane sets `close_connection` next to its
+`Connection: close` header so a keep-alive client never stalls; `backup_engine` and `system_info`
+call the base `start()`/`stop()` so `kdx doctor` reports a running module as `running`; and the
+coverage floor moves to `87` | **delivered** |
+
 ## Next
 
 1. **Publish to an index.** PyPI through trusted publishing. The git bootstrap is
@@ -57,11 +67,11 @@ container types, and a named lock that cannot write its payload withdraws the cl
    freshly seeded project installs today without waiting for an index.
 2. **A Textual/TUI front end** over the same declarative `CliCommand` tree the wizard
    already reads - no module knows a second surface exists.
-3. **One built-in owns a thread again, on purpose**: with `v0.2.3` every built-in schedules,
-   locks, and declares, which leaves the `workers()` hook proven only by test doubles. The
-   honest next dogfood is a module that starts a real worker thread and reports it through
-   `workers()` - a cache refresher or a downloader - so worker supervision is exercised by
-   shipped code and not only by a fixture.
+3. **Two primitives meet in one built-in**: `v0.2.4` left every built-in scheduling, locking,
+   declaring, and - now - reporting a real worker thread. The next dogfood is the pair: a
+   scheduled sweep that takes a named lock, so `context.schedule()` and the lock primitive are
+   proven together in shipped code, and a manual run that arrives mid-sweep is refused on
+   the spot.
 4. **Windows in CI** waits for one more run. The red was ours, not mypy's: the runner
    starts bash with `-e`, so the failing mypy call ended the step before any diagnostic
    ran, and the POSIX-only `os.sysconf` / `os.getrusage` reads failed the Windows

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import http.client
 import inspect
 import json
 import os
+import socket
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -392,3 +395,54 @@ def test_process_memory_reports_a_bounded_error_free_reading() -> None:
     assert memory["source"] in {"proc/statm", "getrusage"}
     assert isinstance(memory["rss_bytes"], int)
     assert memory["rss"] != "-"
+
+
+def test_a_keep_alive_client_does_not_hang_on_the_control_plane(tmp_path: Path) -> None:
+    """The control plane closes the socket even when the client asked for reuse."""
+    server, _ = make_server(tmp_path)
+    try:
+        parsed = urlsplit(server.discovery.base_url())  # type: ignore[union-attr]
+        host = str(parsed.hostname)
+        port = int(parsed.port or 80)
+        request = (
+            f"GET {HEALTH_PATH} HTTP/1.1\r\n"
+            f"Host: {host}\r\n"
+            "Connection: keep-alive\r\n"
+            "\r\n"
+        ).encode()
+        with socket.create_connection((host, port), timeout=2.0) as connection:
+            connection.sendall(request)
+            chunks: list[bytes] = []
+            while True:
+                piece = connection.recv(4096)
+                if not piece:
+                    break
+                chunks.append(piece)
+        raw = b"".join(chunks).decode("utf-8", "replace")
+        assert "200 OK" in raw
+        assert "Connection: close" in raw
+        assert raw.count("HTTP/1.1 200") == 1, "one response, then the socket is over"
+    finally:
+        server.stop()
+
+
+def test_the_handler_means_the_close_header(tmp_path: Path) -> None:
+    """A client that offers keep-alive is told the truth: this answer ends the reuse."""
+    server, _ = make_server(tmp_path)
+    try:
+        parsed = urlsplit(server.discovery.base_url())  # type: ignore[union-attr]
+        connection = http.client.HTTPConnection(
+            str(parsed.hostname), int(parsed.port or 80), timeout=2
+        )
+        try:
+            connection.request("GET", HEALTH_PATH, headers={"Connection": "keep-alive"})
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+            assert response.status == 200
+            assert payload["status"] == "ok"
+            assert response.getheader("Connection") == "close"
+            assert response.will_close is True, "the dispatch loop ends with this response"
+        finally:
+            connection.close()
+    finally:
+        server.stop()

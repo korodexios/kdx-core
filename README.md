@@ -9,7 +9,7 @@ clients that talk to the same core and never reimplement it.
 - **Console scripts:** `kdx` (primary short alias), `korodexios` (canonical)
 - **Python:** 3.11+ (developed on 3.13), `uv`-first, `venv` + `pip` compatible
 - **Dependencies:** `pyyaml` (config files), `rich` (the wizard layer)
-- **Release:** `v0.2.3`, core API frozen at `v2`
+- **Release:** `v0.2.4`, core API frozen at `v2`
 
 ---
 

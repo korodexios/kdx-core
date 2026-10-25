@@ -256,3 +256,55 @@ def test_unschedule_purges_the_tables_and_never_recycles_a_number() -> None:
     assert scheduler.unschedule(kept.name) is True
     assert MAX_NAME_SUFFIX >= 100
     assert scheduler.stats()["scheduled"] == 0
+
+
+def test_a_task_may_unschedule_itself_during_a_sweep() -> None:
+    """Self-cancellation from inside the callback is a decision, not a missed beat."""
+    scheduler = TaskScheduler()
+    seen: list[str] = []
+
+    def quit_it() -> None:
+        seen.append("quit")
+        assert scheduler.unschedule("quit") is True
+        assert scheduler.task("quit") is None
+
+    scheduler.schedule(0.01, quit_it, name="quit")
+    scheduler.schedule(0.01, lambda: seen.append("work"), name="work")
+    moment = time.monotonic() + 10.0
+    assert scheduler.run_due(now=moment) == ["quit", "work"]
+    assert seen == ["quit", "work"]
+    assert [task.name for task in scheduler.tasks()] == ["work"]
+    # The next sweep is later on the same synthetic clock, past the interval.
+    assert scheduler.run_due(now=time.monotonic() + 20.0) == ["work"]
+
+
+def test_a_callback_may_withdraw_another_task_mid_sweep() -> None:
+    """A task the sweep has already queued can be taken out before it runs."""
+    scheduler = TaskScheduler()
+    seen: list[str] = []
+
+    def withdraw() -> None:
+        seen.append("first")
+        assert scheduler.unschedule("later") is True
+
+    scheduler.schedule(0.01, withdraw, name="first")
+    scheduler.schedule(0.01, lambda: seen.append("later"), name="later")
+    assert scheduler.run_due(now=time.monotonic() + 10.0) == ["first"]
+    assert seen == ["first"], "the withdrawn task is not run, and the sweep did not raise"
+    assert [task.name for task in scheduler.tasks()] == ["first"]
+
+
+def test_a_callback_may_schedule_work_the_current_sweep_misses() -> None:
+    """Scheduling from a callback is safe, and the new task waits for the next beat."""
+    scheduler = TaskScheduler()
+    seen: list[str] = []
+
+    def spawn() -> None:
+        seen.append("parent")
+        scheduler.schedule(0.01, lambda: seen.append("child"), name="child")
+
+    scheduler.schedule(0.01, spawn, name="parent")
+    assert scheduler.run_due(now=time.monotonic() + 10.0) == ["parent"]
+    assert seen == ["parent"], "the task scheduled mid-sweep waits for the next beat"
+    assert scheduler.run_due(now=time.monotonic() + 20.0) == ["parent", "child"]
+    assert seen == ["parent", "parent", "child"]
