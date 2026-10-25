@@ -41,6 +41,15 @@ that is not recycled) - and the three built-in proof modules adopt the hooks the
 declaring `config_schema()`, `diagnostics()`, and `ipc_routes()` and adding
 `/api/v1/backup/plan` and `/api/v1/system/snapshot` to the control plane | **delivered** |
 
+| 19 | `v0.2.3` dogfooding and edge cases on the `v2` line: `heartbeat` schedules its ticker
+through `context.schedule()` so the built-in owns no thread and supervision has nothing to
+join, `backup_engine` guards every run with the named lock the chassis hands out (a busy copy
+is a polite `BackupError`, a `lock` row in `kdx doctor`, and exit `1` from `kdx backup run`), Windows
+`SIGBREAK` shares the `SIGINT` gate so an interrupt still exits `130`, a relative `--config` or
+`--env-file` is anchored to `--home` before it is read, JSON log fields keep their scalar and
+container types, and a named lock that cannot write its payload withdraws the claim |
+**delivered** |
+
 ## Next
 
 1. **Publish to an index.** PyPI through trusted publishing. The git bootstrap is
@@ -48,11 +57,11 @@ declaring `config_schema()`, `diagnostics()`, and `ipc_routes()` and adding
    freshly seeded project installs today without waiting for an index.
 2. **A Textual/TUI front end** over the same declarative `CliCommand` tree the wizard
    already reads - no module knows a second surface exists.
-3. **The last built-in habits move to primitives**: `v0.2.2` gave `backup_engine`, `heartbeat`,
-   and `system_info` their `config_schema()`, `diagnostics()`, and `ipc_routes()`, so the
-   declarative half of that dogfood is done. What is left is the runtime habit - `heartbeat`
-   still runs its own ticker thread instead of `context.schedule()`, and no built-in has
-   taken a named lock yet.
+3. **One built-in owns a thread again, on purpose**: with `v0.2.3` every built-in schedules,
+   locks, and declares, which leaves the `workers()` hook proven only by test doubles. The
+   honest next dogfood is a module that starts a real worker thread and reports it through
+   `workers()` - a cache refresher or a downloader - so worker supervision is exercised by
+   shipped code and not only by a fixture.
 4. **Windows in CI** waits for one more run. The red was ours, not mypy's: the runner
    starts bash with `-e`, so the failing mypy call ended the step before any diagnostic
    ran, and the POSIX-only `os.sysconf` / `os.getrusage` reads failed the Windows

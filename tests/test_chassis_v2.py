@@ -348,16 +348,20 @@ def test_supervision_marks_a_dead_worker_failed(project_root: Path) -> None:
         chassis.signals.uninstall()
 
 
-def test_builtin_heartbeat_is_supervised(project_root: Path) -> None:
-    """The proof module dogfoods the optional hook: its thread is watched."""
+def test_builtin_heartbeat_needs_no_thread_supervision(project_root: Path) -> None:
+    """v0.2.3: the ticker is a scheduled task, so nothing is left to watch or join."""
     write_root(project_root, PROJECT_CONFIG.replace("autodiscover: false", "autodiscover: true"))
     chassis = make_chassis(project_root)
     chassis.start(ipc=False)
     try:
-        records = chassis.supervisor.records()
-        assert [(record.module, record.name) for record in records] == [("heartbeat", "heartbeat")]
-        assert chassis.health_report()["supervision"]["watched"] == 1
+        module = chassis.registry.require("heartbeat").module
+        assert module.workers() == {}, "the ticker must not leave a thread behind"
+        assert chassis.supervisor.records() == []
+        assert chassis.health_report()["supervision"]["watched"] == 0
         assert chassis.supervise() == []
+        tasks = chassis.context.scheduler.tasks()
+        assert [task.name for task in tasks] == ["ticker"]
+        assert tasks[0].module == "heartbeat"
     finally:
         chassis.shutdown()
         chassis.signals.uninstall()

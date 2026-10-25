@@ -5,7 +5,57 @@ history lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## [Unreleased]
 
-_Nothing pending: the working tree is the `v0.2.2` tag._
+_Nothing pending: the working tree is the `v0.2.3` tag._
+
+## [0.2.3] - 2026-10-26
+
+The last built-in habits move to chassis primitives, and the rough edges found by running
+them are smoothed away. Nothing in the frozen surface changed shape - no new export, no
+changed signature, no renamed configuration key.
+
+### Fixed
+
+- **Windows `SIGBREAK` exits 130**: `ExitCode.from_signal()` computes `128 + signum`, and `SIGBREAK` is
+  `21` on Windows, so an interrupt that behaves exactly like Ctrl+C left the process with `149`.
+  The coordinator records it as the `SIGINT` number now - one gate, one exit code - while the log
+  line still names the signal that actually arrived. Where the platform has no `SIGBREAK` the
+  mapping is a no-op, so no number is claimed for a signal that does not exist.
+- **Relative `--config` and `--env-file` are anchored to `--home`**: the CLI resolved a relative path
+  against the current working directory and path discovery asked `.is_file()` on that answer, so
+  `kdx --home /srv/app --config kdx.yml` from another directory reported a file that does exist. A
+  relative project file is now joined to the resolved root exactly once, an absolute path is
+  used exactly as given, and the error names the path under the root that was really read.
+- **A JSON log field keeps its type**: `JsonFormatter` ran every structured kwarg through
+  `_shorten()`, so `"copied": "12"` reached the shipper and a filter had to parse strings. Scalars,
+  mappings, and sequences keep their JSON types now; only what JSON cannot hold - a `Path`, an
+  exception, a custom object - is shortened to text.
+- **A named lock that cannot write its payload withdraws the claim**: the payload write
+  swallowed the `OSError` after the `flock` succeeded, leaving a handle that reported `held=True` over a
+  lock file naming nobody. The descriptor is released and the error re-raised, so the next
+  acquirer starts from a clean claim.
+
+### Added
+
+- **`backup_engine` guards each run with a named lock**: the module takes `backup_engine` through the
+  chassis lock primitive before it copies, so a scheduled sweep and a manual `kdx backup run` never
+  write one destination at the same moment. The refused run raises `BackupError` naming the lock
+  ("another backup is running: named lock 'backup_engine' is busy") with a hint, `kdx backup run`
+  answers with exit `1` and that hint instead of a traceback, and `kdx doctor` grows a `lock` row once a run
+  has stepped aside. The lock file stays behind with its payload, so `kdx doctor` can say who is
+  copying right now.
+- **`LockTimeoutError` is a real export**: the guide told module code to import it from
+  `korodexios_core` and `korodexios_core.kernel`; the name is in both `__all__` lists now, so the documented
+  import is the one that works.
+
+### Changed
+
+- **`heartbeat` ticks on the chassis clock**: the manual `threading.Thread` and its `_beat_loop` are gone,
+  replaced by one `ticker` task scheduled through `context.schedule()` on the module interval. The
+  built-in owns no thread, so `workers()` reports nothing, worker supervision has no thread to
+  watch, and shutdown has nothing to join - stopping unschedules the task, so a stopped chassis
+  leaves no ticker behind. `heartbeat status` and `health()` speak the same language now: `ticker`
+  `scheduled`, `ticker runs`, and `ticker errors` replace `thread alive`, and `kdx doctor` answers whether the
+  ticker is alive, parked after N ticks, or failing.
 
 ## [0.2.2] - 2026-10-26
 

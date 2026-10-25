@@ -127,6 +127,22 @@ class TextFormatter(logging.Formatter):
         return body
 
 
+def _json_value(value: Any) -> Any:
+    """Return *value* for JSON output, keeping the types a log shipper can read.
+
+    A structured field was declared as data by the module that logged it, so a count stays
+    a number and a flag stays a boolean; only what JSON cannot hold - a `Path`, an exception,
+    a custom object - is shortened to text for the line.
+    """
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    if isinstance(value, Mapping):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    return _shorten(value)
+
+
 class JsonFormatter(logging.Formatter):
     """One JSON object per line, safe for log shippers and CI artefacts."""
 
@@ -148,7 +164,7 @@ class JsonFormatter(logging.Formatter):
         }
         fields = _fields_of(record)
         if fields:
-            payload["fields"] = {str(key): _shorten(value) for key, value in fields.items()}
+            payload["fields"] = {str(key): _json_value(value) for key, value in fields.items()}
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
         return json.dumps(payload, ensure_ascii=False)

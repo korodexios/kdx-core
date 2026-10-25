@@ -36,7 +36,7 @@ from .ipc import (
     IpcStaticMount,
     guess_content_type,
 )
-from .locks import NamedLock, NamedLockRegistry
+from .locks import LockTimeoutError, NamedLock, NamedLockRegistry
 from .registry import ModuleRegistry, RegisteredModule, call_with_timeout
 from .scheduler import ScheduledTask, TaskScheduler
 from .signals import SignalCoordinator, signal_name
@@ -64,6 +64,7 @@ __all__ = [
     "IpcRoute",
     "IpcStaticMount",
     "LockHolder",
+    "LockTimeoutError",
     "Module",
     "ModuleDiscovery",
     "ModuleProtocol",

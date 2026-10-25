@@ -13,7 +13,7 @@ section is a contract, not a suggestion. Human-oriented narrative lives in
 | Distribution | `korodexios-core` |
 | Import root | `korodexios_core` |
 | Console scripts | `kdx` (primary short alias), `korodexios` (canonical) |
-| Version | `0.2.2` (production), core API frozen at `v2` (additive changes only inside v2) |
+| Version | `0.2.3` (production), core API frozen at `v2` (additive changes only inside v2) |
 | Runtime | CPython 3.11+, stdlib first (PyYAML for config, rich for the CLI surface) |
 | Config file | `kdx.yml` / `kdx.yaml` / `kdx.json` (then `korodexios.*`) |
 | Env prefix | `KDX_` primary; `KORODEXIOS_` is the canonical long prefix |
@@ -345,6 +345,10 @@ What the blueprint proves:
   `core.log.max_bytes`, `core.log.backup_count`, `core.log.json`.
 - Records go to **stderr**; the CLI owns stdout. `--log-json` emits machine-readable
   lines for shipping.
+- A JSON line keeps the types the module passed: a count stays a number, a flag stays a
+  boolean, a nested mapping stays a mapping, a list or tuple stays a list. Only what JSON
+  cannot hold - a `Path`, an exception, a custom object - is shortened to text, so a shipper
+  filters on data instead of parsing strings (`v0.2.3`).
 
 ## 6. Event Bus
 
@@ -474,7 +478,7 @@ dependency order -> lifecycle loop -> `stop()` in reverse -> close logging.
 | Usage error (bad flags) | `2` |
 | Configuration error | `3` |
 | A command's own verdict code (`4`-`125`) | passed through unchanged |
-| SIGINT | `130` |
+| SIGINT, and Windows `SIGBREAK` on the same gate | `130` |
 | SIGTERM | `143` |
 
 - A command handler returns an integer and `kdx` returns it verbatim: a module command may
@@ -645,7 +649,11 @@ paths.named_lock_files()          # lock files present on disk, sorted
 `state_dir` is the runtime role: logs, `chassis.ipc`, `chassis.lock`, and the locks directory -
 safe to delete between runs. `durable_dir` is the project role: it never moves when an
 operator moves `state_dir`, and it is not the same as `data_dir` (module *data* caches). The
-default is `data/` under the root, so a project's committed database stays put.
+default is `data/` under the root, so a project's committed database stays put. An explicit
+project file is anchored before the filesystem is asked about it: a relative `--config` or
+`--env-file` is resolved under the chassis root, so `kdx --home /srv/app --config kdx.yml`
+reads `/srv/app/kdx.yml` while the operator stands somewhere else, and a missing file is named
+under the root in the error.
 
 ### 16.2 Named locks
 
@@ -670,6 +678,12 @@ crashed run leaves a *stale* file, not a permanent lock: `kdx doctor` reports it
 `chassis.lock(name)` inspects the registry and reserves the name in one guarded step, so two
 threads that claim the same name at the same moment never both pass a check: the loser
 raises `LockTimeoutError` immediately instead of waiting out a timeout it had already lost.
+A lock that cannot write its owner payload withdraws the claim: `acquire()` releases the
+descriptor it just took and re-raises, so `held` is never true over a lock file that says
+nothing (`v0.2.3`). `backup_engine` takes this lock for every copy, which is why a scheduled
+sweep and a manual `kdx backup run` never write one destination at the same moment - the
+refused run comes back as a `BackupError` with a hint, and the lock file stays behind for
+`kdx doctor` to read.
 
 Names are validated at the call site: 1-64 characters of letters, digits, `_`, `.`, `-`, and
 spaces, no leading dot and no `..`. `../escape` and `a/b` are refused, so a lock name can
@@ -701,7 +715,10 @@ interval; duplicate names get `-2`, `-3` suffixes instead of clobbering each oth
 Two bounds keep a long-lived chassis honest: `last_error` is capped at `MAX_ERROR_LENGTH`
 characters (the traceback is in the log, not in every status snapshot), and `unschedule()`
 drops the task, its place in the declaration order, and its suffix bookkeeping, so
-`sweep-2` in an old log line is never a different task tomorrow.
+`sweep-2` in an old log line is never a different task tomorrow. `heartbeat` is the shipped
+dogfood for the primitive (`v0.2.3`): its ticker is one `ticker` task on the chassis clock, so
+the module owns no thread, supervision has no worker to join, and a stopped module leaves no
+task behind.
 
 ### 16.4 Configuration and public surface
 

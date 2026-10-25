@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Final, cast
 
 from ...cli.render import (
     dump_json,
@@ -20,6 +20,7 @@ from ...kernel.context import CoreContext
 from ...kernel.contract import Module
 from ...kernel.diagnostics import DiagnosticCheck, DiagnosticSeverity
 from ...kernel.ipc import IpcRequest, IpcRoute
+from ...kernel.locks import LockTimeoutError, NamedLock
 from ...validate import parse_size
 from .engine import (
     BackupError,
@@ -43,6 +44,9 @@ class BackupEngineModule(Module):
 
     name = "backup_engine"
     description = "Configurable source-to-destination backups with interactive setup and dry runs."
+    # One copy per project: the run takes a named lock, so a second 'kdx backup run'
+    # steps aside instead of copying the same tree twice into the same destination.
+    LOCK_NAME: Final[str] = "backup_engine"
     version = "0.1.0"
 
     def __init__(self) -> None:
@@ -56,6 +60,8 @@ class BackupEngineModule(Module):
         self._follow_symlinks = False
         self._runs = 0
         self._last: BackupResult | None = None
+        self._refusals = 0
+        self._last_refusal: str = ""
 
     def init(self, context: CoreContext) -> None:
         """Resolve scoped settings; paths fall back to chassis data directories."""
@@ -131,7 +137,7 @@ class BackupEngineModule(Module):
         )
 
     def diagnostics(self) -> tuple[DiagnosticCheck, ...]:
-        """Report whether the configured source and destination can carry a backup."""
+        """Report the source, the destination, and any run the lock refused."""
         if self.context is None:
             # The chassis reads this hook at registration too, before init() has
             # resolved the paths: there is nothing honest to report yet.
@@ -168,7 +174,25 @@ class BackupEngineModule(Module):
                 )
             )
         checks.append(self._destination_check(settings.dest))
+        if self._refusals:
+            checks.append(self._refusal_check())
         return tuple(checks)
+
+    def _refusal_check(self) -> DiagnosticCheck:
+        """Report that a run had to step aside for a copy already in progress.
+
+        The chassis does not ask for this check: it appears only once a run was refused,
+        which is the operator's first sign that two schedulers are copying one tree.
+        """
+        return DiagnosticCheck(
+            name="lock",
+            message=(
+                f"{self._refusals} backup run(s) stepped aside for the {self.LOCK_NAME} lock"
+            ),
+            severity=DiagnosticSeverity.WARNING,
+            hint=self._last_refusal or "another copy is holding the run lock",
+            module=self.name,
+        )
 
     def _destination_check(self, dest: Path) -> DiagnosticCheck:
         """Report whether *dest* can receive a backup, or will be created on the first run."""
@@ -303,8 +327,17 @@ class BackupEngineModule(Module):
         return build_plan(self.settings(**overrides))
 
     def run_backup(self, plan: BackupPlan, *, dry_run: bool | None = None) -> BackupResult:
-        """Execute a plan and remember the counters."""
-        result = execute_plan(plan, dry_run=dry_run)
+        """Execute a plan under the run lock and remember the counters.
+
+        The lock is the chassis primitive, not a private file: it is the same name
+        `kdx doctor` reports, so an operator sees who is copying before asking why a
+        second run was refused.
+        """
+        handle = self._acquire_run_lock()
+        try:
+            result = execute_plan(plan, dry_run=dry_run)
+        finally:
+            self._release_run_lock(handle)
         self._runs += 1
         self._last = result
         self.bus.publish(
@@ -313,6 +346,43 @@ class BackupEngineModule(Module):
             source=self.name,
         )
         return result
+
+    def _acquire_run_lock(self) -> NamedLock | None:
+        """Take the run lock; raise a polite error when another copy holds it.
+
+        The module takes its own advisory lock on the lock file instead of borrowing a
+        chassis handle: a registry hands the same handle back to a process that already
+        holds the name, which would let a scheduled copy and a manual one write the same
+        destination at the same moment. None means there is no chassis to coordinate with -
+        a unit test driving `execute_plan()` directly - not a lock the module skipped.
+        """
+        context = self.context
+        if context is None:
+            return None
+        try:
+            return context.paths.lock(
+                self.LOCK_NAME,
+                timeout=0.0,
+                metadata={"module": self.name, "job": "backup run"},
+                logger=self.logger,
+            )
+        except LockTimeoutError as exc:
+            self._refusals += 1
+            self._last_refusal = str(exc)
+            raise BackupError(
+                f"another backup is running: named lock {self.LOCK_NAME!r} is busy",
+                hint="wait for the copy in progress, or ask 'kdx doctor' who holds it",
+            ) from exc
+
+    def _release_run_lock(self, handle: NamedLock | None) -> None:
+        """Give the run lock back; releasing a lock this run never took is a no-op.
+
+        `NamedLock.release()` is idempotent, and a payload write that failed already
+        released the lock inside `acquire()`, so this only ever hands back a lock this run
+        owned - no reservation is left behind in the chassis registry either.
+        """
+        if handle is not None:
+            handle.release()
 
     def health(self) -> dict[str, Any]:
         """Return module counters for 'kdx modules show'."""
@@ -323,6 +393,7 @@ class BackupEngineModule(Module):
                 "source": str(self._source),
                 "dest": str(self._dest),
                 "last_copied": self._last.copied if self._last else 0,
+                "refusals": self._refusals,
             }
         )
         return base
@@ -426,7 +497,15 @@ def _run_command(request: CliRequest) -> int:
             return int(ExitCode.ERROR)
         write_status(str(exc), tag=TAG_NOTE)
         plan = build_plan(replace(module.settings(**overrides), max_bytes=None))
-    result = module.run_backup(plan, dry_run=overrides.get("dry_run"))
+    try:
+        result = module.run_backup(plan, dry_run=overrides.get("dry_run"))
+    except BackupError as exc:
+        # A run the lock refused is news the operator can act on, not a crash.
+        if request.flag("as_json"):
+            dump_json({"error": exc.message, "hint": exc.hint})
+        else:
+            write_status(str(exc), tag=TAG_ERROR)
+        return int(ExitCode.ERROR)
     if request.flag("as_json"):
         dump_json(result.as_dict())
         return int(ExitCode.SUCCESS)
@@ -476,7 +555,11 @@ def _configure_command(request: CliRequest) -> int:
     if not ux.confirm("Run this backup now", default=not dry_run):
         write_status("configured, but not run", tag=TAG_NOTE)
         return int(ExitCode.SUCCESS)
-    result = module.run_backup(plan)
+    try:
+        result = module.run_backup(plan)
+    except BackupError as exc:
+        write_status(str(exc), tag=TAG_ERROR)
+        return int(ExitCode.ERROR)
     print_section("Backup result")
     print_key_values(describe_result(result))
     return int(ExitCode.SUCCESS)

@@ -409,9 +409,16 @@ def _cli_overrides(namespace: argparse.Namespace) -> dict[str, Any]:
 
 def _options(namespace: argparse.Namespace) -> ChassisOptions:
     def to_path(value: Any) -> Path | None:
+        """Return *value* as a path resolved against the current directory."""
         if not value:
             return None
         return Path(str(value)).expanduser().resolve()
+
+    def to_candidate(value: Any) -> Path | None:
+        """Keep a project file relative: the chassis root decides where it lives."""
+        if not value:
+            return None
+        return Path(str(value)).expanduser()
 
     overrides = _cli_overrides(namespace)
     asyncio_enabled: bool | None = None
@@ -426,8 +433,8 @@ def _options(namespace: argparse.Namespace) -> ChassisOptions:
         instance_lock = False
     return ChassisOptions(
         home=to_path(getattr(namespace, "home", None)),
-        config_file=to_path(getattr(namespace, "config", None)),
-        env_file=to_path(getattr(namespace, "env_file", None)),
+        config_file=to_candidate(getattr(namespace, "config", None)),
+        env_file=to_candidate(getattr(namespace, "env_file", None)),
         cli_overrides=overrides,
         instance_lock=instance_lock,
         asyncio_enabled=asyncio_enabled,

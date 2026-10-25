@@ -1,4 +1,4 @@
-"""Heartbeat: a background ticker proving lifecycle, events, and clean shutdown."""
+"""Heartbeat: a periodic ticker proving the chassis clock, events, and clean shutdown."""
 
 from __future__ import annotations
 
@@ -14,25 +14,27 @@ from ...kernel.cli_contract import CliArgument, CliCommand, CliRequest, CliSurfa
 from ...kernel.context import CoreContext
 from ...kernel.contract import Module, ModuleState
 from ...kernel.diagnostics import DiagnosticCheck, DiagnosticSeverity
+from ...kernel.scheduler import ScheduledTask
 
 DEFAULT_INTERVAL = 2.0
 MIN_INTERVAL = 0.05
 HEARTBEAT_EVENT = "core.heartbeat"
+TICKER_TASK = "ticker"
 
 
 class HeartbeatModule(Module):
-    """Publishes 'core.heartbeat' events on a daemon thread until stop() runs."""
+    """Publishes 'core.heartbeat' events on the chassis clock until stop() runs."""
 
     name = "heartbeat"
     description = (
-        "Publishes a periodic heartbeat event, proving background threads and clean shutdown."
+        "Publishes a periodic heartbeat event, proving the chassis clock and clean "
+        "shutdown."
     )
     version = "0.1.0"
 
     def __init__(self) -> None:
         super().__init__()
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._task: ScheduledTask | None = None
         self._ticks = 0
         self._last_beat: float | None = None
         self._interval = DEFAULT_INTERVAL
@@ -58,7 +60,7 @@ class HeartbeatModule(Module):
         )
 
     def diagnostics(self) -> tuple[DiagnosticCheck, ...]:
-        """Report whether the ticker thread is alive while the module is running."""
+        """Report whether the chassis clock still runs this module's ticker."""
         if self.state is not ModuleState.RUNNING:
             # 'kdx doctor' can ask before start() and after stop(); a ticker that
             # was never started is a fact, not a fault.
@@ -69,21 +71,41 @@ class HeartbeatModule(Module):
                     module=self.name,
                 ),
             )
-        worker = self._thread
-        if worker is None or not worker.is_alive():
+        task = self._task
+        if task is None:
             return (
                 DiagnosticCheck(
                     name="ticker",
-                    message="heartbeat thread is not running",
+                    message="heartbeat scheduled no ticker",
                     severity=DiagnosticSeverity.ERROR,
-                    hint="start() did not launch the ticker, or supervision marked it dead",
+                    hint="start() found no chassis scheduler to declare the task on",
+                    module=self.name,
+                ),
+            )
+        if task.done or not task.enabled:
+            return (
+                DiagnosticCheck(
+                    name="ticker",
+                    message=f"heartbeat ticker is parked after {self._ticks} ticks",
+                    severity=DiagnosticSeverity.WARNING,
+                    hint="'core.scheduler.enabled: false' parks every task, not just this one",
+                    module=self.name,
+                ),
+            )
+        if task.last_error:
+            return (
+                DiagnosticCheck(
+                    name="ticker",
+                    message=f"heartbeat ticker failed: {task.last_error}",
+                    severity=DiagnosticSeverity.WARNING,
+                    hint="a beat raised; the traceback is in the log",
                     module=self.name,
                 ),
             )
         return (
             DiagnosticCheck(
                 name="ticker",
-                message=f"heartbeat thread alive after {self._ticks} ticks",
+                message=f"heartbeat ticker alive after {self._ticks} ticks",
                 module=self.name,
             ),
         )
@@ -115,28 +137,35 @@ class HeartbeatModule(Module):
         )
 
     def start(self) -> None:
-        """Launch the ticker thread."""
+        """Declare the ticker as a periodic task on the chassis clock."""
         super().start()
-        self._stop.clear()
-        self._thread = threading.Thread(
-            target=self._beat_loop, name="kdx-heartbeat", daemon=True
+        context = self.context
+        self._task = (
+            None
+            if context is None
+            else context.schedule(
+                self._interval, self._beat_tick, name=TICKER_TASK, module=self.name
+            )
         )
-        self._thread.start()
-        self.logger.info("heartbeat thread started", interval_seconds=round(self._interval, 3))
+        self.logger.info(
+            "heartbeat ticker scheduled" if self._task is not None else "heartbeat ticker parked",
+            interval_seconds=round(self._interval, 3),
+        )
 
     def stop(self) -> None:
-        """Stop the ticker thread and report how many beats were published."""
-        self._stop.set()
-        worker = self._thread
-        self._thread = None
-        if worker is not None and worker.is_alive():
-            worker.join(timeout=max(0.5, self._interval + 0.5))
+        """Withdraw the ticker and report how many beats were published."""
+        task = self._task
+        self._task = None
+        scheduler = self.scheduler if self.context is not None else None
+        if task is not None and scheduler is not None:
+            scheduler.unschedule(task.name)
         super().stop()
-        self.logger.info("heartbeat thread stopped", ticks=self._ticks)
+        self.logger.info("heartbeat ticker stopped", ticks=self._ticks)
 
     def workers(self) -> dict[str, threading.Thread]:
-        """Hand the ticker thread to chassis supervision (the optional v2 hook)."""
-        return {"heartbeat": self._thread} if self._thread is not None else {}
+        """Report no thread of its own: the chassis clock runs the ticker, so the
+        supervisor has nothing to watch and shutdown has nothing to join."""
+        return {}
 
     def health(self) -> dict[str, Any]:
         """Report counters alongside the standard lifecycle health block."""
@@ -146,7 +175,9 @@ class HeartbeatModule(Module):
                 "interval_seconds": round(self._interval, 3),
                 "ticks": self._ticks,
                 "last_beat": (round(time.time() - self._last_beat, 3) if self._last_beat else None),
-                "thread_alive": bool(self._thread and self._thread.is_alive()),
+                "ticker_scheduled": self._task is not None,
+                "ticker_runs": 0 if self._task is None else self._task.runs,
+                "ticker_errors": 0 if self._task is None else self._task.failures,
             }
         )
         return data
@@ -156,15 +187,15 @@ class HeartbeatModule(Module):
         """Return how many heartbeat events were published."""
         return self._ticks
 
-    def _beat_loop(self) -> None:
-        while not self._stop.wait(self._interval):
-            self._ticks += 1
-            self._last_beat = time.time()
-            self.bus.publish(
-                HEARTBEAT_EVENT,
-                {"tick": self._ticks, "interval": round(self._interval, 3)},
-                source=self.name,
-            )
+    def _beat_tick(self) -> None:
+        """Publish one beat; the chassis clock calls this, not a thread of its own."""
+        self._ticks += 1
+        self._last_beat = time.time()
+        self.bus.publish(
+            HEARTBEAT_EVENT,
+            {"tick": self._ticks, "interval": round(self._interval, 3)},
+            source=self.name,
+        )
 
 
 def _status_command(request: CliRequest) -> int:
@@ -188,7 +219,8 @@ def _status_command(request: CliRequest) -> int:
             ("interval seconds", health.get("interval_seconds", "-")),
             ("ticks", health.get("ticks", 0)),
             ("seconds since last beat", health.get("last_beat", "-")),
-            ("thread alive", health.get("thread_alive", False)),
+            ("ticker scheduled", health.get("ticker_scheduled", False)),
+            ("ticker runs", health.get("ticker_runs", 0)),
         ]
     )
     write_line(f"{TAG_OK} heartbeat {record.spec.version} is {record.state.value}")

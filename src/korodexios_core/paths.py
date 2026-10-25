@@ -120,6 +120,20 @@ def _env_lookup(env: Mapping[str, str], names: Sequence[str]) -> str:
     return ""
 
 
+def _anchored(value: str | os.PathLike[str], root: Path) -> Path:
+    """Return *value* as an absolute path, anchored to *root* when it is relative.
+
+    A caller may hand over a path written for another directory: "`--config kdx.yml` says
+    where the file sits under the chassis root, and a pre-resolved string from a shell
+    in a different working directory must not decide the answer. Anchoring happens here,
+    once, before any existence check.
+    """
+    candidate = _coerce_path(value)
+    if candidate.is_absolute():
+        return candidate.resolve()
+    return (root / candidate).resolve()
+
+
 def _first_existing(directory: Path, names: Sequence[str]) -> Path | None:
     for name in names:
         candidate = directory / name
@@ -165,9 +179,7 @@ class AppPaths:
         explicit_config = config_file or _env_lookup(env, CONFIG_ENV_VARS)
         config_path: Path | None = None
         if explicit_config:
-            candidate = _coerce_path(explicit_config)
-            if not candidate.is_absolute():
-                candidate = (resolved_root / candidate).resolve()
+            candidate = _anchored(explicit_config, resolved_root)
             if not candidate.is_file():
                 raise PathDiscoveryError(
                     f"config file {candidate} does not exist",
@@ -183,9 +195,7 @@ class AppPaths:
         explicit_env = env_file or _env_lookup(env, ENV_FILE_ENV_VARS)
         dotenv_path: Path | None = None
         if explicit_env:
-            candidate = _coerce_path(explicit_env)
-            if not candidate.is_absolute():
-                candidate = (resolved_root / candidate).resolve()
+            candidate = _anchored(explicit_env, resolved_root)
             if not candidate.is_file():
                 raise PathDiscoveryError(
                     f"env file {candidate} does not exist",

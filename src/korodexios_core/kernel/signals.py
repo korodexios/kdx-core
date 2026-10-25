@@ -6,11 +6,35 @@ import signal
 import threading
 from collections.abc import Callable
 from types import FrameType
+from typing import Final
 
 from ..constants import TAG_NOTE
 from ..logging.engine import KorodexiosLogger
 
 Handler = Callable[[int], None]
+
+# Windows delivers SIGBREAK for the Ctrl+Break that POSIX never sends, and the documented
+# gate says that abort exits 130 like SIGINT. Recording the raw number would make
+# '128 + signum' answer 149, so the coordinator canonicalises it at the one place a
+# number turns into an exit code. POSIX has no SIGBREAK, where the mapping is a no-op.
+def _signal_number(name: str) -> int | None:
+    """Return this platform's number for *name*, or None where the signal is absent."""
+    number = getattr(signal, name, None)
+    return None if number is None else int(number)
+
+
+_SIGBREAK_NUMBER: Final[int | None] = _signal_number("SIGBREAK")
+
+
+def _canonical_signal(signum: int) -> int:
+    """Return the signal number the shutdown gate answers with.
+
+    The received signal stays visible in the log; only the exit-code rule is shared, so a
+    Windows operator and a POSIX operator both see 130 after an interrupt.
+    """
+    if _SIGBREAK_NUMBER is not None and int(signum) == _SIGBREAK_NUMBER:
+        return int(signal.SIGINT)
+    return int(signum)
 
 _EXTRA_SIGNALS: tuple[str, ...] = ("SIGINT", "SIGTERM", "SIGBREAK")
 _RELOAD_SIGNALS: tuple[str, ...] = ("SIGHUP",)
@@ -162,7 +186,7 @@ class SignalCoordinator:
             self._count += 1
             first = self._signal_number is None
             if first:
-                self._signal_number = int(signum)
+                self._signal_number = _canonical_signal(int(signum))
             count = self._count
         name = signal_name(int(signum))
         if first:

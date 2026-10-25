@@ -20,7 +20,7 @@ docs. `kdx --help` lists every command, including the ones modules contributed.
 | pip in a venv | `pip install korodexios-core` | from an index, once published |
 | uv | `uv pip install korodexios-core` | the same wheel |
 | pipx / uv tool | `pipx install korodexios-core` | the two console scripts land on PATH |
-| git bootstrap | `pip install "korodexios-core @ git+ssh://git@github.com/korodexios/kdx-core.git@v0.2.2"` | the documented path before an index publish |
+| git bootstrap | `pip install "korodexios-core @ git+ssh://git@github.com/korodexios/kdx-core.git@v0.2.3"` | the documented path before an index publish |
 | development | `pip install -e ".[dev]"` | the chassis repository itself |
 
 The wheel carries `py.typed` and every built-in module manifest
@@ -34,8 +34,8 @@ manifests it needs. The sdist carries `docs/`, `README.md`, `AGENTS.md`, `llms.t
 | --- | --- | --- |
 | `--version` | print chassis and core API version, exit | - |
 | `--home PATH` | chassis root directory | discovered root |
-| `--config FILE` | explicit config file (`kdx.yml`, `korodexios.yml`) | first candidate |
-| `--env-file FILE` | explicit `.env` path | `<root>/.env` |
+| `--config FILE` | explicit config file (`kdx.yml`, `korodexios.yml`); a relative path is read under `--home` | first candidate |
+| `--env-file FILE` | explicit `.env` path; a relative path is read under `--home` | `<root>/.env` |
 | `--log-level LEVEL` | console log level (diagnostics go to stderr) | `INFO` |
 | `--log-json` | emit JSON log lines | off |
 | `--no-log-file` | skip the rotating log file | file enabled |
@@ -150,7 +150,9 @@ routes, schemas, and checks were read with its context in hand. A module that on
 answers those hooks with its configuration therefore contributes real findings here rather
 than a `ModuleContractError` in the log. The built-in modules contribute their own rows
 here since `v0.2.2`: `backup_engine` reports whether its source tree is readable and its
-destination writable, and `heartbeat` reports whether its ticker thread is alive.
+destination writable, and `heartbeat` reports whether its ticker is alive on the chassis
+clock. Since `v0.2.3` a backup run that stepped aside for its named lock adds a `lock` row,
+and `kdx backup run` answers that refusal with exit `1` and a hint instead of a traceback.
 
 ## `kdx logs`
 
@@ -230,7 +232,7 @@ The seed ships `kdx.yml`, `.env.example`, `Makefile`, `README.md`, `AGENTS.md`,
 smoke tests. It passes `make check` on arrival.
 
 The chassis dependency is pinned to the repository by default
-(`korodexios-core @ git+https://github.com/korodexios/kdx-core.git@v0.2.2`), so a fresh
+(`korodexios-core @ git+https://github.com/korodexios/kdx-core.git@v0.2.3`), so a fresh
 venv can `pip install -e .` the seeded project before any index publish. Pass
 `--chassis-source index` once the package is on an index; an unknown choice is refused
 with a hint.
@@ -318,11 +320,14 @@ local clients need no change; remote clients pass `--target`.
 | `2` | usage error (argparse) |
 | `3` | configuration error |
 | `4`-`125` | a command handler's own verdict code, passed through unchanged |
-| `130` | SIGINT |
+| `130` | SIGINT; Windows `SIGBREAK` joins the same gate |
 | `143` | SIGTERM |
 
 ## Scripting rules
 
+- A `--log-json` line keeps the types the module passed: a count is a JSON number, a flag
+  is a boolean, a nested mapping stays a mapping; only a `Path`, an exception, or another
+  object arrives as shortened text.
 - Non-TTY runs never prompt; `--yes` also forces defaults in a TTY.
 - `--json` is available on `doctor`, `status`, `modules list`, `modules show`,
   `modules create`, `config show`, `config check`, `reload`, `rpc`, and the module status

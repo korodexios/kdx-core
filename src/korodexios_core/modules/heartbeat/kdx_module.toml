@@ -1,7 +1,7 @@
 # Built-in module manifest, read by korodexios_core.kernel.discovery.
 [module]
 name = "heartbeat"
-description = "Publishes a periodic heartbeat event, proving background threads and clean shutdown."
+description = "Publishes a periodic heartbeat event, proving the chassis clock and clean shutdown."
 version = "0.1.0"
 entrypoint = "MODULE"
 enabled = true

@@ -37,6 +37,7 @@ __all__ = [
     "DEFAULT_LOCK_TIMEOUT",
     "LOCK_FILE_SUFFIX",
     "LockHolder",
+    "LockTimeoutError",
     "NamedLock",
     "NamedLockRegistry",
     "lock_name",
@@ -172,7 +173,13 @@ class NamedLock:
                 time.sleep(min(self._poll, remaining))
         self._descriptor = descriptor
         self._acquired_at = time.monotonic()
-        self._write_payload()
+        try:
+            self._write_payload()
+        except OSError:
+            # A lock that cannot say who holds it is not a lock the next process can
+            # trust, so the claim is withdrawn and the failure is the caller's to read.
+            self.release()
+            raise
         if self._logger is not None:
             self._logger.debug(
                 "named lock acquired", name=self._name, path=str(self._path), pid=os.getpid()
@@ -254,7 +261,12 @@ class NamedLock:
         )
 
     def _write_payload(self) -> None:
-        """Write the owner payload into the locked file."""
+        """Write the owner payload into the locked file; raise on an I/O failure.
+
+        The payload is what makes an advisory lock explainable, so a failed write is a
+        failed acquisition: `acquire()` releases the descriptor it just took rather than
+        leaving a held lock whose file says nothing about its owner.
+        """
         descriptor = self._descriptor
         if descriptor is None:
             return
@@ -275,10 +287,11 @@ class NamedLock:
         except OSError as exc:
             if self._logger is not None:
                 self._logger.warning(
-                    f"named lock payload unreadable: {exc}",
+                    f"named lock payload unwritable: {exc}",
                     name=self._name,
                     path=str(self._path),
                 )
+            raise
 
     def __enter__(self) -> NamedLock:
         return self.acquire(blocking=True)

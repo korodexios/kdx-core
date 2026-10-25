@@ -10,6 +10,7 @@ import pytest
 
 from korodexios_core.cli.entry import main
 from korodexios_core.constants import ExitCode
+from korodexios_core.kernel.chassis import Chassis, ChassisOptions
 from korodexios_core.kernel.cli_contract import CliCommand
 from korodexios_core.modules.backup_engine import (
     MODULE,
@@ -19,6 +20,7 @@ from korodexios_core.modules.backup_engine import (
     build_plan,
     execute_plan,
 )
+from korodexios_core.paths import AppPaths
 from tests.test_chassis import build_chassis
 
 EXCLUDES = (".git", "__pycache__", "*.log")
@@ -218,3 +220,56 @@ def test_symlink_cycles_are_pruned(tmp_path: Path) -> None:
     )
     assert plan.skipped == ["self (symlink cycle)"]
     assert [item.name for item in plan.files] == ["a.txt"]
+
+
+def backup_lock_chassis(tmp_path: Path) -> Chassis:
+    """Return a running chassis whose backup_engine copies one small tree."""
+    root = tmp_path / "project"
+    source = root / "src"
+    source.mkdir(parents=True)
+    (source / "a.txt").write_text("alpha\n", encoding="utf-8")
+    paths = AppPaths.discover(root=str(root), environ={})
+    chassis = Chassis.create(
+        ChassisOptions(
+            home=paths.root,
+            environ={},
+            install_signals=False,
+            cli_overrides={"core.log.file_enabled": False, "core.ipc.enabled": False},
+        )
+    )
+    chassis.initialize()
+    chassis.start(ipc=False)
+    return chassis
+
+
+def test_a_second_run_steps_aside_for_the_named_lock(tmp_path: Path) -> None:
+    """The module takes the chassis named lock, so two copies never share one destination."""
+    chassis = backup_lock_chassis(tmp_path)
+    try:
+        module = chassis.registry.require("backup_engine").module
+        refusals = module.health()["refusals"]
+        assert chassis.locks.names() == (), "no lock is taken before a run"
+        assert module.run_backup(module.plan()).copied >= 1
+        assert chassis.locks.names() == (), "a finished run releases the name it took"
+        with chassis.lock("backup_engine", timeout=0.0), pytest.raises(BackupError) as captured:
+            module.run_backup(module.plan())
+        assert "named lock" in str(captured.value), str(captured.value)
+        assert captured.value.hint, "a refusal is polite: it says what to do"
+        assert module.health()["refusals"] == refusals + 1
+        assert "lock" in {check.name for check in module.diagnostics()}
+        assert module.run_backup(module.plan()).copied >= 1
+    finally:
+        chassis.shutdown()
+
+
+def test_the_run_lock_is_a_named_lock_file(tmp_path: Path) -> None:
+    """The lock is the primitive the chassis reports, not a private file in a corner."""
+    chassis = backup_lock_chassis(tmp_path)
+    try:
+        module = chassis.registry.require("backup_engine").module
+        module.run_backup(module.plan())
+        assert chassis.paths.named_lock_files() == ("backup_engine.lock",)
+        assert chassis.locks.names() == ()
+    finally:
+        chassis.shutdown()
+

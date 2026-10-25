@@ -32,6 +32,28 @@ def test_acquire_holds_one_name_and_releases_it(tmp_path: Path) -> None:
     assert registry.release("index") is False
 
 
+def test_a_payload_write_failure_withdraws_the_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lock that cannot say who holds it is not one the next process can trust."""
+
+    def unwritable(*_args: object) -> int:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr("korodexios_core.kernel.locks.os.ftruncate", unwritable)
+    registry = make_registry(tmp_path)
+    with pytest.raises(OSError):
+        registry.acquire("index")
+    assert registry.names() == (), "a failed claim leaves no reservation"
+    assert registry.held("index") is False
+    assert (tmp_path / "state" / "locks" / "index.lock").is_file()
+
+    monkeypatch.undo()
+    recovered = registry.acquire("index")
+    assert recovered.held is True
+    assert registry.release("index") is True
+
+
 def test_reacquiring_a_held_name_returns_the_same_handle(tmp_path: Path) -> None:
     registry = make_registry(tmp_path)
     first = registry.acquire("index")
