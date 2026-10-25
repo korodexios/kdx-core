@@ -103,6 +103,22 @@ directory ignores dot files, swap files, and names `lock_name()` refuses | **del
   ceiling rather than 150 ms and 1.0 s, with each bound naming the semantic it protects - so
   `make check` stops measuring how busy the runner is and keeps measuring the chassis
   | **delivered** |
+
+| 26 | `v0.2.10` consumer honesty on the `v2` line: both `core.env.aliases` shapes are read
+  at load - the mapping a project writes in `kdx.yml` (which the loader flattens to
+  `core.env.aliases.NAME` leaves) and the `NAME=key` list an operator exports as
+  `<PREFIX>_CORE__ENV__ALIASES` - and `kdx doctor` prints the effective map instead of raising
+  on the list shape; `core.modules.strict_discovery` (default `false`) turns any discovery
+  failure into a boot refusal at exit `3` naming the module and the spec it required and into
+  an `error` diagnostic, while `kdx doctor` and `kdx status` keep answering; a module the
+  chassis did not load is announced at boot with the reason that decided it and repeats in
+  `kdx modules list`, whose `--json` gained `skipped`, `optional` and `failures`; a module that
+  declares the chassis-owned `enabled` or `priority` in its own schema is warned about and
+  reported instead of vanishing; `core.modules.foreign_roots` lets a project ship plugins as an
+  installed distribution and keep the optional-dependency hint; and the bootstrap docs, the
+  agent guide's verification loop and `kdx init`'s next step lead with uv (Astral), the tool
+  that owns the virtualenv | **delivered** |
+
 ## Next
 
 1. **Publish to an index.** PyPI through trusted publishing. The git bootstrap is

@@ -10,6 +10,7 @@ from typing import Any, cast
 
 from ..constants import (
     ENV_PREFIX,
+    ENV_PREFIX_ALIASES,
     KEY_SEPARATOR,
     REDACTION,
     SECRET_KEY_COMPOUNDS,
@@ -27,6 +28,9 @@ from .loaders import (
     split_list_value,
     unflatten_mapping,
 )
+
+ALIAS_KEY: str = "core.env.aliases"
+"""The chassis key that maps a legacy environment name to a canonical dotted key."""
 
 _TRUE_TOKENS = frozenset({"1", "true", "yes", "y", "on", "enabled"})
 _FALSE_TOKENS = frozenset({"0", "false", "no", "n", "off", "disabled", ""})
@@ -297,7 +301,9 @@ class LayeredConfig:
             or _prefix_from(file_values)
             or str(CORE_DEFAULTS["core.env.prefix"])
         )
-        aliases = _aliases_from(cli_overrides, local_values, file_values, env)
+        aliases = _aliases_from(
+            cli_overrides, local_values, file_values, env, prefix=resolved_prefix
+        )
         dotenv_values, dotenv_origins = (
             load_dotenv_layer(env_file, resolved_prefix, aliases) if env_file else ({}, {})
         )
@@ -344,6 +350,25 @@ class LayeredConfig:
 
     def _layer(self, source: ConfigSource) -> _Layer:
         return self._layers[self._index[source]]
+
+    def env_aliases(self) -> dict[str, str]:
+        """Return the environment aliases in force, from either declared shape.
+
+        The snapshot is derived from the non-default layers, so the mapping a
+        project writes in `kdx.yml`, the `NAME=key` list an operator exports as
+        `KDX_CORE__ENV__ALIASES`, and the `--env-alias` flag all arrive as one
+        `{ENV_VAR: dotted.key}` mapping a report can print without learning
+        which shape the caller happened to use.
+        """
+        merged: dict[str, str] = {}
+        for source in (
+            ConfigSource.FILE,
+            ConfigSource.LOCAL,
+            ConfigSource.ENV,
+            ConfigSource.CLI,
+        ):
+            merged.update(alias_entries(self._layer(source).values))
+        return merged
 
     def with_cli_overrides(self, values: Mapping[str, Any]) -> LayeredConfig:
         """Return a copy whose CLI layer also contains *values*."""
@@ -553,33 +578,63 @@ def _prefix_from(file_values: Mapping[str, Any]) -> str | None:
     return None
 
 
+def alias_entries(layer: Mapping[str, Any] | None) -> dict[str, str]:
+    """Return the aliases one configuration layer declares, in either shape.
+
+    A layer carries the mapping under the exact key `core.env.aliases` or under
+    the flattened leaves `core.env.aliases.NAME` that a YAML mapping becomes on
+    its way through `load_config_file`. Leaves win inside one layer, because an
+    empty mapping default flattens away to nothing at all.
+    """
+    if not isinstance(layer, Mapping):
+        return {}
+    declared = layer.get(ALIAS_KEY)
+    merged = normalize_alias_mapping(declared) if declared is not None else {}
+    head = f"{ALIAS_KEY}."
+    for key, value in layer.items():
+        name = str(key)
+        if not name.startswith(head):
+            continue
+        name = name[len(head) :]
+        if not name or "." in name:
+            continue
+        merged.update(normalize_alias_mapping({name: value}))
+    return merged
+
+
+def _alias_variables(prefix: str | None = None) -> tuple[str, ...]:
+    """Return the environment variables that may declare aliases, lowest first."""
+    tokens = list(ENV_PREFIX_ALIASES)
+    resolved = str(prefix or ENV_PREFIX).strip().upper()
+    if resolved and resolved not in tokens:
+        tokens.append(resolved)
+    return tuple(f"{token}_CORE__ENV__ALIASES" for token in tokens)
+
+
 def _aliases_from(
     cli_values: Mapping[str, Any] | None,
     local_values: Mapping[str, Any],
     file_values: Mapping[str, Any],
     environ: Mapping[str, str] | None = None,
+    prefix: str | None = None,
 ) -> dict[str, str]:
     """Merge declared environment aliases, highest precedence last.
 
-    core.env.aliases maps a legacy variable name to the canonical chassis key it
-    feeds. A project migrating to the chassis can therefore keep exporting
-    LEGACY_TOKEN while the chassis reads core.ipc.token, with provenance naming
-    the variable that actually carried the value.
+    `core.env.aliases` maps a legacy variable name to the canonical chassis key it
+    feeds, so a project migrating to the chassis keeps exporting `LEGACY_TOKEN`
+    while the chassis reads `core.ipc.token`, with provenance naming the variable
+    that actually carried the value. Both shapes are read here: the mapping a
+    project writes in `kdx.yml` (which the loader flattens to leaves) and the
+    `NAME=key` list an operator exports as `<PREFIX>_CORE__ENV__ALIASES`.
     """
     merged: dict[str, str] = {}
-    declared_values: list[Any] = []
     if environ is not None:
-        for variable in ("KDX_CORE__ENV__ALIASES", "KORODEXIOS_CORE__ENV__ALIASES"):
+        for variable in _alias_variables(prefix):
             raw = str(environ.get(variable, "")).strip()
             if raw:
-                declared_values.append(raw)
+                merged.update(normalize_alias_mapping(raw))
     for layer in (file_values, local_values, cli_values):
-        if isinstance(layer, Mapping):
-            declared = layer.get("core.env.aliases")
-            if declared is not None:
-                declared_values.append(declared)
-    for declared in declared_values:
-        merged.update(normalize_alias_mapping(declared))
+        merged.update(alias_entries(layer))
     return merged
 
 

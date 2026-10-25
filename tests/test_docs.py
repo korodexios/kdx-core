@@ -291,3 +291,35 @@ def test_agent_guide_manifest_example_is_valid_toml() -> None:
     assert data["module"]["entrypoint"] == "MODULE"
     assert data["module"]["name"] == "metrics"
     assert "metadata" in data
+
+
+def test_bootstrap_leads_with_uv_and_the_new_keys_are_documented() -> None:
+    """uv (Astral) owns the virtualenv, and the v0.2.10 switches are written down."""
+    readme = read(REPO_ROOT / "README.md")
+    guide = read(DOCS / "AGENTS_GUIDE.md")
+    reference = read(DOCS / "CLI_REFERENCE.md")
+    for needle in (
+        "uv venv",
+        "uv sync --extra dev",
+        "uv run kdx",
+        "uv tool install korodexios-core",
+        "uv pip install",
+        "kdx-core.git@v",
+        "uv lock",
+        "python3 -m venv",
+    ):
+        assert needle in readme, f"the README lost the uv bootstrap: {needle!r}"
+    assert readme.index("uv venv") < readme.index("python3 -m venv"), "uv must come first"
+    for needle in ("uv run make check", "uv sync --extra dev", "EXTERNALLY-MANAGED"):
+        assert needle in guide, f"the agent guide lost the uv bootstrap: {needle!r}"
+    for needle in ("uv venv", "uv lock", "uv tool install"):
+        assert needle in reference, f"the CLI reference lost the uv bootstrap: {needle!r}"
+    for needle in (
+        "core.modules.strict_discovery",
+        "core.modules.foreign_roots",
+        "core.env.aliases",
+        "modules.<name>.enabled",
+    ):
+        assert needle in guide, f"the agent guide stopped documenting {needle!r}"
+    for needle in ("strict_discovery", "foreign_roots", "settings_collisions"):
+        assert needle in reference, f"the CLI reference stopped documenting {needle!r}"

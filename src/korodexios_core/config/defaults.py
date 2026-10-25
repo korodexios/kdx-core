@@ -22,6 +22,8 @@ CORE_DEFAULTS: Final[dict[str, Any]] = {
     "core.modules.enabled": [],
     "core.modules.disabled": [],
     "core.modules.extra_paths": [],
+    "core.modules.strict_discovery": False,
+    "core.modules.foreign_roots": [],
     "core.lifecycle.tick_interval": 1.0,
     "core.lifecycle.stop_timeout": 5.0,
     "core.ipc.enabled": True,

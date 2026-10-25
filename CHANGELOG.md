@@ -5,7 +5,77 @@ history lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## [Unreleased]
 
-_Nothing pending: the working tree is the `v0.2.9` tag._
+_Nothing pending: the working tree is the `v0.2.10` tag._
+
+## [0.2.10] - 2026-10-25
+
+A consumer patch on the frozen `v2` line: the two shapes of `core.env.aliases` both work,
+a version-mismatched module can no longer boot past the chassis that promised not to run on
+it, the chassis says out loud which modules it skipped and which keys it owns, a project can
+ship plugins as an installed distribution, and the bootstrap documentation finally admits
+that uv (Astral) owns the virtualenv. Nothing in the frozen surface changed shape - no new
+package-root export, no changed signature, no renamed configuration key; two documented
+opt-in configuration keys were added.
+
+### Fixed
+
+- **Both environment-alias shapes are read, at the same time**: a mapping written under
+  `core.env.aliases` in `kdx.yml` reaches the chassis flattened to
+  `core.env.aliases.NAME` leaves, which `_aliases_from` never looked at, so the alias was
+  declared, valid to `kdx config check`, and silently inert. The loader now reads the exact
+  key and its leaves from the file, local and CLI layers, and reads the `NAME=key` list an
+  operator exports as `<PREFIX>_CORE__ENV__ALIASES` for the resolved prefix instead of the
+  two hard-coded variable names - so `KDX_CORE__ENV__ALIASES=LEGACY=core.key` and
+  `core: env: aliases: {LEGACY: core.key}` are two spellings of one decision. The status
+  snapshot prints `LayeredConfig.env_aliases()`, the effective map, instead of
+  `dict(config.get("core.env.aliases") or {})`, which raised `ValueError: dictionary update
+  sequence element #0 has length 1` on the list shape and took `kdx doctor` down with it.
+  Provenance still names the variable that carried the value, and a properly prefixed
+  variable still outranks an alias mapped to the same key.
+
+### Added
+
+- **`core.modules.strict_discovery` (default `false`)** is the loud version gate a consumer
+  asked for: `requires_core` was enforced by discovery and then only logged, so a module
+  needing a core the installed chassis is not produced a boot that exited `0` on three of
+  four modules. With the switch on, `Chassis.start()` raises a configuration error -
+  `kdx run --once` exits `3` with one line naming the module, the stage, and the spec it
+  required - while `kdx doctor` and `kdx status` still run and report the same finding as an
+  `error` severity check, so `kdx doctor` exits `1`. Inspection commands never refuse. The
+  `requires_core` grammar is unchanged: `==`, `>=`, `<=`, `!=`, `>`, `<` and
+  comma-separated sets.
+- **`core.modules.foreign_roots` (default `[]`)** names the import roots a project ships as
+  an installed distribution, so `llmwiki_ext.plugins.x` is someone else's missing package
+  and stays an optional-dependency hint with an install command - including when that root
+  collides with the module's own package name. The set is read through the typed getter, so
+  one variable can carry it (`KDX_CORE__MODULES__FOREIGN_ROOTS=llmwiki_ext,other_ext`).
+  Nothing is foreign until the project says so: the chassis' own roots stay hard failures.
+- **A module the chassis did not load is announced at boot** - one folded line naming each
+  skipped module with the reason the chassis actually decided on (`disabled by its
+  manifest`, `not listed in core.modules.enabled`, `listed in core.modules.disabled`,
+  `modules.<name>.enabled is false`), replacing one reason string that covered four
+  decisions - and `kdx modules list` repeats the same rows, with the optional-dependency
+  rows, below the table. `kdx modules list --json` gained the additive `skipped`,
+  `optional`, and `failures` keys beside the health block.
+- **A module that declares a chassis-owned key is named, not skipped in silence**:
+  `modules.<name>.enabled` and `modules.<name>.priority` are read before a module is
+  imported, so a module that declared `enabled` for itself handed the chassis a lifecycle
+  decision - the behaviour switch went false, the module vanished from the registry, and its
+  remaining keys were then reported as unknown configuration. Registration warns per
+  collision, `ModuleRegistry.settings_collisions()` reports them, `kdx doctor` carries them
+  as a `module-setting` warning, and `kdx modules list --json` / `kdx modules show` carry a
+  `settings_collisions` row per module.
+
+### Changed
+
+- **The bootstrap documentation leads with uv (Astral)**, because the venv is uv's:
+  `uv venv`, `uv sync --extra dev`, `uv run kdx ...`, `uv tool install korodexios-core`,
+  `uv pip install "korodexios-core @ git+…@v0.2.10"`, and `uv lock` for a consumer's own
+  pins, with `python3 -m venv` + `pip` kept as the documented fallback and a note for the
+  PEP 668 `EXTERNALLY-MANAGED` host that has neither `pip` nor `ensurepip`. `kdx init` now
+  prints `next: … && uv sync --extra dev && uv run <name> run` followed by the one-line pip
+  fallback, the agent guide's verification loop runs under `uv run`, and
+  `--chassis-source git` is documented as needing network plus uv at install time.
 
 ## [0.2.9] - 2026-10-25
 

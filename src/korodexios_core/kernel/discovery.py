@@ -9,7 +9,7 @@ import inspect
 import re
 import sys
 import tomllib
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -165,18 +165,48 @@ _INSTALL_NAMES: dict[str, str] = {
 }
 
 _CHASSIS_ROOTS: tuple[str, ...] = ("korodexios_core", "korodexios_ext")
+"""Import roots whose missing modules are the chassis' own problem, never an extra.
+
+A project that ships plugins as an installed distribution owns a root of its own
+(`llmwiki_ext.plugins.x`); it declares that root in `core.modules.foreign_roots` so a
+missing import under it stays an installation question with a hint.
+"""
+
+
+def foreign_roots_from(config: Any) -> tuple[str, ...]:
+    """Return the import roots the project declared foreign, lower-cased.
+
+    Read through the typed getter so one environment variable can carry the set
+    (`KDX_CORE__MODULES__FOREIGN_ROOTS=llmwiki_ext,other`); a caller without a
+    configuration - a bare test, an embedder building discovery by hand - simply
+    declares none.
+    """
+    getter = getattr(config, "get_list", None)
+    if not callable(getter):
+        return ()
+    try:
+        declared = getter("core.modules.foreign_roots", [])
+    except Exception:
+        return ()
+    names = (str(item).strip().lower() for item in (declared or []) if str(item).strip())
+    return tuple(sorted(set(names)))
 
 
 def classify_import_error(
     exc: BaseException,
     name: str,
     origin: str = "",
+    *,
+    foreign_roots: Sequence[str] = (),
 ) -> DiscoveryOptional | None:
     """Return an optional-dependency record when *exc* is a missing foreign import.
 
     The chassis' own packages and the module's own package are never optional:
     those stay hard import failures, so broken code is never mistaken for a
-    missing extra.
+    missing extra. A root the project declared in `core.modules.foreign_roots`
+    is always the other way round - it is someone else's installed package, so a
+    missing import under it is an installation question even when it collides with
+    the module's own name or a chassis convention.
     """
     cause: BaseException = exc.__cause__ if exc.__cause__ is not None else exc
     if not isinstance(cause, ModuleNotFoundError):
@@ -185,7 +215,10 @@ def classify_import_error(
     if not missing:
         return None
     root = missing.split(".", 1)[0]
-    if root == name or root in _CHASSIS_ROOTS or root.startswith("korodexios_ext"):
+    declared = {str(item).strip().lower() for item in foreign_roots if str(item).strip()}
+    if root not in declared and (
+        root == name or root in _CHASSIS_ROOTS or root.startswith("korodexios_ext")
+    ):
         return None
     hint = _INSTALL_NAMES.get(root, f"pip install {root}")
     return DiscoveryOptional(name=name, module=missing, hint=hint, origin=origin)
@@ -252,6 +285,7 @@ class ModuleDiscovery:
         self._blocklist = {str(name) for name in (disabled or [])}
         self._autodiscover = bool(autodiscover)
         self._logger = logger
+        self._foreign_roots = foreign_roots_from(config)
 
     def scan(self) -> DiscoveryReport:
         """Scan built-in and external directories, isolating every failure."""
@@ -350,7 +384,9 @@ class ModuleDiscovery:
         try:
             module_obj = self._import(name, package_dir, entry_file, origin, package_prefix)
         except ModuleDiscoveryError as exc:
-            optional = classify_import_error(exc, name, str(entry_file))
+            optional = classify_import_error(
+                exc, name, str(entry_file), foreign_roots=self._foreign_roots
+            )
             if optional is not None:
                 report.optional.append(optional)
                 self._log("info", optional.describe(), module=name, optional=optional.module)
@@ -358,7 +394,9 @@ class ModuleDiscovery:
             report.failures.append(DiscoveryFailure(name, exc.stage, exc.message, str(entry_file)))
             return
         except Exception as exc:
-            optional = classify_import_error(exc, name, str(entry_file))
+            optional = classify_import_error(
+                exc, name, str(entry_file), foreign_roots=self._foreign_roots
+            )
             if optional is not None:
                 report.optional.append(optional)
                 self._log("info", optional.describe(), module=name, optional=optional.module)
@@ -391,8 +429,9 @@ class ModuleDiscovery:
                 DiscoveryFailure(name, "contract", "; ".join(violations), str(entry_file))
             )
             return
-        if not spec.enabled or not self._is_enabled(spec):
-            report.skipped.append((spec.name, "disabled by manifest or configuration"))
+        reason = self._disabled_reason(spec)
+        if reason:
+            report.skipped.append((spec.name, reason))
             return
         if spec.requires_core and not _version_satisfies(__version__, spec.requires_core):
             report.failures.append(
@@ -584,17 +623,30 @@ class ModuleDiscovery:
             metadata=_manifest_metadata(manifest),
         )
 
-    def _is_enabled(self, spec: ModuleSpec) -> bool:
+    def _disabled_reason(self, spec: ModuleSpec) -> str:
+        """Return why this module is not wanted, or an empty string when it is.
+
+        The reason is what an operator reads at boot and in 'kdx modules list', so it
+        names the decision that was made rather than a category: the manifest said
+        no, the allowlist did not name it, the blocklist named it, or the project's
+        own configuration switched it off - which is how a module that declared
+        'enabled' as its own behaviour switch learns that the chassis read it as
+        lifecycle enablement.
+        """
+        if not spec.enabled:
+            return "disabled by its manifest"
         if self._allowlist and spec.name not in self._allowlist:
-            return False
+            return "not listed in core.modules.enabled"
         if spec.name in self._blocklist:
-            return False
+            return "listed in core.modules.disabled"
         if self._config is None:
-            return True
+            return ""
+        key = f"modules.{spec.name}.enabled"
         try:
-            return bool(self._config.get_bool(f"modules.{spec.name}.enabled", True))
+            enabled = bool(self._config.get_bool(key, True))
         except Exception:
-            return True
+            return ""
+        return "" if enabled else f"{key} is false"
 
     def _log(self, level: str, message: str, **fields: Any) -> None:
         if self._logger is None:

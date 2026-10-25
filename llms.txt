@@ -13,11 +13,16 @@ section is a contract, not a suggestion. Human-oriented narrative lives in
 | Distribution | `korodexios-core` |
 | Import root | `korodexios_core` |
 | Console scripts | `kdx` (primary short alias), `korodexios` (canonical) |
-| Version | `0.2.9` (production), core API frozen at `v2` (additive changes only inside v2) |
+| Version | `0.2.10` (production), core API frozen at `v2` (additive changes only inside v2) |
 | Runtime | CPython 3.11+, stdlib first (PyYAML for config, rich for the CLI surface) |
 | Config file | `kdx.yml` / `kdx.yaml` / `kdx.json` (then `korodexios.*`) |
 | Env prefix | `KDX_` primary; `KORODEXIOS_` is the canonical long prefix |
 | Mapping defaults | a mapping-valued chassis key is a namespace: `core.env.aliases.NAME` is a valid chassis path |
+| Env aliases | both shapes are read at load: the mapping `core.env.aliases.NAME` a project writes in `kdx.yml` and the `NAME=key` list an operator exports as `<PREFIX>_CORE__ENV__ALIASES`; `kdx doctor` prints the effective map |
+| Discovery gate | `core.modules.strict_discovery` (default `false`): with `true`, one discovery failure refuses the boot with exit `3` and `kdx doctor` reports it as an error |
+| Foreign roots | `core.modules.foreign_roots: []` names the import roots a project ships as an installed distribution (`llmwiki_ext`), so a missing import under one stays an installation hint |
+| Module settings | `modules.<name>.enabled` and `.priority` belong to the chassis: a module that declares `enabled` in its own schema is warned about, not silently skipped |
+| Bootstrap | uv (Astral) first: `uv venv`, `uv sync --extra dev`, `uv run kdx ...`, `uv tool install korodexios-core`; `python3 -m venv` + `pip` is the documented fallback |
 | Layout | `kernel/` infrastructure, `modules/` pure discovery root, `cli/` thin clients |
 | State dir | `var/` (logs, `chassis.ipc`, `chassis.lock`); never committed |
 | Instance lock | `var/chassis.lock` in the state dir; a second daemon on the same root exits `1` |
@@ -109,8 +114,9 @@ opportunities, never requirements - the chassis `getattr`s them and moves on:
   been discovered. `kdx modules show` still records a hook failure as `health_error` rather than
   letting it end the report.
 - `kdx doctor` also reports the chassis' own checks (log file, state dirs, stale lock,
-  control-plane errors, failing scheduled tasks, abandoned named locks), so a module only
-  contributes what the core cannot know.
+  control-plane errors, failing scheduled tasks, abandoned named locks, and a module whose
+  own schema declares `enabled` or `priority` - keys the chassis owns per module), so a module
+  only contributes what the core cannot know.
 - Since `v0.2.4` the built-ins report their runtime habits as well as their declarations:
   `system_info` starts a load sampler thread when `modules.system_info.watch_load` is on - the
   default wherever the platform can answer a load average - and hands that thread to
@@ -464,6 +470,16 @@ environment (`.env` then process env) -> CLI overrides**.
   (and the `KORODEXIOS_` spelling).
 - Secrets: never read `os.environ` in a module; a value that came from the
   environment must be visible in `kdx config show` provenance.
+- Environment aliases: `core.env.aliases` maps a legacy variable name to the canonical
+  key it feeds, and both shapes are read at load - the mapping a project writes in
+  `kdx.yml` (which the loader flattens to `core.env.aliases.NAME` leaves) and the
+  `NAME=key` list an operator exports as `<PREFIX>_CORE__ENV__ALIASES`. Provenance names
+  the variable that carried the value (`environment alias LEGACY_RUN_MODE`), and a
+  properly prefixed variable still outranks an alias mapped to the same key.
+- Foreign import roots: `core.modules.foreign_roots` (default `[]`) names the roots a
+  project ships as installed packages, so a missing import under `llmwiki_ext.plugins.x`
+  stays an optional-dependency hint instead of a hard discovery failure. A root is only
+  foreign when the project says so: the chassis' own roots stay hard failures.
 - `core.paths.state_dir` and `core.paths.data_dir` move the writable roles off `var/`;
   `Chassis.create()` creates both before any module starts, so a module never `mkdir`s
   its own home.
@@ -494,6 +510,14 @@ dependency order -> lifecycle loop -> `stop()` in reverse -> close logging.
 - `stop()` always runs, including after a failed `start()`, and is bounded by
   `core.lifecycle.stop_timeout`.
 - `kdx run --once` publishes a single tick and stops: the CI-safe smoke test.
+- `core.modules.strict_discovery` (default `false`) turns any discovery failure into a boot
+  refusal: `Chassis.start()` raises a configuration error, so `kdx run --once` exits `3`
+  naming the module and the spec it required, while `kdx doctor` and `kdx status` still run
+  and report the same finding as an `error` (`kdx doctor` then exits `1`). The `requires_core`
+  grammar is unchanged: `==`, `>=`, `<=`, `!=`, `>`, `<` and comma-separated sets.
+- A module the chassis did not load is announced at boot - one line naming each with the
+  reason it decided on (its manifest, `core.modules.enabled`, `core.modules.disabled`, or
+  `modules.<name>.enabled`) - and `kdx modules list` repeats the same rows below the table.
 - SIGHUP (POSIX) asks for a configuration reload without exiting: the layers are
   re-read, the diff is published as `core.config.reloaded`, and each module's
   `on_config_reload` runs. `core.reload.sighup` (default `true`) turns that off;
@@ -575,18 +599,24 @@ dependency order -> lifecycle loop -> `stop()` in reverse -> close logging.
 
 ## 12. Verification Loop
 
-Run this sequence, in this order, before claiming any change works:
+Run this sequence, in this order, before claiming any change works. The bootstrap is
+uv (Astral): it owns the virtualenv, so a PEP 668 `EXTERNALLY-MANAGED` interpreter with
+no `pip` and no `ensurepip` is still a working chassis checkout.
 
 ```bash
-make check        # ruff check src tests, then mypy --strict, then pytest -q
-kdx run --once    # boot, one lifecycle tick, clean stop; must exit 0
-kdx status        # live report from a running daemon over the control plane
+uv venv --python 3.13   # one time; or: python3 -m venv .venv && pip install -e '.[dev]'
+uv sync --extra dev     # resolve and install the dev extra into that environment
+uv run make check       # ruff check src tests, then mypy --strict, then pytest -q
+uv run kdx run --once   # boot, one lifecycle tick, clean stop; must exit 0
+uv run kdx status       # live report from a running daemon over the control plane
 ```
 
 - `make check` proves style, types, and behaviour in one shot; the bar is 100% green.
 - `kdx run --once` proves the chassis boots from real config and shuts down cleanly.
 - `kdx status` proves the control plane answers and the registry reports live state.
-- In a seeded project the same bar is `make check PYTHON=<venv>/bin/python`.
+- In a seeded project the same bar is `uv run make check`; without uv it is
+  `make check PYTHON=<venv>/bin/python`. `make` resolves itself: with `uv` on `PATH` it runs
+  under `uv run`, otherwise under `.venv/bin/`.
 - A new capability is not done until it has a test that fails without it.
 
 ## 13. Agent Do / Don't

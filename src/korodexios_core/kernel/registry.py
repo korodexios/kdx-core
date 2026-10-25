@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import Any
 
+from ..config.keys import MODULE_SETTINGS
 from ..config.schema import ConfigField, ConfigIssue, ConfigSchema, schema_from_mapping
 from ..constants import DEFAULT_STOP_TIMEOUT
 from ..events.bus import EventBus
@@ -82,6 +83,8 @@ class RegisteredModule:
     checks: tuple[DiagnosticCheck, ...] = ()
     declarations_after_init: bool = False
     """True once the declarative hooks were read with the module context in hand."""
+    settings_collisions: tuple[str, ...] = ()
+    """Keys the module declared for itself that the chassis also owns per module."""
 
     def declared_keys(self) -> tuple[str, ...]:
         """Return the configuration keys this module declared."""
@@ -121,6 +124,7 @@ class RegisteredModule:
             "routes": [route.as_dict() for route in self.routes],
             "diagnostics": [check.as_dict() for check in self.checks],
             "declarations_after_init": self.declarations_after_init,
+            "settings_collisions": list(self.settings_collisions),
         }
 
 
@@ -350,6 +354,27 @@ def _check_for_module(check: DiagnosticCheck, name: str) -> DiagnosticCheck:
     return replace(check, module=name)
 
 
+def _settings_collisions(
+    declared: tuple[str, ...], name: str, logger: Any
+) -> tuple[str, ...]:
+    """Return the schema keys that collide with chassis-owned module settings.
+
+    'modules.<name>.enabled' and 'modules.<name>.priority' are read before a module is
+    even imported, so a module that declares one of them for itself is not declaring a
+    private switch: it is handing the chassis a lifecycle decision. Silencing that is
+    how a module disappears from a running chassis, so the collision is named once,
+    loudly, at registration.
+    """
+    collisions = tuple(key for key in declared if key in MODULE_SETTINGS)
+    for key in collisions:
+        logger.warning(
+            f"module {name} declares {key!r} in its own configuration schema; the "
+            f"chassis reads modules.{name}.{key} as lifecycle control, not a behaviour "
+            f"switch - rename the module's own key"
+        )
+    return collisions
+
+
 def collect_workers(module: Any) -> tuple[tuple[str, Any], ...]:
     """Return (name, thread) pairs a module hands to supervision."""
     declared = getattr(module, "workers", None)
@@ -407,6 +432,9 @@ class ModuleRegistry:
             record.routes = collect_ipc_routes(module, spec.name, self._logger)
             record.statics = collect_static_dirs(module, spec.name, self._logger)
             record.checks = collect_diagnostics(module, spec.name, self._logger)
+            record.settings_collisions = _settings_collisions(
+                record.declared_keys(), spec.name, self._logger
+            )
             if not spec.enabled:
                 record.state = ModuleState.DISABLED
             self._records[spec.name] = record
@@ -496,6 +524,9 @@ class ModuleRegistry:
         record.routes = collect_ipc_routes(record.module, label, self._logger)
         record.statics = collect_static_dirs(record.module, label, self._logger)
         record.checks = collect_diagnostics(record.module, label, self._logger)
+        record.settings_collisions = _settings_collisions(
+            record.declared_keys(), label, self._logger
+        )
         record.declarations_after_init = True
         return record
 
@@ -569,6 +600,22 @@ class ModuleRegistry:
                 record.spec.name: record.schema
                 for record in self._records.values()
                 if record.schema is not None and not record.schema.is_empty
+            }
+
+    def settings_collisions(self) -> dict[str, tuple[str, ...]]:
+        """Return the modules whose own schema collides with chassis-owned settings.
+
+        'modules.<name>.enabled' and 'modules.<name>.priority' decide whether a module
+        is loaded at all. A module that declares one of those keys for itself has a
+        behaviour switch the chassis reads as lifecycle control, which is how a module
+        can disappear while its remaining keys are then reported as unknown
+        configuration. The registry names the pair; 'kdx doctor' renders it.
+        """
+        with self._lock:
+            return {
+                record.spec.name: record.settings_collisions
+                for record in self._records.values()
+                if record.settings_collisions
             }
 
     def ipc_routes(self) -> list[IpcRoute]:

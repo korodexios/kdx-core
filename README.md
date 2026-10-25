@@ -8,8 +8,10 @@ clients that talk to the same core and never reimplement it.
 - **Package:** `korodexios-core` (import name `korodexios_core`)
 - **Console scripts:** `kdx` (primary short alias), `korodexios` (canonical)
 - **Python:** 3.11+ (developed on 3.13), `uv`-first, `venv` + `pip` compatible
+- **Bootstrap:** uv (Astral) owns the environment - `uv venv`, `uv sync --extra dev`,
+  `uv run kdx ...`, `uv tool install korodexios-core`, `uv lock` for a consumer's own pins
 - **Dependencies:** `pyyaml` (config files), `rich` (the wizard layer)
-- **Release:** `v0.2.9`, core API frozen at `v2`
+- **Release:** `v0.2.10`, core API frozen at `v2`
 
 ---
 
@@ -36,9 +38,11 @@ every project it generates.
 ## Quickstart
 
 ```bash
-uv venv --python 3.13            # or: python3 -m venv .venv
-uv pip install -e ".[dev]"       # or:   pip install -e ".[dev]"
-source .venv/bin/activate
+```bash
+uv venv --python 3.13            # uv (Astral) owns the env: no pip, no ensurepip needed
+uv sync --extra dev              # resolve and install dev tools; or: uv pip install -e ".[dev]"
+uv run kdx --version             # run any command inside that environment
+source .venv/bin/activate        # or stay activated and drop the 'uv run' prefix
 
 kdx --version                    # byte-identical from korodexios too
 kdx doctor                       # environment, config provenance, modules (--json for CI)
@@ -56,6 +60,19 @@ kdx modules create my_plugin --path ./my_plugins
 kdx init my_service --path ../my_service   # seed a whole new project from the chassis
 kdx wizard                       # interactive numbered-menu wizard (TTY only)
 ```
+
+Pin the chassis the way a consumer project does, entirely with uv:
+
+```bash
+uv tool install korodexios-core   # a global kdx on PATH, no project involved
+uv pip install "korodexios-core @ git+https://github.com/korodexios/kdx-core.git@v0.2.10"
+uv lock                          # and 'uv add' for this project's own pinned dependencies
+```
+
+Without uv, `python3 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"`
+still works - until the interpreter is PEP 668 `EXTERNALLY-MANAGED` and ships no `pip` and
+no `ensurepip`, which is why uv leads the docs and the `Makefile` runs under `uv run` whenever
+uv is on `PATH`.
 
 CI and non-interactive runs pass `--yes`, plus `--no-log-file` on a read-only
 filesystem. `kdx run --once` never prompts and never hangs: the chassis auto-detects
@@ -130,7 +147,9 @@ the LAN, and `kdx status --target host:port` to query a remote chassis.
 `src/<pkg>/cli.py`, a first module with a manifest, and smoke tests that boot the
 chassis in-process. Nothing is a placeholder: the generated tree passes `ruff`, strict
 `mypy`, and `pytest` on arrival, and its chassis dependency is pinned to the
-repository, so `pip install -e .` works before any index publish. The project owns its user-facing language through
+repository, so `uv pip install -e .` (or plain `pip install -e .`) works before any index
+publish; `kdx init --chassis-source index` switches the pin to the index. A git pin needs
+network and uv at install time - that is the one thing `--chassis-source git` asks for. The project owns its user-facing language through
 `i18n.translate()` (stdlib gettext, source strings as the fallback), so the chassis
 stays locale-neutral and English logs and IPC payloads stay machine-readable.
 

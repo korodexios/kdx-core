@@ -142,7 +142,7 @@ def test_disabled_module_is_skipped(tmp_path: Path) -> None:
 
     report = ModuleDiscovery(paths, config=StubConfig(), logger=None).scan()
     assert "probe" not in report.names()
-    assert ("probe", "disabled by manifest or configuration") in report.skipped
+    assert ("probe", "modules.probe.enabled is false") in report.skipped
 
 
 def test_environment_can_disable_a_module(tmp_path: Path) -> None:
@@ -165,7 +165,7 @@ def test_environment_can_disable_a_module(tmp_path: Path) -> None:
 
     report = ModuleDiscovery(paths, config=config, logger=None).scan()
     assert "probe" not in report.names()
-    assert ("probe", "disabled by manifest or configuration") in report.skipped
+    assert ("probe", "modules.probe.enabled is false") in report.skipped
     assert "solo" in report.names()
 
 

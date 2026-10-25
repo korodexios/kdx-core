@@ -23,7 +23,7 @@ from ..constants import (
     TAG_OK,
 )
 from ..events.bus import EventBus
-from ..exceptions import ChassisError
+from ..exceptions import ChassisError, ConfigurationError
 from ..logging.engine import (
     KorodexiosLogger,
     build_logger,
@@ -255,6 +255,15 @@ class Chassis:
             log.warning(f"{TAG_ERROR} {failure.describe()}")
         for optional in discovery.optional:
             log.info(f"{TAG_NOTE} {optional.describe()}")
+        if discovery.skipped:
+            named = ", ".join(
+                f"{name} ({reason})"
+                for name, reason in discovery.skipped[:_CONFIG_WARNING_LIMIT]
+            )
+            unlisted = len(discovery.skipped) - _CONFIG_WARNING_LIMIT
+            if unlisted > 0:
+                named += f", +{unlisted} more"
+            log.info(f"{TAG_NOTE} modules skipped: {named}")
         chassis = cls(
             context=context,
             registry=registry,
@@ -295,6 +304,32 @@ class Chassis:
         self.bus.publish("core.initialized", {"modules": len(self.registry)}, source="chassis")
         return self
 
+    def _refuse_strict_discovery(self) -> None:
+        """Refuse the boot when discovery failed and the consumer asked it to.
+
+        'core.modules.strict_discovery' is the gate a project sets when running on an
+        untested chassis is worse than not running: a module that declares a
+        'requires_core' this chassis cannot satisfy, fails to import, breaks the
+        contract, or ships an unreadable manifest is a defect in the pairing, not a
+        detail to log and boot past. The refusal is one line naming the module and
+        what it required, and the exit code is the configuration error a deployment
+        script can branch on. Inspection commands never call this, so 'kdx doctor'
+        and 'kdx status' stay able to report the refusal instead of hiding it.
+        """
+        if not self.config.get_bool("core.modules.strict_discovery", False):
+            return
+        failures = self.discovery.failures
+        if not failures:
+            return
+        detail = failures[0].describe()
+        remaining = len(failures) - 1
+        tail = f"; {remaining} more discovery failure(s)" if remaining else ""
+        self.logger.error(f"{TAG_ERROR} strict discovery: {detail}{tail}")
+        raise ConfigurationError(
+            f"module discovery refused the boot: {detail}{tail}",
+            hint="fix the module, or set core.modules.strict_discovery: false to boot without it",
+        )
+
     def start(self, *, ipc: bool | None = None) -> Chassis:
         """Run module start hooks, open the control plane, and enter the running state."""
         allowed = (ChassisState.INITIALIZED, ChassisState.PREPARED, ChassisState.FAILED)
@@ -303,6 +338,7 @@ class Chassis:
                 f"cannot start a chassis in state {self.state.value}",
                 hint="Call initialize() before start().",
             )
+        self._refuse_strict_discovery()
         self.ensure_initialized()
         self._acquire_instance_lock()
         runtime = self.async_runtime
@@ -839,13 +875,30 @@ class Chassis:
                     module="chassis",
                 )
             )
+        strict = self.config.get_bool("core.modules.strict_discovery", False)
         for failure in self.discovery.failures:
             checks.append(
                 diagnostic_check(
                     name="discovery",
                     message=failure.describe(),
+                    severity=(
+                        DiagnosticSeverity.ERROR if strict else DiagnosticSeverity.WARNING
+                    ),
+                    hint="run 'kdx modules list' for the full import error"
+                    + ("; boot is refused" if strict else ""),
+                    module="chassis",
+                )
+            )
+        for name, keys in self.registry.settings_collisions().items():
+            checked = ", ".join(f"modules.{name}.{key}" for key in keys)
+            checks.append(
+                diagnostic_check(
+                    name="module-setting",
+                    message=f"module {name} declares {', '.join(repr(key) for key in keys)} "
+                    f"in its own configuration schema; the chassis reads {checked} as "
+                    "lifecycle control",
                     severity=DiagnosticSeverity.WARNING,
-                    hint="run 'kdx modules list' for the full import error",
+                    hint="rename the module's own key, or set the chassis key explicitly",
                     module="chassis",
                 )
             )
@@ -999,7 +1052,7 @@ class Chassis:
                 ],
                 "project_keys": list(self.config.project_keys()),
                 "secrets": list(self.config.secret_keys()),
-                "aliases": dict(self.config.get("core.env.aliases") or {}),
+                "aliases": self.config.env_aliases(),
                 "reloads": self.reloads,
             },
             "logging": self.context.logs.stats(),

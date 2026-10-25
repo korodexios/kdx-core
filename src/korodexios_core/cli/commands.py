@@ -626,11 +626,29 @@ def _doctor_command(request: CliRequest) -> int:
 
 
 def _modules_list_command(request: CliRequest) -> int:
-    """List discovered modules."""
+    """List discovered modules and name every module that was not loaded."""
     chassis = _chassis(request)
     health = chassis.registry.health()
+    skipped = [{"name": name, "reason": reason} for name, reason in chassis.discovery.skipped]
+    optional = [item.as_dict() for item in chassis.discovery.optional]
+    failures = [
+        {
+            "name": failure.name,
+            "stage": failure.stage,
+            "message": failure.message,
+            "origin": failure.origin,
+        }
+        for failure in chassis.discovery.failures
+    ]
     if request.flag("as_json"):
-        dump_json(health)
+        dump_json(
+            {
+                **health,
+                "skipped": skipped,
+                "optional": optional,
+                "failures": failures,
+            }
+        )
         return int(ExitCode.ERROR) if health["failed"] else int(ExitCode.SUCCESS)
     if not health["modules"]:
         write_status("no modules discovered yet", tag=TAG_NOTE)
@@ -653,6 +671,10 @@ def _modules_list_command(request: CliRequest) -> int:
     write_line(f"{TAG_OK} {chassis.discovery.summary()}")
     for failure in chassis.discovery.failures:
         write_line(f"  {TAG_ERROR} {failure.describe()}")
+    for item in skipped:
+        write_line(f"  [skipped] {item['name']}: {item['reason']}")
+    for item in optional:
+        write_line(f"  [optional] {item['name']}: needs {item['module']} - {item['hint']}")
     return int(ExitCode.ERROR) if health["failed"] else int(ExitCode.SUCCESS)
 
 
@@ -807,7 +829,11 @@ def _init_command(request: CliRequest) -> int:
         ]
     )
     write_line(
-        f"{TAG_NOTE} next: cd {result.root} && pip install -e '.[dev]' && {project.script} run"
+        f"{TAG_NOTE} next: cd {result.root} && uv sync --extra dev && "
+        f"uv run {project.script} run"
+    )
+    write_line(
+        f"{TAG_NOTE} without uv: pip install -e '.[dev]' && {project.script} run"
     )
     return int(ExitCode.SUCCESS)
 

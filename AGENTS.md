@@ -5,6 +5,11 @@ foundation, not an application: every line here protects that role.
 
 ## Commands
 
+Bootstrap with uv (Astral): `uv venv --python 3.13`, then `uv sync --extra dev`, then run
+anything through `uv run kdx ...`. `make` resolves itself - `uv run` when uv is on PATH,
+otherwise `.venv/bin/` - and `python3 -m venv .venv && pip install -e '.[dev]'` is the
+documented fallback for a host that has none of it.
+
 ```bash
 make install      # uv (or pip) editable install with the dev extra
 make check        # ruff + mypy --strict + pytest, in that order

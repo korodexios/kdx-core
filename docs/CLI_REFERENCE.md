@@ -17,11 +17,16 @@ docs. `kdx --help` lists every command, including the ones modules contributed.
 
 | Install | Command | Notes |
 | --- | --- | --- |
-| pip in a venv | `pip install korodexios-core` | from an index, once published |
-| uv | `uv pip install korodexios-core` | the same wheel |
-| pipx / uv tool | `pipx install korodexios-core` | the two console scripts land on PATH |
-| git bootstrap | `pip install "korodexios-core @ git+ssh://git@github.com/korodexios/kdx-core.git@v0.2.9"` | the documented path before an index publish |
-| development | `pip install -e ".[dev]"` | the chassis repository itself |
+| uv, in the chassis repository | `uv venv --python 3.13 && uv sync --extra dev && uv run kdx doctor` | uv (Astral) owns the environment; `make` resolves to `uv run` when uv is on `PATH` |
+| uv tool | `uv tool install korodexios-core` | a global `kdx` on PATH, no project involved |
+| git pin, the consumer path | `uv pip install "korodexios-core @ git+https://github.com/korodexios/kdx-core.git@v0.2.10"` | the documented pin before an index publish; needs network |
+| git bootstrap, ssh form | `pip install "korodexios-core @ git+ssh://git@github.com/korodexios/kdx-core.git@v0.2.10"` | what `kdx init --chassis-source git` writes into the seed |
+| pipx, or venv + pip | `pipx install korodexios-core`; `python3 -m venv .venv && pip install -e ".[dev]"` | the fallback when uv is absent - and it fails as written on a PEP 668 `EXTERNALLY-MANAGED` interpreter with no `pip` and no `ensurepip` |
+| from an index | `uv pip install korodexios-core`, or `pip install korodexios-core` | once published; a consumer pins it with `uv lock` |
+
+A consumer project pins the chassis with uv: `uv lock` records the resolved git pin in
+`uv.lock`, and `uv run kdx ...` runs any command inside that environment. This repository
+carries `uv.lock` and `[tool.uv] package = true`, so `uv sync` builds the chassis in place.
 
 The wheel carries `py.typed` and every built-in module manifest
 (`kdx_module.toml`), so a plugin installed into the same environment can read the
@@ -165,6 +170,14 @@ scheduler is still waiting on (`active_task`) when a stop overruns `core.lifecyc
 The locks directory is read with the same care: an editor's swap file, a dot file, and a name
 no lock could answer to are never reported as a held or stale lock.
 
+Since `v0.2.10` the chassis is honest about the modules it did not load. A discovery failure
+is a `discovery` check at `warning` severity by default and at `error` when
+`core.modules.strict_discovery` is on - the same switch that makes `kdx run --once` exit `3` on
+a `requires_core` mismatch instead of `0`, while `kdx doctor` still runs and reports why. A
+module whose own schema declares `enabled` or `priority` contributes a `module-setting`
+warning, and `modules.modules[].settings_collisions` names the keys per module. The effective
+environment aliases are reported under `config.aliases` whatever shape they were declared in.
+
 ## `kdx logs`
 
 ```bash
@@ -194,6 +207,12 @@ kdx modules create <name> --path src/<pkg>/modules [--title TEXT] [--force] [--j
 `create` scaffolds `__init__.py`, `module.py`, and `kdx_module.toml` - zero stubs,
 immediately runnable.
 
+Since `v0.2.10` `list` also names the modules the chassis did not load, each with the reason
+that decided it - `disabled by its manifest`, `not listed in core.modules.enabled`, `listed in
+core.modules.disabled`, or `modules.<name>.enabled is false` - and the optional-dependency rows
+beside them. `--json` carries the health block plus `skipped`, `optional`, and `failures`. The
+chassis logs the same summary once at boot, on stderr.
+
 ## `kdx config`
 
 ```bash
@@ -207,7 +226,10 @@ kdx config check --json               # the same report for machines
 ```
 
 Sources: `built-in default`, `config file`, `local override file`, `environment`,
-`CLI override`.
+`CLI override`. Environment aliases work in either declared shape - the mapping under
+`core.env.aliases` in a config file (which the loader flattens to `core.env.aliases.NAME`
+leaves) and the `NAME=key` list exported as `<PREFIX>_CORE__ENV__ALIASES` - and a properly
+prefixed variable still outranks an alias mapped to the same key.
 
 `kdx config check` reports two high-confidence classes of typo: a `core.*` key with no
 built-in default and no mapping default above it, and a `modules.<name>.*` key whose module
@@ -243,10 +265,12 @@ The seed ships `kdx.yml`, `.env.example`, `Makefile`, `README.md`, `AGENTS.md`,
 smoke tests. It passes `make check` on arrival.
 
 The chassis dependency is pinned to the repository by default
-(`korodexios-core @ git+https://github.com/korodexios/kdx-core.git@v0.2.9`), so a fresh
+(`korodexios-core @ git+https://github.com/korodexios/kdx-core.git@v0.2.10`), so a fresh
 venv can `pip install -e .` the seeded project before any index publish. Pass
 `--chassis-source index` once the package is on an index; an unknown choice is refused
-with a hint.
+with a hint. A git pin needs network and uv at install time - `uv venv`,
+`uv sync --extra dev`, then `uv run <name> run` - which is what the seed prints as its next
+step, with `pip install -e '.[dev]' && <name> run` as the one-line fallback.
 
 ## `kdx wizard`
 
@@ -285,6 +309,8 @@ The chassis primitives, and the keys that configure them:
 | Periodic tasks on | `core.scheduler.enabled` | `KDX_CORE__SCHEDULER__ENABLED` | `true` |
 | Scheduler on its own thread | `core.scheduler.threaded` | `KDX_CORE__SCHEDULER__THREADED` | `false` |
 | Serve module static mounts | `core.ipc.static` | `KDX_CORE__IPC__STATIC` | `true` |
+| Refuse a boot on any discovery failure | `core.modules.strict_discovery` | `KDX_CORE__MODULES__STRICT_DISCOVERY` | `false` |
+| Plugin roots shipped as an installed distribution | `core.modules.foreign_roots` | `KDX_CORE__MODULES__FOREIGN_ROOTS` | `[]` |
 
 Named locks live in `&lt;state_dir&gt;/locks/&lt;name&gt;.lock`: `kdx doctor` lists them, and shutdown
 releases every name the chassis took. Files that must outlive a moved `var/` belong under
@@ -335,7 +361,7 @@ local clients need no change; remote clients pass `--target`.
 | `0` | success, or an operator-requested stop |
 | `1` | handled failure (chassis or CLI error with a hint) |
 | `2` | usage error (argparse) |
-| `3` | configuration error |
+| `3` | configuration error (an unknown key from `kdx config check`, or a refused boot when `core.modules.strict_discovery` is on) |
 | `4`-`125` | a command handler's own verdict code, passed through unchanged |
 | `130` | SIGINT; Windows `SIGBREAK` joins the same gate |
 | `143` | SIGTERM |
