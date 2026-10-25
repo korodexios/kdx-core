@@ -29,6 +29,18 @@ the short list of what ships next; the README keeps one sentence about it.
 
 | 17 | `v0.2.1` maintenance patch on the `v2` line: mapping-valued chassis defaults are read as namespaces (`core.env.aliases.NAME` passes `kdx config check`), unknown-key suggestions are scoped to the module the typo named, the declarative hooks are collected again once `init(context)` ran so `kdx doctor` and `kdx modules show` never query a module too early, and a command handler's verdict exit code is documented and tested as part of the CLI contract | **delivered** |
 
+| 18 | `v0.2.2` hardening and dogfooding on the `v2` line: `NamedLockRegistry.hold()` inspects the
+registry and reserves the name in one guarded step, so two threads claiming one name never both
+pass a check and wait on a collision that is already decided; `IpcStaticMount` normalisation
+is hardened for Windows (the subpath is unquoted before it is validated, `/` and `\` are
+folded, drive letters, alternate data streams, and reserved device names are refused, and
+containment is verified on the resolved path with a case-folded second look); the Linux
+memory probe is cached at import instead of importing `platform` per reading; `TaskScheduler`
+bookkeeping is bounded (a truncated `last_error`, a purged task table, an issued task number
+that is not recycled) - and the three built-in proof modules adopt the hooks themselves,
+declaring `config_schema()`, `diagnostics()`, and `ipc_routes()` and adding
+`/api/v1/backup/plan` and `/api/v1/system/snapshot` to the control plane | **delivered** |
+
 ## Next
 
 1. **Publish to an index.** PyPI through trusted publishing. The git bootstrap is
@@ -36,11 +48,11 @@ the short list of what ships next; the README keeps one sentence about it.
    freshly seeded project installs today without waiting for an index.
 2. **A Textual/TUI front end** over the same declarative `CliCommand` tree the wizard
    already reads - no module knows a second surface exists.
-3. **Built-in modules adopt the v2 hooks**: `heartbeat` already hands its ticker thread to
-   supervision through `workers()`; none of the three proof modules declares a
-   `config_schema()`, `ipc_routes()`, `diagnostics()`, `static_dirs()`, or a scheduled task yet.
-   Declaring them - and taking a named lock instead of inventing a private lock file - is the
-   honest dogfood for the new contract.
+3. **The last built-in habits move to primitives**: `v0.2.2` gave `backup_engine`, `heartbeat`,
+   and `system_info` their `config_schema()`, `diagnostics()`, and `ipc_routes()`, so the
+   declarative half of that dogfood is done. What is left is the runtime habit - `heartbeat`
+   still runs its own ticker thread instead of `context.schedule()`, and no built-in has
+   taken a named lock yet.
 4. **Windows in CI** waits for one more run. The red was ours, not mypy's: the runner
    starts bash with `-e`, so the failing mypy call ended the step before any diagnostic
    ran, and the POSIX-only `os.sysconf` / `os.getrusage` reads failed the Windows

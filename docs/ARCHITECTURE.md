@@ -166,7 +166,11 @@ cannot order.
 - **Static mounts** - `IpcStaticMount(route_prefix, directory)` puts a directory on the same
   port: an index name decides `/`, a weak `ETag` answers `If-None-Match` with `304`, `HEAD`
   answers without a body, writes get `405`, an `auth=True` mount asks for the token, and every
-  requested segment is checked so `../` cannot climb out of the mounted directory.
+  requested segment is checked so `../` cannot climb out of the mounted directory. That
+  check is a normalisation, not a string match: the subpath is unquoted first, `/` and `\\`
+  are folded to one separator, Windows drive letters, alternate data streams, and reserved
+  device names are refused, and containment is verified on the resolved path - case-folded
+  on a case-insensitive filesystem, so a real file is never answered with a 404.
 
 ## 6. Signal handling and exit codes
 
@@ -241,7 +245,10 @@ raising, and its real declarations appear after initialization; `kdx doctor`, `k
 and the control plane read the post-initialization set, and `modules[].declarations_after_init`
 says which of the two the chassis is showing. Inspection commands ask `health()` and
 `diagnostics()` only after `ensure_initialized()`, so a command never queries a module that has only
-been discovered.
+been discovered. Since `v0.2.2` the three built-in proof modules declare those hooks
+themselves - `backup_engine`, `heartbeat`, and `system_info` together declare twelve scoped keys,
+three diagnostic sets, and the routes `/api/v1/backup/plan` and
+`/api/v1/system/snapshot` - so the contract is proven inside the package that ships it.
 
 ## 9. Public API and versioning
 
@@ -261,8 +268,8 @@ The freeze policy is mechanical:
 | `korodexios_core.CORE_API_VERSION` | the string a module can assert against |
 
 The wheel ships a `py.typed` marker, so type information travels with the package. A patch
-release on the `0.2` line (`0.2.1`) carries fixes and documented invariants under the same `v2`
-surface: no new export, no changed signature, no renamed configuration key.
+release on the `0.2` line (`0.2.1`, `0.2.2`) carries hardening and dogfooding under the same
+`v2` surface: no new export, no changed signature, no renamed configuration key.
 Core API v2 added, without breaking a single existing import: `InstanceLock` and
 `LockHolder`, `AsyncRuntime`, `WorkerSupervisor` and `WorkerRecord`, `DiagnosticCheck` and
 `DiagnosticSeverity`, `IpcRoute`, `IpcRequest`, `IpcResponse`, and `IpcStaticMount`,
@@ -283,11 +290,16 @@ operator moves `state_dir`, a `time.sleep()` loop with no shutdown path.
   plus a JSON payload naming the live holder. Acquisition is non-blocking by default
   (`timeout=0.0`), because holding a lock is a coordination decision and queueing is a design
   decision the caller makes. Shutdown releases every name the process took, so a crash leaves
-  a *stale* file that `kdx doctor` can explain rather than a permanent lock.
+  a *stale* file that `kdx doctor` can explain rather than a permanent lock. `hold(name)`
+  inspects the registry and reserves the name in one guarded step, so a same-name claim
+  from two threads cannot both pass a check and then wait on a collision it already lost.
 - **Periodic tasks.** A task is data: interval, callback, first delay, repeat flag. The
   chassis clock decides when it is due, the scheduler runs it, catches its exceptions, and
   publishes `core.task.run` / `core.task.failed`, so a module's recurring work stops exactly
-  when the chassis does.
+  when the chassis does. Two bounds keep it cheap to run forever: the last error a task
+  keeps is truncated (`MAX_ERROR_LENGTH`), and `unschedule()` purges the task, its order entry, and
+  its numeric-suffix bookkeeping, so a withdrawn name leaves nothing behind and an issued
+  number is not recycled while its base still has a live task.
 - **Static content.** The chassis owns the one socket; a module owns its files. A mount is a
   prefix plus a directory, and the media type comes from the file, so a dashboard costs no
   second server and no proxy.

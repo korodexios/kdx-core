@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -12,10 +13,13 @@ from ...cli.render import (
     print_section,
     write_status,
 )
+from ...config.schema import ConfigField, ConfigKind, ConfigSchema
 from ...constants import TAG_ERROR, TAG_NOTE, TAG_OK, ExitCode
 from ...kernel.cli_contract import CliArgument, CliCommand, CliRequest, CliSurface
 from ...kernel.context import CoreContext
 from ...kernel.contract import Module
+from ...kernel.diagnostics import DiagnosticCheck, DiagnosticSeverity
+from ...kernel.ipc import IpcRequest, IpcRoute
 from ...validate import parse_size
 from .engine import (
     BackupError,
@@ -75,6 +79,147 @@ class BackupEngineModule(Module):
             max_bytes=self._max_bytes,
             dry_run=self._dry_run,
         )
+
+    def config_schema(self) -> ConfigSchema:
+        """Declare every scoped key this module reads, with the default it falls back to."""
+        return ConfigSchema(
+            module=self.name,
+            fields=(
+                ConfigField(
+                    "source",
+                    kind=ConfigKind.PATH,
+                    default=".",
+                    description="Tree to copy; the chassis default is the project root.",
+                ),
+                ConfigField(
+                    "dest",
+                    kind=ConfigKind.PATH,
+                    default="backups",
+                    description="Where timestamped copies land, under the data directory.",
+                ),
+                ConfigField(
+                    "include",
+                    kind=ConfigKind.LIST,
+                    default=["*"],
+                    description="Names a backup may copy.",
+                ),
+                ConfigField(
+                    "exclude",
+                    kind=ConfigKind.LIST,
+                    default=list(DEFAULT_EXCLUDES),
+                    description="Names a backup never copies.",
+                ),
+                ConfigField(
+                    "max_size",
+                    kind=ConfigKind.STR,
+                    default="",
+                    description="Refuse a source larger than this, e.g. '2G'; empty means none.",
+                ),
+                ConfigField(
+                    "dry_run",
+                    kind=ConfigKind.BOOL,
+                    default=False,
+                    description="Report the plan without copying anything.",
+                ),
+                ConfigField(
+                    "follow_symlinks",
+                    kind=ConfigKind.BOOL,
+                    default=False,
+                    description="Follow symlinks while walking the source tree.",
+                ),
+            ),
+        )
+
+    def diagnostics(self) -> tuple[DiagnosticCheck, ...]:
+        """Report whether the configured source and destination can carry a backup."""
+        if self.context is None:
+            # The chassis reads this hook at registration too, before init() has
+            # resolved the paths: there is nothing honest to report yet.
+            return ()
+        settings = self.settings()
+        checks: list[DiagnosticCheck] = []
+        source = settings.source
+        if source.is_dir():
+            checks.append(
+                DiagnosticCheck(
+                    name="source",
+                    message=f"backup source {source} is a readable tree",
+                    module=self.name,
+                )
+            )
+        elif source.exists():
+            checks.append(
+                DiagnosticCheck(
+                    name="source",
+                    message=f"backup source {source} is not a directory",
+                    severity=DiagnosticSeverity.ERROR,
+                    hint="a backup copies a tree; point modules.backup_engine.source at one",
+                    module=self.name,
+                )
+            )
+        else:
+            checks.append(
+                DiagnosticCheck(
+                    name="source",
+                    message=f"backup source {source} does not exist",
+                    severity=DiagnosticSeverity.WARNING,
+                    hint="set modules.backup_engine.source, or let the default project root stand",
+                    module=self.name,
+                )
+            )
+        checks.append(self._destination_check(settings.dest))
+        return tuple(checks)
+
+    def _destination_check(self, dest: Path) -> DiagnosticCheck:
+        """Report whether *dest* can receive a backup, or will be created on the first run."""
+        if dest.is_dir():
+            if os.access(dest, os.W_OK):
+                return DiagnosticCheck(
+                    name="destination",
+                    message=f"backup destination {dest} is writable",
+                    module=self.name,
+                )
+            return DiagnosticCheck(
+                name="destination",
+                message=f"backup destination {dest} is not writable",
+                severity=DiagnosticSeverity.ERROR,
+                hint="check the permissions there, or set modules.backup_engine.dest",
+                module=self.name,
+            )
+        if dest.parent.is_dir():
+            return DiagnosticCheck(
+                name="destination",
+                message=f"backup destination {dest} is created on the first run",
+                module=self.name,
+            )
+        return DiagnosticCheck(
+            name="destination",
+            message=f"backup destination {dest} has no parent directory at {dest.parent}",
+            severity=DiagnosticSeverity.WARNING,
+            hint="create the parent, or set modules.backup_engine.dest",
+            module=self.name,
+        )
+
+    def ipc_routes(self) -> tuple[IpcRoute, ...]:
+        """Expose the plan the current settings produce, read-only."""
+        return (
+            IpcRoute(
+                path="/api/v1/backup/plan",
+                handler=self._plan_route,
+                module=self.name,
+                summary="the backup plan the current settings produce",
+            ),
+        )
+
+    def _plan_route(self, request: IpcRequest) -> Any:
+        """Answer the plan route; an unreadable source is a 503, not a stack trace."""
+        settings = self.settings()
+        try:
+            plan = build_plan(settings)
+        except BackupError as exc:
+            hint = getattr(exc, "hint", "")
+            return 503, {"error": str(exc), "hint": hint, "settings": settings.as_dict()}
+        return {"settings": settings.as_dict(), "plan": plan.as_dict()}
 
     def register_cli(self, surface: CliSurface) -> None:
         """Contribute the 'backup' command group to the root surface."""

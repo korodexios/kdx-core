@@ -10,10 +10,13 @@ import pytest
 
 from korodexios_core.events.bus import EventBus
 from korodexios_core.kernel.scheduler import (
+    MAX_ERROR_LENGTH,
+    MAX_NAME_SUFFIX,
     TASK_FAILED_EVENT,
     TASK_RUN_EVENT,
     ScheduledTask,
     TaskScheduler,
+    truncate_error,
 )
 
 
@@ -212,3 +215,44 @@ def test_task_validation_rejects_a_broken_declaration() -> None:
         ScheduledTask(name="x", interval_seconds=0.0, callback=lambda: None)
     with pytest.raises(ValueError):
         ScheduledTask(name="x", interval_seconds=1.0, callback=42)  # type: ignore[arg-type]
+
+
+def blow_up() -> None:
+    """A callback whose failure text is longer than the scheduler keeps."""
+    raise RuntimeError("detail " + "x" * 900)
+
+
+def test_a_task_error_is_kept_bounded_and_marked() -> None:
+    scheduler = TaskScheduler()
+    scheduler.schedule(1.0, blow_up, name="index")
+    assert scheduler.run_task("index") is False
+    task = scheduler.task("index")
+    assert task is not None
+    assert len(task.last_error) == MAX_ERROR_LENGTH
+    assert task.last_error.endswith("\u2026")
+    assert task.last_error.startswith("RuntimeError: detail")
+    assert truncate_error("short") == "short"
+    assert len(truncate_error("y" * (MAX_ERROR_LENGTH + 40))) == MAX_ERROR_LENGTH
+
+
+def test_unschedule_purges_the_tables_and_never_recycles_a_number() -> None:
+    scheduler = TaskScheduler()
+    first = scheduler.schedule(1.0, blow_up, name="sweep")
+    second = scheduler.schedule(1.0, blow_up, name="sweep")
+    third = scheduler.schedule(1.0, blow_up, name="sweep")
+    assert [first.name, second.name, third.name] == ["sweep", "sweep-2", "sweep-3"]
+    for name in ("sweep", "sweep-2", "sweep-3"):
+        assert scheduler.unschedule(name) is True
+        assert scheduler.unschedule(name) is False
+    assert len(scheduler) == 0
+    assert scheduler.tasks() == ()
+    assert scheduler._order == []
+    assert scheduler._bases == {}
+    assert scheduler._suffixes == {}
+    revived = scheduler.schedule(1.0, blow_up, name="sweep")
+    assert revived.name == "sweep"
+    assert scheduler.unschedule("sweep") is True
+    kept = scheduler.schedule(1.0, blow_up, name="sweep")
+    assert scheduler.unschedule(kept.name) is True
+    assert MAX_NAME_SUFFIX >= 100
+    assert scheduler.stats()["scheduled"] == 0

@@ -5,10 +5,12 @@ from __future__ import annotations
 from typing import Any, cast
 
 from ...cli.render import dump_json, print_key_values, print_section, write_line
+from ...config.schema import ConfigField, ConfigKind, ConfigSchema
 from ...constants import TAG_NOTE, TAG_OK
 from ...kernel.cli_contract import CliArgument, CliCommand, CliRequest, CliSurface
 from ...kernel.context import CoreContext
 from ...kernel.contract import Module
+from ...kernel.ipc import IpcRequest, IpcRoute
 from .collector import disk_snapshot, full_snapshot
 
 DEFAULT_DISK_KEY = "disk_path"
@@ -40,6 +42,41 @@ class SystemInfoModule(Module):
             disk_path=self._disk_path,
             include_cpu_model=self._include_model,
         )
+
+    def config_schema(self) -> ConfigSchema:
+        """Declare the scoped keys this module reads."""
+        return ConfigSchema(
+            module=self.name,
+            fields=(
+                ConfigField(
+                    "disk_path",
+                    kind=ConfigKind.PATH,
+                    default=".",
+                    description="Filesystem the disk section reports on.",
+                ),
+                ConfigField(
+                    "include_cpu_model",
+                    kind=ConfigKind.BOOL,
+                    default=True,
+                    description="Ask the platform for the CPU model string.",
+                ),
+            ),
+        )
+
+    def ipc_routes(self) -> tuple[IpcRoute, ...]:
+        """Expose one system snapshot to the control plane, read-only."""
+        return (
+            IpcRoute(
+                path="/api/v1/system/snapshot",
+                handler=self._snapshot_route,
+                module=self.name,
+                summary="one host snapshot as JSON",
+            ),
+        )
+
+    def _snapshot_route(self, request: IpcRequest) -> dict[str, Any]:
+        """Answer the snapshot route with the same payload 'system info' prints."""
+        return self.snapshot()
 
     def register_cli(self, surface: CliSurface) -> None:
         """Contribute the 'system' command group to the root surface."""

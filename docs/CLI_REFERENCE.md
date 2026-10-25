@@ -20,7 +20,7 @@ docs. `kdx --help` lists every command, including the ones modules contributed.
 | pip in a venv | `pip install korodexios-core` | from an index, once published |
 | uv | `uv pip install korodexios-core` | the same wheel |
 | pipx / uv tool | `pipx install korodexios-core` | the two console scripts land on PATH |
-| git bootstrap | `pip install "korodexios-core @ git+ssh://git@github.com/korodexios/kdx-core.git@v0.2.1"` | the documented path before an index publish |
+| git bootstrap | `pip install "korodexios-core @ git+ssh://git@github.com/korodexios/kdx-core.git@v0.2.2"` | the documented path before an index publish |
 | development | `pip install -e ".[dev]"` | the chassis repository itself |
 
 The wheel carries `py.typed` and every built-in module manifest
@@ -148,7 +148,9 @@ The report asks each module for `diagnostics()` and `health()`, so the command i
 discovered modules first; `modules.modules[].declarations_after_init` says whether a module's
 routes, schemas, and checks were read with its context in hand. A module that only
 answers those hooks with its configuration therefore contributes real findings here rather
-than a `ModuleContractError` in the log.
+than a `ModuleContractError` in the log. The built-in modules contribute their own rows
+here since `v0.2.2`: `backup_engine` reports whether its source tree is readable and its
+destination writable, and `heartbeat` reports whether its ticker thread is alive.
 
 ## `kdx logs`
 
@@ -207,7 +209,9 @@ findings once at boot, on stderr, and `kdx doctor --json` carries them under
 nothing reads, so CI can gate on it. The second half of the report is declarative
 module schemas: `config_schema()` hooks are read when a module registers and collected again
 after `init(context)` ran, validated against the module's scoped keys, and printed under
-"Module configuration schemas". A required
+"Module configuration schemas" - the three built-in proof modules declare
+`backup_engine: 7 keys`, `heartbeat: 1 keys`, and `system_info: 2 keys` out of the box, so a
+project is validated against a real schema before it owns one. A required
 key with no value, a value that will not coerce, or a value outside the declared
 `choices` is an error and exits `3`; the JSON payload carries them under `schemas.issues`.
 
@@ -226,7 +230,7 @@ The seed ships `kdx.yml`, `.env.example`, `Makefile`, `README.md`, `AGENTS.md`,
 smoke tests. It passes `make check` on arrival.
 
 The chassis dependency is pinned to the repository by default
-(`korodexios-core @ git+https://github.com/korodexios/kdx-core.git@v0.2.1`), so a fresh
+(`korodexios-core @ git+https://github.com/korodexios/kdx-core.git@v0.2.2`), so a fresh
 venv can `pip install -e .` the seeded project before any index publish. Pass
 `--chassis-source index` once the package is on an index; an unknown choice is refused
 with a hint.

@@ -13,7 +13,7 @@ section is a contract, not a suggestion. Human-oriented narrative lives in
 | Distribution | `korodexios-core` |
 | Import root | `korodexios_core` |
 | Console scripts | `kdx` (primary short alias), `korodexios` (canonical) |
-| Version | `0.2.1` (production), core API frozen at `v2` (additive changes only inside v2) |
+| Version | `0.2.2` (production), core API frozen at `v2` (additive changes only inside v2) |
 | Runtime | CPython 3.11+, stdlib first (PyYAML for config, rich for the CLI surface) |
 | Config file | `kdx.yml` / `kdx.yaml` / `kdx.json` (then `korodexios.*`) |
 | Env prefix | `KDX_` primary; `KORODEXIOS_` is the canonical long prefix |
@@ -114,6 +114,12 @@ opportunities, never requirements - the chassis `getattr`s them and moves on:
 - The base class hands over two chassis services without any plumbing: the read-only
   `scheduler` property (declare recurring work in `start()`, see section 16) and
   `context.paths.durable_dir` for files that must survive a moved state directory.
+- Since `v0.2.2` the three built-in proof modules declare these hooks themselves -
+  `backup_engine` (a seven-key schema, a source-and-destination check, `/api/v1/backup/plan`),
+  `heartbeat` (an interval schema and a ticker liveness check), and `system_info` (a two-key
+  schema and `/api/v1/system/snapshot`). A new module therefore has three working examples
+  inside the package, and `kdx config check` validates three module schemas before a project
+  runs its first command.
 
 ## 3. Canonical Module Blueprint
 
@@ -530,8 +536,13 @@ dependency order -> lifecycle loop -> `stop()` in reverse -> close logging.
 - `chassis.register_static_dir(route_prefix, directory_path)` - or a `static_dirs()` hook -
   serves a directory on the control plane's port: index names, `Cache-Control`, weak `ETag`
   with `304`, `HEAD` without a body, `405` for a write, `401` for an `auth=True` mount, and a
-  traversal guard that refuses to read above the mounted directory. Static mounts default to
-  `auth=False` because a browser cannot send the token header.
+  traversal guard that refuses to read above the mounted directory. That guard is
+  path-normalisation strict on purpose: the subpath is unquoted first (a client's `%5c` is a
+  separator, not a filename), `/` and `\\` are folded to one separator, and a drive letter, an
+  alternate data stream (`report.txt:Zone.Identifier`), or a reserved device name (`NUL`,
+  `com1.log`) is refused; containment is verified on the resolved path and case-folded on a
+  case-insensitive filesystem, so a real file never answers 404 on a case mismatch. Static
+  mounts default to `auth=False` because a browser cannot send the token header.
 - `core.ipc.static` (default `true`) gates whether module mounts are published at all.
 - `IPC_SCHEMA_VERSION` stays `1`: `/api/v1/schema` only gained `content_type` per route and a
   `static_mounts` list.
@@ -656,6 +667,9 @@ carries `pid`, `label`, `name`, `started_at`, `host`, and `port`, so `holder()` 
 answer who owns it and whether that owner is gone - the same honesty as the instance lock,
 one name at a time. Shutdown releases every name the chassis took (`release_all()`), so a
 crashed run leaves a *stale* file, not a permanent lock: `kdx doctor` reports it as `info`.
+`chassis.lock(name)` inspects the registry and reserves the name in one guarded step, so two
+threads that claim the same name at the same moment never both pass a check: the loser
+raises `LockTimeoutError` immediately instead of waiting out a timeout it had already lost.
 
 Names are validated at the call site: 1-64 characters of letters, digits, `_`, `.`, `-`, and
 spaces, no leading dot and no `..`. `../escape` and `a/b` are refused, so a lock name can
@@ -684,6 +698,10 @@ counted (`failures`, `last_error`), logged to stderr once per failure, published
 A successful run publishes `core.task.run` with the task's own `as_dict()` payload.
 `repeat=False` parks the task after one run; `first_delay` separates the first fire from the
 interval; duplicate names get `-2`, `-3` suffixes instead of clobbering each other.
+Two bounds keep a long-lived chassis honest: `last_error` is capped at `MAX_ERROR_LENGTH`
+characters (the traceback is in the log, not in every status snapshot), and `unschedule()`
+drops the task, its place in the declaration order, and its suffix bookkeeping, so
+`sweep-2` in an old log line is never a different task tomorrow.
 
 ### 16.4 Configuration and public surface
 

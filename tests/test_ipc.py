@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import urllib.error
@@ -12,18 +13,23 @@ import pytest
 
 from korodexios_core.cli.entry import main
 from korodexios_core.constants import IPC_SCHEMA_VERSION, ExitCode
+from korodexios_core.kernel import ipc as ipc_module
 from korodexios_core.kernel.chassis import Chassis, ChassisOptions, ChassisState
 from korodexios_core.kernel.ipc import (
     DISCOVERY_NAME,
     HEALTH_PATH,
+    IS_LINUX,
     ROUTES,
     SCHEMA_PATH,
     SHUTDOWN_PATH,
     STATUS_PATH,
     TOKEN_HEADER,
     IpcOptions,
+    IpcRoute,
     IpcServer,
+    IpcStaticMount,
     process_memory,
+    sys_is_linux,
 )
 from korodexios_core.paths import AppPaths
 from korodexios_core.units import DEFAULT_PAGE_SIZE
@@ -33,7 +39,12 @@ from .test_chassis import build_chassis
 
 
 def make_server(
-    tmp_path: Path, *, port: int = 0, host: str = "127.0.0.1"
+    tmp_path: Path,
+    *,
+    port: int = 0,
+    host: str = "127.0.0.1",
+    routes: tuple[IpcRoute, ...] = (),
+    static_dirs: tuple[IpcStaticMount, ...] = (),
 ) -> tuple[IpcServer, dict[str, int]]:
     """Start a control plane on an ephemeral port and count shutdown requests."""
     calls = {"shutdown": 0}
@@ -45,6 +56,8 @@ def make_server(
         shutdown_fn=lambda: calls.__setitem__("shutdown", calls["shutdown"] + 1),
         state_fn=lambda: "running",
         options=IpcOptions(host=host, port=port, discovery_path=tmp_path / DISCOVERY_NAME),
+        routes=routes,
+        static_dirs=static_dirs,
     )
     server.start()
     return server, calls
@@ -303,3 +316,79 @@ def test_status_command_flags_a_stale_pid(capsys, project_root) -> None:
         "running": False,
         "discovery_file": str(state_dir / DISCOVERY_NAME),
     }
+
+
+def ui_mount(tmp_path: Path) -> IpcStaticMount:
+    """Return a mounted dashboard directory with one nested file."""
+    ui = tmp_path / "ui"
+    (ui / "sub").mkdir(parents=True)
+    (ui / "app.js").write_text("// app\n", encoding="utf-8")
+    (ui / "sub" / "app.js").write_text("// nested\n", encoding="utf-8")
+    (ui / "index.html").write_text("<html><body>ui</body></html>\n", encoding="utf-8")
+    return IpcStaticMount(route_prefix="/ui", directory=ui, auth=False)
+
+
+def test_static_mount_refuses_windows_style_escapes(tmp_path: Path) -> None:
+    """Both separators, every encoding, streams, and device names are checked."""
+    mount = ui_mount(tmp_path)
+    assert mount.resolve("app.js") == mount.directory / "app.js"
+    assert mount.resolve("sub/app.js") == mount.directory / "sub" / "app.js"
+    assert mount.resolve("sub\\app.js") == mount.directory / "sub" / "app.js"
+    assert mount.resolve("sub%5capp.js") == mount.directory / "sub" / "app.js"
+    escapes = (
+        "../escape.js",
+        "..\\escape.js",
+        "..%5cescape.js",
+        "%2e%2e%5cwindows",
+        "/../../etc/passwd",
+        "C:/windows/system32/cmd.exe",
+        "sub/../escape.js",
+    )
+    for escape in escapes:
+        assert mount.resolve(escape) is None, escape
+    reserved = (
+        "app.js:stream",
+        "report.txt:Zone.Identifier",
+        "NUL",
+        "nul.txt",
+        "com1.log",
+        "index|alt.js",
+        "\x00app.js",
+    )
+    for name in reserved:
+        assert mount.resolve(name) is None, name
+
+
+def test_control_plane_answers_a_windows_style_static_request(tmp_path: Path) -> None:
+    """A percent-encoded backslash never walks out of the mounted directory."""
+    server, _ = make_server(tmp_path, static_dirs=(ui_mount(tmp_path),))
+    base = server.discovery.base_url()  # type: ignore[union-attr]
+    try:
+        with urllib.request.urlopen(base + "/ui/app.js", timeout=2) as response:
+            assert response.status == 200
+            assert response.read().decode("utf-8") == "// app\n"
+        with urllib.request.urlopen(base + "/ui/sub%5capp.js", timeout=2) as response:
+            assert response.status == 200
+            assert response.read().decode("utf-8") == "// nested\n"
+        for target in ("/ui/app.js%3Astream", "/ui/NUL", "/ui/..%5c..%5cetc/passwd"):
+            status, body = http_call(base, target)
+            assert status == 403, (target, body)
+            assert "mounted directory" in str(body), target
+    finally:
+        server.stop()
+
+
+def test_linux_memory_probe_is_cached_at_import(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The probe answers from a constant: no platform import per status snapshot."""
+    assert sys_is_linux() is IS_LINUX
+    monkeypatch.setattr(ipc_module, "IS_LINUX", not IS_LINUX)
+    assert sys_is_linux() is (not IS_LINUX)
+    assert "import platform" not in inspect.getsource(sys_is_linux)
+
+
+def test_process_memory_reports_a_bounded_error_free_reading() -> None:
+    """A status snapshot reads memory without touching the platform module."""
+    memory = process_memory()
+    assert memory["source"] in {"proc/statm", "getrusage"}
+    assert isinstance(memory["rss_bytes"], int)
+    assert memory["rss"] != "-"

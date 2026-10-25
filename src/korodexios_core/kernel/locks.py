@@ -45,22 +45,41 @@ __all__ = [
 
 @dataclass(slots=True)
 class _LockHandle:
-    """Context manager returned by :meth:`NamedLockRegistry.hold`."""
+    """Context manager returned by :meth:`NamedLockRegistry.hold`.
+
+    The name is already reserved by the time this object exists, so taking it is
+    one NamedLock.acquire call and the registry stays honest about names that
+    nobody holds.
+    """
 
     registry: NamedLockRegistry
     name: str
     timeout: float | None = DEFAULT_LOCK_TIMEOUT
     blocking: bool = True
     metadata: Mapping[str, Any] | None = field(default=None)
+    # Set by NamedLockRegistry.hold when it reserves the name; None until then.
     lock: NamedLock | None = None
 
     def __enter__(self) -> NamedLock:
-        self.lock = self.registry.acquire(
-            self.name,
-            timeout=self.timeout,
-            blocking=self.blocking,
-            metadata=self.metadata,
-        )
+        reserved = self.lock
+        if reserved is None:
+            # Constructed without a reservation: the registry takes the name and
+            # records it, which is also the re-entrant path 'acquire' documents.
+            self.lock = self.registry.acquire(
+                self.name,
+                timeout=self.timeout,
+                blocking=self.blocking,
+                metadata=self.metadata,
+            )
+            return self.lock
+        try:
+            self.lock = reserved.acquire(timeout=self.timeout, blocking=self.blocking)
+        except LockTimeoutError:
+            # The reservation was this call's alone: hand the name back so the
+            # registry never lists a lock nobody holds.
+            self.registry.release(self.name)
+            self.lock = None
+            raise
         return self.lock
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
@@ -341,25 +360,39 @@ class NamedLockRegistry:
         blocking: bool = True,
         metadata: Mapping[str, Any] | None = None,
     ) -> _LockHandle:
-        """Return a context manager that takes and releases *name*.
+        """Reserve *name* now; return a context manager that takes and releases it.
 
-        A name this registry already owns raises immediately: nesting the same
-        lock is a design smell worth a stack trace, not a silent double-hold.
+        Inspection and reservation happen in one guarded step, so two threads that
+        call hold on the same name at the same moment cannot both pass a check and
+        then race into acquire: the loser gets the collision error immediately
+        instead of a timeout that depends on who won the file lock first. Nesting
+        the same lock is a design smell worth a stack trace, not a double-hold.
         """
         cleaned = lock_name(name)
-        current = self.get(cleaned)
-        if current is not None and current.held:
-            raise LockTimeoutError(
-                f"named lock {cleaned!r} is already held by this process",
+        handle = _LockHandle(self, cleaned, timeout, blocking, metadata)
+        with self._guard:
+            current = self._held.get(cleaned)
+            if current is not None:
+                raise LockTimeoutError(
+                    f"named lock {cleaned!r} is already held by this process",
+                    name=cleaned,
+                    timeout=timeout,
+                    hint="release it before nesting 'with registry.hold(...)'",
+                )
+            handle.lock = NamedLock(
+                self.path_for(cleaned),
                 name=cleaned,
-                timeout=timeout,
-                hint="release it before nesting 'with registry.hold(...)'",
+                metadata=metadata,
+                logger=self._logger,
+                poll_interval=self._poll,
             )
-        return _LockHandle(self, cleaned, timeout, blocking, metadata)
+            self._held[cleaned] = handle.lock
+        return handle
 
     def get(self, name: str) -> NamedLock | None:
         """Return the handle this registry holds for *name*, or None."""
-        return self._held.get(lock_name(name))
+        with self._guard:
+            return self._held.get(lock_name(name))
 
     def held(self, name: str) -> bool:
         """Return True when this process holds *name*."""

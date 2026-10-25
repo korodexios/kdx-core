@@ -20,9 +20,11 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 
 __all__ = [
+    "MAX_ERROR_LENGTH",
+    "MAX_NAME_SUFFIX",
     "TASK_FAILED_EVENT",
     "TASK_RUN_EVENT",
     "ScheduledTask",
@@ -32,7 +34,23 @@ __all__ = [
 TASK_RUN_EVENT = "core.task.run"
 TASK_FAILED_EVENT = "core.task.failed"
 DEFAULT_POLL_INTERVAL: float = 0.05
+MAX_ERROR_LENGTH: Final[int] = 500
+"""Longest task error the scheduler keeps: the traceback belongs in the log."""
+MAX_NAME_SUFFIX: Final[int] = 1000
+"""How far task-name suffixes are numbered before the scheduler calls it a leak."""
 _NAME_PATTERN = re.compile(r"[^a-z0-9_.-]+")
+
+
+def truncate_error(text: str, limit: int = MAX_ERROR_LENGTH) -> str:
+    """Return *text* capped at *limit* characters, marked as truncated.
+
+    A task that fails every tick would otherwise carry one ever-longer string in
+    every status snapshot and every 'kdx doctor' run; the detail is in the log.
+    """
+    clean = str(text)
+    if len(clean) <= limit:
+        return clean
+    return clean[: max(1, limit - 1)].rstrip() + "\u2026"
 
 
 def task_name(value: Any, fallback: str = "task") -> str:
@@ -68,6 +86,7 @@ class ScheduledTask:
     done: bool = False
 
     def __post_init__(self) -> None:
+        self.last_error = truncate_error(str(self.last_error))
         if not str(self.name).strip():
             raise ValueError("a scheduled task needs a name")
         if not callable(self.callback):
@@ -76,6 +95,11 @@ class ScheduledTask:
             raise ValueError(
                 f"task {self.name!r} needs a positive interval_seconds, got {self.interval_seconds}"
             )
+
+    def record_error(self, text: str) -> str:
+        """Store *text*, capped, as this task's last error and return what was kept."""
+        self.last_error = truncate_error(text)
+        return self.last_error
 
     @property
     def overdue(self) -> bool:
@@ -127,6 +151,8 @@ class TaskScheduler:
         self._source = source
         self._tasks: dict[str, ScheduledTask] = {}
         self._order: list[str] = []
+        self._bases: dict[str, str] = {}
+        self._suffixes: dict[str, int] = {}
         self._guard = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -182,12 +208,8 @@ class TaskScheduler:
             delay = 0.0
         now = float(self._clock())
         with self._guard:
-            key = task_name(name or getattr(callback, "__name__", "")) or "task"
-            if key in self._tasks:
-                suffix = 2
-                while f"{key}-{suffix}" in self._tasks:
-                    suffix += 1
-                key = f"{key}-{suffix}"
+            base = task_name(name or getattr(callback, "__name__", "")) or "task"
+            key = base if base not in self._tasks else self._next_suffix(base)
             task = ScheduledTask(
                 name=key,
                 interval_seconds=interval,
@@ -198,6 +220,7 @@ class TaskScheduler:
                 next_due=now + delay,
             )
             self._tasks[key] = task
+            self._bases[key] = base
             self._order.append(key)
         if self._logger is not None:
             self._logger.debug(
@@ -210,16 +233,44 @@ class TaskScheduler:
         return task
 
     def unschedule(self, name: str) -> bool:
-        """Withdraw the task named *name*; return whether one existed."""
+        """Withdraw the task named *name*; return whether one existed.
+
+        Every internal record of that task goes with it - the task table, the
+        declaration order, and its entry in the suffix bookkeeping - so the tables
+        stay the size of the work that is actually scheduled. A suffix this
+        scheduler handed out is never recycled while another task of the same base
+        is running, so 'sweep-2' in an old log line never names a new task.
+        """
         cleaned = str(name).strip()
         with self._guard:
             existed = self._tasks.pop(cleaned, None) is not None
             if existed:
                 with contextlib.suppress(ValueError):
                     self._order.remove(cleaned)
+                base = self._bases.pop(cleaned, "")
+                if base and base not in set(self._bases.values()):
+                    self._suffixes.pop(base, None)
         return existed
 
     cancel = unschedule
+
+    def _next_suffix(self, base: str) -> str:
+        """Return a free base-N key, never reusing a number already issued.
+
+        Called with the guard held. The scan is bounded by the tasks that are
+        actually scheduled; past MAX_NAME_SUFFIX the scheduler calls it a leak
+        rather than numbering names into the millions.
+        """
+        suffix = self._suffixes.get(base, 1) + 1
+        while suffix <= MAX_NAME_SUFFIX:
+            candidate = f"{base}-{suffix}"
+            if candidate not in self._tasks:
+                self._suffixes[base] = suffix
+                return candidate
+            suffix += 1
+        raise ValueError(
+            f"a {base!r} task number above {MAX_NAME_SUFFIX} is a leak: unschedule one first"
+        )
 
     def task(self, name: str) -> ScheduledTask | None:
         """Return the task named *name*, or None."""
@@ -286,7 +337,7 @@ class TaskScheduler:
             task.callback()
         except Exception as exc:
             task.failures += 1
-            task.last_error = f"{type(exc).__name__}: {exc}"
+            task.record_error(f"{type(exc).__name__}: {exc}")
             task.last_run = moment
             task.last_duration_ms = (time.monotonic() - started) * 1000.0
             task.next_due = moment + float(task.interval_seconds)

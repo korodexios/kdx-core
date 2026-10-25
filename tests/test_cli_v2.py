@@ -114,10 +114,11 @@ def test_config_check_reports_module_schemas(capsys, project_root) -> None:
 
     assert main([*base_args(project_root), "config", "check", "--json"]) == int(ExitCode.SUCCESS)
     payload = json.loads(capsys.readouterr().out)
-    # the built-in proof modules read core configuration only: no schemas yet
-    assert payload["schemas"]["modules"] == 0
+    # v0.2.2: the built-in proof modules declare their own scoped schemas
+    assert payload["schemas"]["modules"] == 3
     assert payload["schemas"]["issues"] == []
-    assert "no module declares a configuration schema" in captured.out
+    for declared in ("backup_engine: 7 keys", "heartbeat: 1 keys", "system_info: 2 keys"):
+        assert declared in captured.out, declared
 
 
 SCHEMA_MODULE = """
@@ -167,7 +168,7 @@ def test_config_check_fails_on_a_schema_violation(capsys, project_root) -> None:
 
     assert main([*args, "config", "check", "--json"]) == int(ExitCode.SUCCESS)
     payload = json.loads(capsys.readouterr().out)
-    assert payload["schemas"]["modules"] == 1
+    assert payload["schemas"]["modules"] == 4  # probe plus the three built-in schemas
     assert payload["schemas"]["issues"] == []
 
 

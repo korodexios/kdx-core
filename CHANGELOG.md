@@ -5,8 +5,58 @@ history lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## [Unreleased]
 
-_Nothing pending: the working tree is the `v0.2.1` tag._
+_Nothing pending: the working tree is the `v0.2.2` tag._
 
+## [0.2.2] - 2026-10-26
+
+A hardening and dogfooding patch on the core API `v2` line: three edge-case defects
+closed, Windows path normalisation in static mounting made strict, and the built-in
+proof modules finally eating their own dogfood. Nothing in the frozen surface changed
+shape - no new export, no changed signature, no renamed configuration key.
+
+### Fixed
+
+- **Named-lock race**: `NamedLockRegistry.hold()` inspected the registry outside its guard
+  and reserved inside it, so two threads could both pass the check and then race into
+  `acquire()` - paying a timeout for a collision that was already decided. Inspection and
+  reservation now happen in one guarded step: the loser of a same-name `hold()` raises
+  `LockTimeoutError` immediately, and a claim that fails leaves no reservation behind.
+- **Static mounts on Windows paths**: `IpcStaticMount.resolve()` unquotes the subpath before
+  validating it (`%5c`, `%2e`, `%3a` are separators and modifiers, not file names), folds `/` and `\` to
+  one separator, refuses Windows drive letters, alternate data streams
+  (`report.txt:Zone.Identifier`), reserved device names (`NUL`, `nul.txt`, `com1.log`), and a
+  stray NUL byte, and verifies containment on the resolved path - with a case-folded
+  second look on case-insensitive filesystems, so a legitimate request is never
+  answered with a spurious 404.
+- **Per-tick platform probe**: `sys_is_linux()` no longer imports `platform` and calls
+  `platform.system()` for every memory reading (one per status snapshot and heartbeat tick);
+  the answer is cached in `IS_LINUX` from `sys.platform` at import.
+- **Scheduler bookkeeping**: a task's `last_error` is capped at `MAX_ERROR_LENGTH` (500) characters,
+  marked with `…`, because the traceback belongs in the log, and `unschedule()` now purges the
+  task table, the declaration order, and the suffix bookkeeping with the task. A number
+  the scheduler handed out is not recycled while another task of the same base is live,
+  so `sweep-2` in an old log line is never a different task, and `MAX_NAME_SUFFIX` bounds the
+  numbering instead of letting it grow quietly.
+
+### Added
+
+- **The built-in proof modules declare the v2 hooks themselves**, which is how the
+  contract gets proven: `backup_engine` declares all seven of its scoped keys (`source`, `dest`,
+  `include`, `exclude`, `max_size`, `dry_run`, `follow_symlinks`), reports whether its source tree is
+  readable and its destination writable, and serves `GET /api/v1/backup/plan`; `heartbeat`
+  declares `interval` and reports whether its ticker thread is alive while the module is
+  running; `system_info` declares `disk_path` and `include_cpu_model` and serves
+  `GET /api/v1/system/snapshot`. `kdx config check` validates three module schemas out of the
+  box, and `GET /api/v1/schema` answers the two new routes.
+- Nineteen regression tests: `tests/test_locks.py` (reservation, threaded claim races),
+  `tests/test_v022_dogfood.py` (declarations, `kdx config check`, the live schema route), new
+  cases in `tests/test_ipc.py` (Windows-style traversal) and `tests/test_scheduler.py` (the
+  bounds), and updated expectations for the built-in schemas in `tests/test_cli_v2.py`.
+
+### Changed
+
+- `kdx config check` prints `backup_engine: 7 keys`, `heartbeat: 1 keys`, and `system_info: 2 keys` under
+  `"Module configuration schemas"` instead of `"no module declares a configuration schema"`.
 ## [0.2.1] - 2026-10-25
 
 A maintenance patch on the core API `v2` line: two defects found during downstream production

@@ -8,10 +8,12 @@ import time
 from typing import Any
 
 from ...cli.render import print_key_values, write_line
+from ...config.schema import ConfigField, ConfigKind, ConfigSchema
 from ...constants import TAG_NOTE, TAG_OK
 from ...kernel.cli_contract import CliArgument, CliCommand, CliRequest, CliSurface
 from ...kernel.context import CoreContext
-from ...kernel.contract import Module
+from ...kernel.contract import Module, ModuleState
+from ...kernel.diagnostics import DiagnosticCheck, DiagnosticSeverity
 
 DEFAULT_INTERVAL = 2.0
 MIN_INTERVAL = 0.05
@@ -40,6 +42,51 @@ class HeartbeatModule(Module):
         super().init(context)
         self._interval = max(MIN_INTERVAL, self.config.get_float("interval", DEFAULT_INTERVAL))
         self.logger.debug("heartbeat configured", interval_seconds=round(self._interval, 3))
+
+    def config_schema(self) -> ConfigSchema:
+        """Declare the one scoped key this module reads."""
+        return ConfigSchema(
+            module=self.name,
+            fields=(
+                ConfigField(
+                    "interval",
+                    kind=ConfigKind.FLOAT,
+                    default=DEFAULT_INTERVAL,
+                    description=f"Seconds between beats; clamped to at least {MIN_INTERVAL}.",
+                ),
+            ),
+        )
+
+    def diagnostics(self) -> tuple[DiagnosticCheck, ...]:
+        """Report whether the ticker thread is alive while the module is running."""
+        if self.state is not ModuleState.RUNNING:
+            # 'kdx doctor' can ask before start() and after stop(); a ticker that
+            # was never started is a fact, not a fault.
+            return (
+                DiagnosticCheck(
+                    name="ticker",
+                    message=f"heartbeat is {self.state.value}",
+                    module=self.name,
+                ),
+            )
+        worker = self._thread
+        if worker is None or not worker.is_alive():
+            return (
+                DiagnosticCheck(
+                    name="ticker",
+                    message="heartbeat thread is not running",
+                    severity=DiagnosticSeverity.ERROR,
+                    hint="start() did not launch the ticker, or supervision marked it dead",
+                    module=self.name,
+                ),
+            )
+        return (
+            DiagnosticCheck(
+                name="ticker",
+                message=f"heartbeat thread alive after {self._ticks} ticks",
+                module=self.name,
+            ),
+        )
 
     def register_cli(self, surface: CliSurface) -> None:
         """Contribute the 'heartbeat status' command to the root surface."""

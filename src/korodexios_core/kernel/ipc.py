@@ -16,6 +16,7 @@ import json
 import mimetypes
 import os
 import secrets
+import sys
 import threading
 import time
 import urllib.error
@@ -25,7 +26,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
-from typing import Any, cast
+from typing import Any, Final, cast
 
 from ..constants import IPC_SCHEMA_VERSION
 from ..units import page_size
@@ -38,6 +39,22 @@ DEFAULT_PORT = 8123
 DEFAULT_TOKEN_BYTES = 16
 WILDCARD_HOSTS = ("0.0.0.0", "::")
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+MAX_SEGMENT_LENGTH: Final[int] = 255
+"""Longest single path segment a static mount will look at."""
+
+WINDOWS_DEVICE_NAMES: Final[frozenset[str]] = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{index}" for index in range(1, 10)}
+    | {f"lpt{index}" for index in range(1, 10)}
+)
+"""Names Windows reserves with or without an extension, so a mount rejects them."""
+
+CASE_INSENSITIVE_PATHS: Final[bool] = os.name == "nt"
+"""Whether this platform compares path case the way Windows does."""
+
+IS_LINUX: Final[bool] = sys.platform.startswith("linux")
+"""Cached once: ru_maxrss is already in bytes on Linux, in KiB everywhere else."""
+
 HEALTH_PATH = "/health"
 STATUS_PATH = "/api/v1/status"
 SHUTDOWN_PATH = "/api/v1/shutdown"
@@ -360,21 +377,34 @@ class IpcStaticMount:
     def resolve(self, subpath: str) -> Path | None:
         """Return the file *subpath* points at inside the directory, or None.
 
-        The guard is the point: every segment is checked, the result is resolved,
-        and a target that lands outside the mounted directory is refused. That is
-        what turns '/../../etc/passwd' into a 404 instead of a leak.
+        The guard is the point: the subpath is unquoted first, because a client's
+        %5c is a separator and not a filename; both separators are folded to one;
+        every segment is checked, including the Windows names a POSIX filesystem
+        happily stores (a drive letter, an alternate data stream after a colon, a
+        reserved device name); the result is resolved; and a target that lands
+        outside the mounted directory is refused. That is what turns
+        '/../../etc/passwd', '..%5c..%5cwindows', and 'report.txt:stream' into a
+        refusal instead of a leak.
         """
-        text = str(subpath).replace(chr(92), "/").strip("/")
+        text = urllib.parse.unquote(str(subpath)).replace("\\", "/").strip("/")
+        if "\x00" in text:
+            return None
         if not text:
             root_dir = Path(self.directory)
             return root_dir if root_dir.is_dir() else None
         parts = PurePosixPath(text).parts
         for part in parts:
-            if part in {"", ".", ".."} or part.startswith("/") or len(part) > 255:
+            if (
+                part in {"", ".", ".."}
+                or part.startswith("/")
+                or len(part) > MAX_SEGMENT_LENGTH
+                or any(character in part for character in ":|")
+                or _windows_device_name(part)
+            ):
                 return None
         root = Path(self.directory).resolve()
         candidate = (root / Path(*parts)).resolve()
-        return candidate if candidate.is_relative_to(root) else None
+        return candidate if _inside_directory(candidate, root) else None
 
     def as_dict(self) -> dict[str, Any]:
         """Return a JSON-friendly view of the mount."""
@@ -387,6 +417,26 @@ class IpcStaticMount:
             "module": self.module,
             "methods": list(STATIC_METHODS),
         }
+
+
+def _windows_device_name(part: str) -> bool:
+    """Return True when *part* is a name Windows reserves, extension or not."""
+    stem = str(part).split(".", 1)[0].strip().lower()
+    return stem in WINDOWS_DEVICE_NAMES
+
+
+def _inside_directory(candidate: Path, root: Path) -> bool:
+    """Return True when *candidate* stayed inside *root* after resolution.
+
+    A case-insensitive filesystem reports the same file under two spellings, so a
+    case fold here keeps a legitimate request from turning into a spurious 404.
+    """
+    if candidate.is_relative_to(root):
+        return True
+    if not CASE_INSENSITIVE_PATHS:
+        return False
+    folded = PurePosixPath(candidate.as_posix().casefold())
+    return folded.is_relative_to(PurePosixPath(root.as_posix().casefold()))
 
 
 def new_token() -> str:
@@ -428,7 +478,7 @@ def process_memory() -> dict[str, Any]:
         import resource
 
         usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        scale = 1 if os.name == "posix" and sys_is_linux() else 1024
+        scale = 1 if IS_LINUX else 1024
         rss = int(usage) * scale
         result.update(rss_bytes=rss, rss=_human_bytes(rss), source="getrusage")
     except (ImportError, ValueError, OSError):
@@ -437,10 +487,12 @@ def process_memory() -> dict[str, Any]:
 
 
 def sys_is_linux() -> bool:
-    """Return True when ru_maxrss is already reported in bytes (Linux)."""
-    import platform
+    """Return True when ru_maxrss is already reported in bytes (Linux).
 
-    return platform.system().lower() == "linux"
+    Answered from a constant computed once at import: a status snapshot or a
+    heartbeat tick must not pay for importing and calling :mod:'platform'.
+    """
+    return IS_LINUX
 
 
 def _human_bytes(value: float) -> str:
