@@ -1,0 +1,445 @@
+"""Periodic tasks: declarative recurring work on the chassis clock.
+
+A module that needs recurring work used to write its own thread, its own stop
+flag, and its own join at shutdown - three pieces of bookkeeping the chassis
+already owns. Here a module declares an interval and a callback instead: the
+scheduler decides when it is due, runs it on the chassis clock, keeps a failure
+from ending the tick loop, and stops cleanly inside core.lifecycle.stop_timeout.
+
+Two execution models share the same bookkeeping. The default is tick-driven: the
+chassis tick loop calls run_due(), so a periodic task costs no thread and stays
+deterministic under test. Threaded mode (core.scheduler.threaded) runs the same
+due-check on one named daemon thread for a chassis whose tick is slow or absent.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import re
+import threading
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+
+__all__ = [
+    "TASK_FAILED_EVENT",
+    "TASK_RUN_EVENT",
+    "ScheduledTask",
+    "TaskScheduler",
+]
+
+TASK_RUN_EVENT = "core.task.run"
+TASK_FAILED_EVENT = "core.task.failed"
+DEFAULT_POLL_INTERVAL: float = 0.05
+_NAME_PATTERN = re.compile(r"[^a-z0-9_.-]+")
+
+
+def task_name(value: Any, fallback: str = "task") -> str:
+    """Return a safe, readable task name for *value*.
+
+    A task name is a label, not a file name: it shows up in events, in 'kdx
+    doctor', and in repr() output, so it is normalised rather than rejected.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    cleaned = _NAME_PATTERN.sub("_", text).strip("_")
+    return cleaned or fallback
+
+
+@dataclass(slots=True)
+class ScheduledTask:
+    """One declared periodic task and everything known about its runs."""
+
+    name: str
+    interval_seconds: float
+    callback: Callable[[], Any]
+    repeat: bool = True
+    first_delay: float | None = None
+    module: str = ""
+    next_due: float = 0.0
+    runs: int = 0
+    failures: int = 0
+    last_run: float | None = None
+    last_duration_ms: float = 0.0
+    last_error: str = ""
+    enabled: bool = True
+    done: bool = False
+
+    def __post_init__(self) -> None:
+        if not str(self.name).strip():
+            raise ValueError("a scheduled task needs a name")
+        if not callable(self.callback):
+            raise ValueError(f"task {self.name!r} needs a callable callback")
+        if float(self.interval_seconds) <= 0:
+            raise ValueError(
+                f"task {self.name!r} needs a positive interval_seconds, got {self.interval_seconds}"
+            )
+
+    @property
+    def overdue(self) -> bool:
+        """Return True when the task is due right now (not done, not disabled)."""
+        return bool(self.enabled) and not self.done
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return a JSON-friendly view shown by 'kdx doctor' and status."""
+        return {
+            "name": self.name,
+            "interval_seconds": round(float(self.interval_seconds), 6),
+            "repeat": bool(self.repeat),
+            "runs": int(self.runs),
+            "failures": int(self.failures),
+            "last_run": round(self.last_run, 3) if self.last_run is not None else None,
+            "last_duration_ms": round(float(self.last_duration_ms), 3),
+            "last_error": self.last_error,
+            "enabled": bool(self.enabled),
+            "done": bool(self.done),
+            "module": self.module,
+        }
+
+
+class TaskScheduler:
+    """Runs declared periodic callbacks on a monotonic clock, with clean stop.
+
+    Every method that mutates tasks is safe to call from a module's init(),
+    start(), or a control-plane route: the scheduler owns no thread unless it is
+    asked to, so a module can declare work before the chassis decides how to run
+    it. Callback failures are counted, logged, and published - never re-raised -
+    because one bad task must not take the tick loop down with it.
+    """
+
+    def __init__(
+        self,
+        *,
+        logger: Any = None,
+        bus: Any = None,
+        clock: Callable[[], float] = time.monotonic,
+        enabled: bool = True,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
+        source: str = "scheduler",
+    ) -> None:
+        self._logger = logger
+        self._bus = bus
+        self._clock = clock
+        self._enabled = bool(enabled)
+        self._poll = max(0.01, float(poll_interval))
+        self._source = source
+        self._tasks: dict[str, ScheduledTask] = {}
+        self._order: list[str] = []
+        self._guard = threading.RLock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._started = False
+        self._started_at: float | None = None
+
+    @property
+    def enabled(self) -> bool:
+        """Return True when this scheduler answers run_due() at all."""
+        return self._enabled
+
+    @property
+    def running(self) -> bool:
+        """Return True between start() and stop()."""
+        return self._started
+
+    @property
+    def thread_alive(self) -> bool:
+        """Return True while the optional scheduler thread is serving."""
+        thread = self._thread
+        return bool(thread is not None and thread.is_alive())
+
+    def schedule(
+        self,
+        interval_seconds: float,
+        callback: Callable[[], Any],
+        *,
+        name: str = "",
+        first_delay: float | None = None,
+        repeat: bool = True,
+        module: str = "",
+        run_now: bool = False,
+    ) -> ScheduledTask:
+        """Declare a task running every *interval_seconds*.
+
+        The name defaults to the callback's own - 'flush' for flush() - and is made
+        unique with a numeric suffix, so two modules can both schedule 'sweep'
+        without one silently replacing the other. The first run lands one interval
+        out, so booting never opens with a burst; pass `first_delay=0.0` (or
+        `run_now=True`) to run immediately, and `first_delay=30` to hold off.
+        Intervals are always measured from the run that just happened.
+        """
+        if not callable(callback):
+            raise TypeError(
+                f"schedule({interval_seconds}, callback) needs a callable, "
+                f"got {type(callback).__name__}"
+            )
+        interval = float(interval_seconds)
+        if interval <= 0:
+            raise ValueError(f"interval_seconds must be positive, got {interval_seconds!r}")
+        delay = interval if first_delay is None else max(0.0, float(first_delay))
+        if run_now:
+            delay = 0.0
+        now = float(self._clock())
+        with self._guard:
+            key = task_name(name or getattr(callback, "__name__", "")) or "task"
+            if key in self._tasks:
+                suffix = 2
+                while f"{key}-{suffix}" in self._tasks:
+                    suffix += 1
+                key = f"{key}-{suffix}"
+            task = ScheduledTask(
+                name=key,
+                interval_seconds=interval,
+                callback=callback,
+                repeat=repeat,
+                first_delay=None if first_delay is None else delay,
+                module=module,
+                next_due=now + delay,
+            )
+            self._tasks[key] = task
+            self._order.append(key)
+        if self._logger is not None:
+            self._logger.debug(
+                "task scheduled",
+                name=key,
+                interval_seconds=round(interval, 6),
+                repeat=bool(repeat),
+                module=module or None,
+            )
+        return task
+
+    def unschedule(self, name: str) -> bool:
+        """Withdraw the task named *name*; return whether one existed."""
+        cleaned = str(name).strip()
+        with self._guard:
+            existed = self._tasks.pop(cleaned, None) is not None
+            if existed:
+                with contextlib.suppress(ValueError):
+                    self._order.remove(cleaned)
+        return existed
+
+    cancel = unschedule
+
+    def task(self, name: str) -> ScheduledTask | None:
+        """Return the task named *name*, or None."""
+        return self._tasks.get(str(name).strip())
+
+    def tasks(self) -> tuple[ScheduledTask, ...]:
+        """Return every declared task, in declaration order."""
+        return tuple(self._tasks[key] for key in self._order if key in self._tasks)
+
+    def pending(self, *, now: float | None = None) -> list[ScheduledTask]:
+        """Return the tasks due at *now*; the scheduler's clock decides by default."""
+        moment = float(self._clock() if now is None else now)
+        return [
+            task
+            for task in self.tasks()
+            if task.enabled and not task.done and task.next_due <= moment
+        ]
+
+    def next_due_in(self, *, now: float | None = None) -> float | None:
+        """Return seconds until the soonest due task, or None when nothing is due."""
+        moments = [
+            task.next_due
+            for task in self.tasks()
+            if task.enabled and not task.done
+        ]
+        if not moments:
+            return None
+        moment = float(self._clock() if now is None else now)
+        return max(0.0, min(moments) - moment)
+
+    def run_due(self, *, now: float | None = None) -> list[str]:
+        """Run every task due at *now*; return the names that ran.
+
+        The clock is sampled once, so a slow callback cannot make its own task
+        look overdue twice. A task that raised keeps its slot: the failure is
+        counted, logged, and published, and the interval still applies.
+        """
+        if not self._enabled:
+            return []
+        moment = float(self._clock() if now is None else now)
+        due = self.pending(now=moment)
+        ran: list[str] = []
+        for task in due:
+            if self._stop.is_set():
+                break
+            if self.run_task(task.name, now=moment):
+                ran.append(task.name)
+        return ran
+
+    def run_task(self, name: str, *, now: float | None = None) -> bool:
+        """Run one task by name right now, ignoring the clock; return True on success.
+
+        This is also the manual trigger a CLI or a control-plane route uses to ask
+        for work immediately, which is why the clock is optional here.
+        """
+        task = self._tasks.get(str(name).strip())
+        if task is None:
+            return False
+        if not self._enabled or task.done:
+            return False
+        moment = float(self._clock() if now is None else now)
+        started = time.monotonic()
+        try:
+            task.callback()
+        except Exception as exc:
+            task.failures += 1
+            task.last_error = f"{type(exc).__name__}: {exc}"
+            task.last_run = moment
+            task.last_duration_ms = (time.monotonic() - started) * 1000.0
+            task.next_due = moment + float(task.interval_seconds)
+            if not task.repeat:
+                task.done = True
+                task.enabled = False
+            self._log_task_failure(task)
+            self._publish(TASK_FAILED_EVENT, task)
+            return False
+        task.runs += 1
+        task.last_run = moment
+        task.last_error = ""
+        task.last_duration_ms = (time.monotonic() - started) * 1000.0
+        task.next_due = moment + float(task.interval_seconds)
+        if not task.repeat:
+            task.done = True
+            task.enabled = False
+        if self._logger is not None:
+            self._logger.debug(
+                "task ran",
+                name=task.name,
+                runs=task.runs,
+                duration_ms=round(task.last_duration_ms, 3),
+            )
+        self._publish(TASK_RUN_EVENT, task)
+        return True
+
+    def start(self, *, threaded: bool | None = None) -> TaskScheduler:
+        """Open the scheduler; join the tick loop, or take a thread when asked.
+
+        Starting is idempotent. Threaded mode names its thread 'kdx-scheduler' so
+        a stack dump says who owns it, and the loop only ever calls run_due() - the
+        intervals, the failures, and the stop logic all live in one place.
+        """
+        if self._started:
+            return self
+        self._started = True
+        self._started_at = time.monotonic()
+        self._stop.clear()
+        if threaded:
+            self._thread = threading.Thread(
+                target=self._loop, name="kdx-scheduler", daemon=True
+            )
+            self._thread.start()
+        if self._logger is not None:
+            self._logger.debug(
+                "scheduler started",
+                tasks=len(self._tasks),
+                threaded=bool(threaded),
+                enabled=self._enabled,
+            )
+        return self
+
+    def _loop(self) -> None:
+        """Poll the due list on the scheduler thread until stop() fires."""
+        while not self._stop.is_set():
+            wait_for = self.next_due_in()
+            if wait_for is None:
+                wait_for = self._poll
+            self._stop.wait(max(0.005, min(float(wait_for), self._poll * 4)))
+            if self._stop.is_set():
+                break
+            self.run_due()
+
+    def stop(self, timeout: float | None = None) -> None:
+        """Stop the scheduler and join its thread; the caller owns the deadline.
+
+        The chassis passes core.lifecycle.stop_timeout, so a periodic task that
+        outlives its budget is reported, not allowed to hold the process open.
+        """
+        if not self._started:
+            return
+        thread = self._thread
+        self._thread = None
+        self._stop.set()
+        self._started = False
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=max(0.0, float(timeout)) if timeout else self._poll)
+            if thread.is_alive() and self._logger is not None:
+                self._logger.warning(
+                    "scheduler thread outlived the stop timeout",
+                    name=thread.name,
+                    timeout=timeout,
+                )
+        logger = self._logger
+        if logger is not None:
+            logger.debug(
+                "scheduler stopped", runs=self.total_runs(), failures=self.total_failures()
+            )
+
+    def stats(self) -> dict[str, Any]:
+        """Return the scheduler's self-report for health and status payloads."""
+        return {
+            "enabled": self._enabled,
+            "running": self._started,
+            "threaded": self.thread_alive,
+            "scheduled": len(self._tasks),
+            "runs": self.total_runs(),
+            "failures": self.total_failures(),
+            "uptime_seconds": round(max(0.0, time.monotonic() - self._started_at), 3)
+            if self._started_at is not None
+            else 0.0,
+            "tasks": [task.as_dict() for task in self.tasks()],
+        }
+
+    as_dict = stats
+
+    def describe(self) -> str:
+        """Return the one-line summary shown by 'kdx doctor'."""
+        tasks = self.tasks()
+        if not tasks:
+            return "no scheduled tasks"
+        parts = [
+            f"{task.name} every {task.interval_seconds:g}s ({task.runs} run(s))"
+            for task in tasks
+        ]
+        return f"{len(tasks)} scheduled task(s): " + ", ".join(parts)
+
+    def failing_tasks(self) -> tuple[ScheduledTask, ...]:
+        """Return the tasks with at least one failed run."""
+        return tuple(task for task in self.tasks() if task.failures)
+
+    def total_runs(self) -> int:
+        """Return the runs across every declared task."""
+        return int(sum(task.runs for task in self.tasks()))
+
+    def total_failures(self) -> int:
+        """Return the failures across every declared task."""
+        return int(sum(task.failures for task in self.tasks()))
+
+    def _publish(self, event: str, task: ScheduledTask) -> None:
+        bus = self._bus
+        if bus is None:
+            return
+        bus.publish(event, task.as_dict(), source=self._source)
+
+    def _log_task_failure(self, task: ScheduledTask) -> None:
+        if self._logger is None:
+            return
+        self._logger.warning(
+            f"scheduled task {task.name!r} failed: {task.last_error}",
+            name=task.name,
+            failures=task.failures,
+        )
+
+    def __len__(self) -> int:
+        return len(self._tasks)
+
+    def __contains__(self, name: object) -> bool:
+        return str(name).strip() in self._tasks
+
+    def __repr__(self) -> str:
+        return (
+            f"TaskScheduler(tasks={list(self._tasks)}, running={self._started}, "
+            f"enabled={self._enabled})"
+        )

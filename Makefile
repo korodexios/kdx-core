@@ -35,7 +35,8 @@ test:
 
 # The floor is a ratchet: it is set one point under the measured total, so a
 # removed test or a new untested branch fails the bar instead of sliding by.
-COVERAGE_FLOOR ?= 82
+# Measured 85% (320 tests) on the Core API v2 surface.
+COVERAGE_FLOOR ?= 86
 
 coverage:
 	$(PY) -m pytest -q --cov=korodexios_core --cov-report=term-missing --cov-fail-under=$(COVERAGE_FLOOR)

@@ -13,6 +13,7 @@ from ..logging.engine import KorodexiosLogger
 Handler = Callable[[int], None]
 
 _EXTRA_SIGNALS: tuple[str, ...] = ("SIGINT", "SIGTERM", "SIGBREAK")
+_RELOAD_SIGNALS: tuple[str, ...] = ("SIGHUP",)
 
 
 def signal_name(signum: int) -> str:
@@ -31,35 +32,55 @@ class SignalCoordinator:
         logger: KorodexiosLogger,
         *,
         signals: tuple[str, ...] = _EXTRA_SIGNALS,
+        reload_signals: tuple[str, ...] = _RELOAD_SIGNALS,
+        reload_enabled: bool = True,
     ) -> None:
         self._logger = logger
         self._requested_names = tuple(signals)
+        self._requested_reload_names = tuple(reload_signals) if reload_enabled else ()
+        self._reload_enabled = bool(reload_enabled)
         self._previous: dict[int, object] = {}
         self._installed: tuple[int, ...] = ()
+        self._installed_reload: tuple[int, ...] = ()
         self._event = threading.Event()
+        self._reload_event = threading.Event()
         self._lock = threading.RLock()
         self._signal_number: int | None = None
         self._count = 0
+        self._reload_count = 0
         self._clean_stop = False
 
     def install(self) -> tuple[int, ...]:
-        """Install handlers, returning the signal numbers actually handled."""
+        """Install handlers, returning the signal numbers actually handled.
+
+        Shutdown signals stop the daemon; reload signals (SIGHUP on POSIX) only
+        ask it to re-read its configuration. A platform without SIGHUP, such as
+        Windows, simply skips it.
+        """
         installed: list[int] = []
+        installed_reload: list[int] = []
         skipped: list[str] = []
-        for name in self._requested_names:
+        for name, builder, bucket in (
+            *((name, self._build_handler, installed) for name in self._requested_names),
+            *(
+                (name, self._build_reload_handler, installed_reload)
+                for name in self._requested_reload_names
+            ),
+        ):
             signum = getattr(signal, name, None)
             if signum is None:
                 skipped.append(name)
                 continue
-            handler = self._build_handler(int(signum))
+            handler = builder(int(signum))
             try:
                 self._previous[int(signum)] = signal.signal(int(signum), handler)
             except (ValueError, OSError, RuntimeError):
                 # Not the main thread (embedded use): degrade instead of crashing.
                 skipped.append(name)
                 continue
-            installed.append(int(signum))
+            bucket.append(int(signum))
         self._installed = tuple(installed)
+        self._installed_reload = tuple(installed_reload)
         if skipped:
             self._logger.debug(
                 "signal handlers partially installed",
@@ -78,12 +99,62 @@ class SignalCoordinator:
                     continue
             self._previous.clear()
             self._installed = ()
+            self._installed_reload = ()
 
     def _build_handler(self, signum: int) -> Callable[[int, FrameType | None], None]:
         def _handler(number: int, _frame: FrameType | None) -> None:
             self.record(int(number) or signum)
 
         return _handler
+
+    def _build_reload_handler(
+        self, signum: int
+    ) -> Callable[[int, FrameType | None], None]:
+        def _handler(number: int, _frame: FrameType | None) -> None:
+            self.record_reload(int(number) or signum)
+
+        return _handler
+
+    def record_reload(self, signum: int | None = None) -> None:
+        """Record a reload request; the daemon keeps running."""
+        with self._lock:
+            self._reload_count += 1
+            count = self._reload_count
+        name = signal_name(int(signum)) if signum is not None else "RELOAD"
+        self._logger.info(
+            f"{TAG_NOTE} configuration reload requested by {name}",
+            signal=name,
+            reloads=count,
+        )
+        self._reload_event.set()
+
+    @property
+    def reload_requested(self) -> bool:
+        """Return True when a reload was requested and not yet served."""
+        return self._reload_event.is_set()
+
+    @property
+    def reload_count(self) -> int:
+        """Return how many reload requests arrived."""
+        return self._reload_count
+
+    @property
+    def reload_event(self) -> threading.Event:
+        """Return the event a reload request sets."""
+        return self._reload_event
+
+    @property
+    def reload_enabled(self) -> bool:
+        """Return True when SIGHUP (or an IPC reload) can be served."""
+        return self._reload_enabled
+
+    def request_reload(self) -> None:
+        """Ask for a configuration reload, as the IPC route and tests do."""
+        self.record_reload(None)
+
+    def clear_reload(self) -> None:
+        """Forget a served reload request so the next one is visible again."""
+        self._reload_event.clear()
 
     def record(self, signum: int) -> None:
         """Record a signal, logging only the first arrival."""
@@ -120,8 +191,10 @@ class SignalCoordinator:
         with self._lock:
             self._signal_number = None
             self._count = 0
+            self._reload_count = 0
             self._clean_stop = False
         self._event.clear()
+        self._reload_event.clear()
 
     @property
     def shutdown_requested(self) -> bool:
@@ -156,7 +229,8 @@ class SignalCoordinator:
         """Return the one-line status shown by 'kdx doctor'."""
         installed = ", ".join(signal_name(num) for num in self._installed) or "(none)"
         state = signal_name(self._signal_number) if self._signal_number is not None else "none"
-        return f"handlers={installed}; received={state}; count={self._count}"
+        reloads = f"; reloads={self._reload_count}" if self._reload_enabled else ""
+        return f"handlers={installed}; received={state}; count={self._count}{reloads}"
 
     def as_dict(self) -> dict[str, object]:
         """Return a JSON-friendly view of the signal state."""
@@ -168,10 +242,15 @@ class SignalCoordinator:
             "count": self._count,
             "shutdown_requested": self._event.is_set(),
             "clean_stop": self._clean_stop,
+            "reload_enabled": self._reload_enabled,
+            "reload_count": self._reload_count,
+            "reload_requested": self._reload_event.is_set(),
+            "reload_signals": [signal_name(num) for num in self._installed_reload],
         }
 
     def __repr__(self) -> str:
         return (
             f"SignalCoordinator(installed={self._installed}, "
-            f"received={self._signal_number!r}, count={self._count})"
+            f"received={self._signal_number!r}, count={self._count}, "
+            f"reloads={self._reload_count})"
         )

@@ -44,8 +44,23 @@ ROOT_MARKER_PROJECTS: Final[tuple[str, ...]] = ("korodexios-core",)
 DOTENV_NAME: Final[str] = ".env"
 
 STATE_DIR_NAME: Final[str] = "var"
+INSTANCE_LOCK_NAME: Final[str] = "chassis.lock"
+"""Single-instance lock file inside the state directory; one daemon per root."""
 LOG_DIR_NAME: Final[str] = "var/log"
 DATA_DIR_NAME: Final[str] = "var/lib"
+DURABLE_DIR_NAME: Final[str] = "data"
+"""Project-level durable storage, outside the gitignored state directory.
+
+Databases, ledgers, and anything else an operator may want to commit live here;
+the state directory holds what a run may throw away.
+"""
+LOCKS_DIR_NAME: Final[str] = "locks"
+"""Named advisory locks, one file each, live below the state directory."""
+LOCK_FILE_SUFFIX: Final[str] = ".lock"
+"""Suffix on every named lock file, so 'ls var/locks' reads as a lock listing."""
+DEFAULT_LOCK_TIMEOUT: Final[float] = 0.0
+"""Fail fast: a named lock is free, busy, or retried by the caller."""
+LOCK_POLL_INTERVAL: Final[float] = 0.02
 
 ENCODING: Final[str] = "utf-8"
 KEY_SEPARATOR: Final[str] = "."
@@ -99,6 +114,59 @@ def tags_for(encoding: str | None) -> dict[str, str]:
 SIGNAL_EXIT_BASE: Final[int] = 128
 DEFAULT_STOP_TIMEOUT: Final[float] = 5.0
 DEFAULT_TICK_INTERVAL: Final[float] = 1.0
+
+REDACTION: Final[str] = "***redacted***"
+"""Stand-in shown instead of a sensitive value in reports and the CLI."""
+
+SECRET_KEY_SEGMENTS: Final[frozenset[str]] = frozenset(
+    {
+        "token",
+        "secret",
+        "password",
+        "passwd",
+        "passphrase",
+        "credential",
+        "credentials",
+        "api_key",
+        "apikey",
+        "access_key",
+        "secret_key",
+        "private_key",
+        "auth_token",
+        "dsn",
+    }
+)
+"""Key segments that mark a value as sensitive when it is a non-empty string."""
+
+SECRET_KEY_WORDS: Final[frozenset[str]] = frozenset(
+    {
+        "token",
+        "secret",
+        "password",
+        "passwd",
+        "passphrase",
+        "credential",
+        "credentials",
+        "apikey",
+        "dsn",
+    }
+)
+"""Single words that name a secret inside a snake_case key segment."""
+
+SECRET_KEY_COMPOUNDS: Final[tuple[str, ...]] = (
+    "access_key",
+    "secret_key",
+    "private_key",
+    "public_key",
+    "api_key",
+    "auth_token",
+    "access_token",
+    "refresh_token",
+    "session_key",
+    "client_secret",
+)
+"""Two-word secret names that survive inside a longer segment such as
+'modules.backup.aws_access_key_id'."""
 
 LOG_LEVELS: Final[tuple[str, ...]] = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 

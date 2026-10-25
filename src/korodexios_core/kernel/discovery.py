@@ -126,6 +126,71 @@ class DiscoveryCandidate:
     instance: Any
 
 
+@dataclass(frozen=True, slots=True)
+class DiscoveryOptional:
+    """A module skipped because an optional package it wants is not installed.
+
+    A missing third-party import is an installation question, not a broken
+    module: the chassis notes it politely and boots on, instead of failing.
+    """
+
+    name: str
+    module: str
+    hint: str = ""
+    origin: str = ""
+
+    def describe(self) -> str:
+        """Return the one-line rendering used by 'kdx modules list'."""
+        where = f" ({self.origin})" if self.origin else ""
+        hint = f" - {self.hint}" if self.hint else ""
+        return f"{self.name} optional{where}: needs {self.module}{hint}"
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return a JSON-friendly view of the skipped module."""
+        return {
+            "name": self.name,
+            "module": self.module,
+            "hint": self.hint,
+            "origin": self.origin,
+        }
+
+
+_INSTALL_NAMES: dict[str, str] = {
+    "yaml": "pip install pyyaml",
+    "PIL": "pip install pillow",
+    "dateutil": "pip install python-dateutil",
+    "sklearn": "pip install scikit-learn",
+    "bs4": "pip install beautifulsoup4",
+    "dotenv": "pip install python-dotenv",
+}
+
+_CHASSIS_ROOTS: tuple[str, ...] = ("korodexios_core", "korodexios_ext")
+
+
+def classify_import_error(
+    exc: BaseException,
+    name: str,
+    origin: str = "",
+) -> DiscoveryOptional | None:
+    """Return an optional-dependency record when *exc* is a missing foreign import.
+
+    The chassis' own packages and the module's own package are never optional:
+    those stay hard import failures, so broken code is never mistaken for a
+    missing extra.
+    """
+    cause: BaseException = exc.__cause__ if exc.__cause__ is not None else exc
+    if not isinstance(cause, ModuleNotFoundError):
+        return None
+    missing = str(getattr(cause, "name", "") or "").strip()
+    if not missing:
+        return None
+    root = missing.split(".", 1)[0]
+    if root == name or root in _CHASSIS_ROOTS or root.startswith("korodexios_ext"):
+        return None
+    hint = _INSTALL_NAMES.get(root, f"pip install {root}")
+    return DiscoveryOptional(name=name, module=missing, hint=hint, origin=origin)
+
+
 @dataclass(slots=True)
 class DiscoveryReport:
     """Outcome of one discovery sweep."""
@@ -133,6 +198,7 @@ class DiscoveryReport:
     candidates: list[DiscoveryCandidate] = field(default_factory=list)
     failures: list[DiscoveryFailure] = field(default_factory=list)
     skipped: list[tuple[str, str]] = field(default_factory=list)
+    optional: list[DiscoveryOptional] = field(default_factory=list)
 
     def names(self) -> list[str]:
         """Return the names of every loadable module."""
@@ -140,15 +206,21 @@ class DiscoveryReport:
 
     def summary(self) -> str:
         """Return the counts line printed after a scan."""
-        return (
-            f"ready={len(self.candidates)} skipped={len(self.skipped)} failed={len(self.failures)}"
-        )
+        parts = [
+            f"ready={len(self.candidates)}",
+            f"skipped={len(self.skipped)}",
+            f"failed={len(self.failures)}",
+        ]
+        if self.optional:
+            parts.append(f"optional={len(self.optional)}")
+        return " ".join(parts)
 
     def as_dict(self) -> dict[str, Any]:
         """Return a JSON-friendly view of the sweep."""
         return {
             "ready": [candidate.spec.as_dict() for candidate in self.candidates],
             "skipped": [{"name": name, "reason": reason} for name, reason in self.skipped],
+            "optional": [item.as_dict() for item in self.optional],
             "failures": [
                 {
                     "name": failure.name,
@@ -278,9 +350,19 @@ class ModuleDiscovery:
         try:
             module_obj = self._import(name, package_dir, entry_file, origin, package_prefix)
         except ModuleDiscoveryError as exc:
+            optional = classify_import_error(exc, name, str(entry_file))
+            if optional is not None:
+                report.optional.append(optional)
+                self._log("info", optional.describe(), module=name, optional=optional.module)
+                return
             report.failures.append(DiscoveryFailure(name, exc.stage, exc.message, str(entry_file)))
             return
         except Exception as exc:
+            optional = classify_import_error(exc, name, str(entry_file))
+            if optional is not None:
+                report.optional.append(optional)
+                self._log("info", optional.describe(), module=name, optional=optional.module)
+                return
             report.failures.append(
                 DiscoveryFailure(
                     name,

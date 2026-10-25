@@ -13,12 +13,16 @@ section is a contract, not a suggestion. Human-oriented narrative lives in
 | Distribution | `korodexios-core` |
 | Import root | `korodexios_core` |
 | Console scripts | `kdx` (primary short alias), `korodexios` (canonical) |
-| Version | `0.1.0` (production), core API frozen at `v2` (additive changes only inside v2) |
+| Version | `0.2.0` (production), core API frozen at `v2` (additive changes only inside v2) |
 | Runtime | CPython 3.11+, stdlib first (PyYAML for config, rich for the CLI surface) |
 | Config file | `kdx.yml` / `kdx.yaml` / `kdx.json` (then `korodexios.*`) |
 | Env prefix | `KDX_` primary; `KORODEXIOS_` is the canonical long prefix |
 | Layout | `kernel/` infrastructure, `modules/` pure discovery root, `cli/` thin clients |
-| State dir | `var/` (logs, `chassis.ipc`); never committed |
+| State dir | `var/` (logs, `chassis.ipc`, `chassis.lock`); never committed |
+| Instance lock | `var/chassis.lock` in the state dir; a second daemon on the same root exits `1` |
+| Named locks | `var/locks/<name>.lock` via `Chassis.acquire_lock(name)` or `context.paths.lock(name)`; released as one unit at shutdown |
+| Durable dir | `data/` (`core.paths.durable_dir`): project state that outlives a moved `state_dir` |
+| Periodic tasks | `context.schedule(interval_seconds, callback)`: the chassis clock runs them and stops them inside `stop_timeout` |
 | Public surface | the package root `__all__`; anything deeper is importable but internal |
 
 ## 1. Golden Rules of the Chassis
@@ -68,9 +72,36 @@ A module is any object exposing these seven members (`REQUIRED_MEMBERS`):
   when valid); `as_module(candidate)` raises the same information as an exception.
 - A foreign object that satisfies the seven members structurally is accepted
   (`ModuleProtocol`); no base class is required.
+- `register_cli` runs exactly once per module, during `Chassis.initialize()`, into a
+  headless surface: the command tree is kernel state, not argparse state. `kdx` later
+  replays those same `CliCommand` objects into its own surface, so an embedded daemon
+  (`rag serve` and friends) answers `POST /api/v1/rpc` without importing `cli/entry.py`.
 - Lifecycle states: `new` -> `initialized` -> `running` -> `stopped`, with `failed`
   and `disabled` as terminal side doors. A module that raises during a phase is marked
   `failed`, logged, and the chassis keeps booting - one bad plugin never kills the boot.
+
+### 2.1 Optional hooks (Core API v2)
+
+The seven members above are the whole contract. These extra methods are duck-typed
+opportunities, never requirements - the chassis `getattr`s them and moves on:
+
+| Hook | Returns | What the chassis does with it |
+| --- | --- | --- |
+| `config_schema()` | `ConfigSchema`, fields, or a mapping | `kdx config check` and boot validate the module's scoped keys |
+| `ipc_routes()` | `IpcRoute` sequence | the control plane answers the module's paths, token-gated per route |
+| `diagnostics()` | `DiagnosticCheck` sequence | `kdx doctor` prints them and exits `1` when one is an error |
+| `workers()` | name -> `Thread` mapping or pairs | supervision watches them; a dead worker marks the module `failed` |
+| `on_config_reload(config)` | nothing | runs with the module's scoped config after `kdx reload` or SIGHUP |
+| `static_dirs()` | `IpcStaticMount` sequence | the control plane serves those directories on its own port, labelling each file by its own media type |
+
+- A hook that raises is logged and skipped: a broken `diagnostics()` never stops a boot,
+  a doctor run, or a reload.
+- `kdx doctor` also reports the chassis' own checks (log file, state dirs, stale lock,
+  control-plane errors, failing scheduled tasks, abandoned named locks), so a module only
+  contributes what the core cannot know.
+- The base class hands over two chassis services without any plumbing: the read-only
+  `scheduler` property (declare recurring work in `start()`, see section 16) and
+  `context.paths.durable_dir` for files that must survive a moved state directory.
 
 ## 3. Canonical Module Blueprint
 
@@ -274,6 +305,12 @@ What the blueprint proves:
 - `has(key)`, `keys()`, `child("prefix")`, `source_of(key)`, `origin_of(key)`, and
   `as_dict(redact=True)` are available on the layered view.
 - Provenance is per key: `ConfigSource.DEFAULT < FILE < LOCAL < ENV < CLI`.
+- Secret-shaped keys (`token`, `secret`, `password`, `api_key`, `access_token`, `dsn`, ...)
+  are masked as `***redacted***` by `as_dict(redact=True)` and by `kdx config show`;
+  `kdx config show --reveal` is the operator's way to see the real value.
+- `core.env.aliases` (plus `kdx --env-alias NAME=core.key`) maps a legacy environment
+  variable onto a dotted key. The alias appears in provenance as
+  `environment alias NAME`, and a real `KDX_` variable always outranks it.
 - Module code never sees the `modules.<name>.` prefix; the chassis strips it.
 
 ## 5. Namespaced Logging
@@ -323,7 +360,16 @@ returns a process exit code; `0` means success.
 - Modules call `surface.add_command(...)` once per command; the chassis builds
   argparse and the wizard from the same tree, so a module command is automatically
   documented and menu-driven.
-- Never construct an `ArgumentParser` inside a module.
+- `subcommands` nests to any depth, and one tree drives everything: the argparse surface,
+  the wizard menus, and `POST /api/v1/rpc` all walk `kdx db index rebuild` the same way and
+  report a `LookupError` naming the group that has no such child.
+- `CliCommand` refuses a blank name, a duplicate subcommand, and a tree with neither a
+  handler nor subcommands - all at construction, not at parse time.
+- `CliArgument.required=True` is honoured for options: argparse insists, and the missing
+  option exits `2`. It is refused for `store_true`, `count`, and `*_const` actions, because a
+  flag is `False` when absent and so is never required.
+- A positional argument receives its `default` only when that default is not `None`, so
+  `nargs="?"` plus `default="."` lands on `"."` instead of on `None`.
 
 ## 8. Module Manifest Reference - `kdx_module.toml`
 
@@ -386,6 +432,12 @@ environment (`.env` then process env) -> CLI overrides**.
   (and the `KORODEXIOS_` spelling).
 - Secrets: never read `os.environ` in a module; a value that came from the
   environment must be visible in `kdx config show` provenance.
+- `core.paths.state_dir` and `core.paths.data_dir` move the writable roles off `var/`;
+  `Chassis.create()` creates both before any module starts, so a module never `mkdir`s
+  its own home.
+- `Chassis.create()` accepts an already-built `LayeredConfig` (`ChassisOptions.config`):
+  an embedder that resolved configuration itself hands it over and the chassis does not
+  read the disk again.
 
 ## 10. Lifecycle, Signals, Exit Codes
 
@@ -406,6 +458,14 @@ dependency order -> lifecycle loop -> `stop()` in reverse -> close logging.
 - `stop()` always runs, including after a failed `start()`, and is bounded by
   `core.lifecycle.stop_timeout`.
 - `kdx run --once` publishes a single tick and stops: the CI-safe smoke test.
+- SIGHUP (POSIX) asks for a configuration reload without exiting: the layers are
+  re-read, the diff is published as `core.config.reloaded`, and each module's
+  `on_config_reload` runs. `core.reload.sighup` (default `true`) turns that off;
+  `kdx reload` asks the same thing of a running daemon over IPC.
+- Before any module starts, the daemon claims `var/chassis.lock`. A second daemon on the
+  same root raises `InstanceLockError` naming the live holder instead of binding a
+  fallback port nobody asked for. `--no-instance-lock` (or `core.instance.lock: false`) is
+  for a one-shot command that must not disturb the daemon.
 
 ## 11. IPC Control Plane
 
@@ -415,6 +475,8 @@ dependency order -> lifecycle loop -> `stop()` in reverse -> close logging.
 | `/api/v1/schema` | GET | never |
 | `/api/v1/status` | GET | when `core.ipc.auth` is on |
 | `/api/v1/shutdown` | POST | when auth is on, or when anonymous shutdown is disallowed |
+| `/api/v1/reload` | POST | when `core.ipc.auth` is on |
+| `/api/v1/rpc` | POST | when `core.ipc.auth` is on |
 
 - Bind address and port come from `core.ipc.host` / `core.ipc.port` (CLI
   `--ipc-host` / `--ipc-port`, or `kdx run --host/--port`). `0.0.0.0` means LAN
@@ -429,6 +491,32 @@ dependency order -> lifecycle loop -> `stop()` in reverse -> close logging.
   unauthenticated client stop the daemon.
 - `kdx status --target http://host:port [--token SECRET]` queries any reachable
   daemon; `--json` is the machine contract.
+- `POST /api/v1/reload` re-reads the configuration in the running daemon; the reply
+  carries `reloaded` and the list of `changed` keys.
+- `POST /api/v1/rpc` with `{"command": "heartbeat status", "args": {...}}` runs one
+  registered module command inside the daemon: `200` with `result`, `404` for an unknown
+  command, `400` for arguments that do not parse, `501` when the daemon takes no rpc.
+- `kdx rpc COMMAND` and `kdx --remote COMMAND` are thin clients of that route: they read
+  the discovery file, post once, and print the daemon's answer - no second chassis loop.
+- `IpcRoute(path, handler, methods, auth, module)` is how a module joins the control
+  plane, declared from `ipc_routes()` or registered live with
+  `chassis.register_ipc_route(route)`. Core paths are reserved: a module that asks for
+  `/health` is told so at registration, not at request time.
+- A route answers JSON unless the handler says otherwise. It may return `bytes` (labelled
+  from the route's `content_type`, else guessed from the route path's extension), a `str`
+  with a declared non-JSON type, or an `IpcResponse` that owns its body, media type, status,
+  and headers. `IpcResponse.text()`, `.html()`, and `.file()` cover the common shapes, and
+  `guess_content_type(name)` is the same labelling function the chassis uses.
+- `chassis.register_static_dir(route_prefix, directory_path)` - or a `static_dirs()` hook -
+  serves a directory on the control plane's port: index names, `Cache-Control`, weak `ETag`
+  with `304`, `HEAD` without a body, `405` for a write, `401` for an `auth=True` mount, and a
+  traversal guard that refuses to read above the mounted directory. Static mounts default to
+  `auth=False` because a browser cannot send the token header.
+- `core.ipc.static` (default `true`) gates whether module mounts are published at all.
+- `IPC_SCHEMA_VERSION` stays `1`: `/api/v1/schema` only gained `content_type` per route and a
+  `static_mounts` list.
+- The token compare is constant-time (`hmac.compare_digest`): a wrong-length guess costs
+  the same as a right-length one.
 
 ## 12. Verification Loop
 
@@ -474,7 +562,8 @@ kdx status        # live report from a running daemon over the control plane
 | `ModuleDiscoveryError` | discovery | import failure, bad manifest, cycle |
 | `ModuleLifecycleError` | registry | `start` or `stop` raised or timed out |
 | `ChassisError` | chassis | lifecycle misuse |
-| `IpcError` | control plane | no daemon answering, refused bind, 401 |
+| `IpcError` | control plane | no daemon answering, refused bind, 401, a bad static mount |
+| `LockTimeoutError` | named locks | another holder owns the name (`acquire_lock`, `context.lock`) |
 | `CliError` | CLI | bad usage, wizard abort |
 | `ProjectError` | `kdx init` | busy target directory, bad project name |
 
@@ -483,10 +572,109 @@ kdx status        # live report from a running daemon over the control plane
 - **Add a module**: create `src/<pkg>/modules/<name>/` with `__init__.py`,
   `module.py` (blueprint shape, `MODULE` at the bottom), and `kdx_module.toml`;
   run `kdx modules list`, then `kdx <name> status`.
+- **Declare a config schema**: return `ConfigSchema(module=self.name, fields=(...))` from
+  `config_schema()`, then gate it in CI with `kdx config check` (exit `3` on a violation,
+  machine-readable with `--json`).
+- **Expose an endpoint**: add `ipc_routes()` returning `IpcRoute` objects and answer
+  `curl -H "X-Kdx-Token: $TOKEN" http://127.0.0.1:PORT/api/v1/<name>`.
+- **Delegate to the daemon**: `kdx --remote heartbeat status` from a client checkout - the
+  daemon does the work and the client exits with the daemon's code.
 - **Add a config key**: put the default in `CORE_DEFAULTS`, document it in the config
   file, and read it with a typed getter - never a bare string compare.
 - **Add a CLI command**: extend the module's `register_cli`; argparse and the wizard
   update themselves.
+- **Schedule recurring work**: call `context.schedule(300.0, self.sweep, name="sweep")` in
+  `start()`; the chassis clock runs it and `make check` needs no sleeps.
+- **Guard a coordination point**: `with chassis.lock("index"): ...` - released with the
+  chassis, even when the block raises.
+- **Serve a dashboard**: return `IpcStaticMount("/ui", self.assets_dir)` from `static_dirs()`
+  and answer `GET /ui/index.html` on the control plane's port.
 - **Add a test**: build the smallest chassis root in `tmp_path`, call the public API,
   assert on behaviour and provenance - not on log text.
 - **Release**: bump `version.py`, run `make check`, tag `vX.Y.Z` annotated.
+
+## 16. Chassis Primitives: Durable Paths, Named Locks, Periodic Tasks
+
+Three primitives a module used to hand-roll: a directory that survives a moved state
+directory, a coordination point that is shed at shutdown, and a recurring task that stops
+with the process. All three are chassis-owned, so the module declares, never manages.
+
+### 16.1 Path roles
+
+```python
+paths.durable_dir                 # <root>/data - committed databases, ledgers, indexes
+paths.with_durable_dir("keep")    # project-relative, resolved under the root
+paths.durable_module_dir("ops")   # <durable>/modules/ops, created on demand
+paths.locks_dir                   # <state_dir>/locks - one file per named lock
+paths.lock_path("index")          # <locks_dir>/index.lock
+paths.lock("index", timeout=0.5, blocking=True, metadata={"label": "reindex"})
+paths.named_lock_files()          # lock files present on disk, sorted
+```
+
+`state_dir` is the runtime role: logs, `chassis.ipc`, `chassis.lock`, and the locks directory -
+safe to delete between runs. `durable_dir` is the project role: it never moves when an
+operator moves `state_dir`, and it is not the same as `data_dir` (module *data* caches). The
+default is `data/` under the root, so a project's committed database stays put.
+
+### 16.2 Named locks
+
+```python
+handle = chassis.acquire_lock("index", timeout=0.5, blocking=True, metadata={"job": "nightly"})
+with chassis.lock("reindex", timeout=0.0) as held:   # context manager, released on exit
+    ...
+chassis.release_lock("index")        # False when this chassis never held it
+chassis.named_lock("index")          # the handle this process holds, or None
+chassis.locks.names()                # every name this chassis holds, sorted
+chassis.locks.stale_names()          # lock files whose recorded process is gone
+```
+
+The same names are reachable from a module as `context.acquire_lock(...)`,
+`context.release_lock(...)`, and `context.paths.lock(name)`. Acquisition is either
+non-blocking (`timeout=0.0`, the default: try once, raise `LockTimeoutError`) or bounded
+(`timeout=2.0`, retrying every 20 ms), and `blocking=False` means one attempt. The lock file
+carries `pid`, `label`, `name`, `started_at`, `host`, and `port`, so `holder()` and `is_stale()`
+answer who owns it and whether that owner is gone - the same honesty as the instance lock,
+one name at a time. Shutdown releases every name the chassis took (`release_all()`), so a
+crashed run leaves a *stale* file, not a permanent lock: `kdx doctor` reports it as `info`.
+
+Names are validated at the call site: 1-64 characters of letters, digits, `_`, `.`, `-`, and
+spaces, no leading dot and no `..`. `../escape` and `a/b` are refused, so a lock name can
+never name a file outside `var/locks/`.
+
+### 16.3 Periodic tasks
+
+```python
+task = context.schedule(300.0, self.sweep, name="sweep", module=self.name)
+task = context.schedule(60.0, self.flush, first_delay=10.0, repeat=True, run_now=False)
+context.scheduler.unschedule("sweep")     # or cancel(name)
+context.scheduler.stats()                 # runs, failures, and one row per task
+context.scheduler.run_due()               # the chassis tick calls this; returns names run
+context.scheduler.run_task("sweep")       # run now: a route or CLI command triggers it
+```
+
+By default the scheduler is **tick-driven**: the chassis clock calls `run_due()` on every
+tick, so nothing runs on its own thread and `make check` needs no sleeps. Set
+`core.scheduler.threaded: true` (or `start(threaded=True)`) for a chassis that blocks in a
+loop of its own; the thread is named `kdx-scheduler` and is joined inside
+`core.lifecycle.stop_timeout`. `core.scheduler.enabled: false` parks every task.
+
+A callback takes no arguments and its exceptions are contained: a task that raises is
+counted (`failures`, `last_error`), logged to stderr once per failure, published as
+`core.task.failed`, and stays scheduled - `kdx doctor` shows a `warning` per failing task.
+A successful run publishes `core.task.run` with the task's own `as_dict()` payload.
+`repeat=False` parks the task after one run; `first_delay` separates the first fire from the
+interval; duplicate names get `-2`, `-3` suffixes instead of clobbering each other.
+
+### 16.4 Configuration and public surface
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `core.paths.durable_dir` | `data` | project-relative durable role |
+| `core.scheduler.enabled` | `true` | the tick loop runs declared tasks |
+| `core.scheduler.threaded` | `false` | run the scheduler on its own thread instead |
+| `core.ipc.static` | `true` | publish module `static_dirs()` mounts on the control plane |
+
+Exported from `korodexios_core` and `korodexios_core.kernel`: `NamedLock`,
+`NamedLockRegistry`, `TaskScheduler`, `ScheduledTask`, `IpcResponse`, `IpcStaticMount`,
+`guess_content_type`, and `LockTimeoutError`. `context.as_dict()` gained `scheduler` and
+`locks`; `kdx doctor` gained `scheduler`, `locks`, and `static` sections.

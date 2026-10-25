@@ -62,11 +62,19 @@ In another:
 kdx status                 # live report over the control plane
 kdx logs -n 20             # the rotating log file, no tail required
 kdx logs --rotate          # archive it; the daemon reopens the path
-kdx doctor                 # config provenance and module states
+kdx reload                 # the daemon re-reads kdx.yml without restarting
+kdx rpc heartbeat status   # run a module command inside the running daemon
+kdx doctor                 # config provenance, module states, lock, workers
 ```
 
 Ctrl-C in the first terminal exits `130`; a `POST /api/v1/shutdown` from the control
 plane exits `0`. Both paths run the same stop sequence.
+
+Try a second `kdx run` in the second terminal: it exits `1` and says another daemon owns
+the state directory. The first one holds `var/chassis.lock`, so the second never binds a
+fallback port and reports a healthy state nobody asked for. `kdx --remote heartbeat
+status` from that same second terminal works: it delegates to the daemon instead of
+booting a chassis of its own.
 
 ## 3. Write your own module (90 seconds)
 
@@ -123,6 +131,26 @@ Read configuration through the scoped view (`self.config.get_float("interval", 5
 means `modules.metrics.interval`), log through `self.logger`, and talk to other
 modules only through `self.bus`.
 
+The chassis hands over three primitives, so a module declares instead of managing:
+
+```python
+    def start(self) -> None:
+        context = self.require_context()
+        context.schedule(30.0, self.sample, name="sample", module=self.name)
+        self.lock = context.acquire_lock("greeter", timeout=0.5)
+
+    def static_dirs(self):
+        from korodexios_core import IpcStaticMount
+
+        return (IpcStaticMount("/greeter", self.assets_dir, module=self.name),)
+```
+
+The task runs on the chassis clock and stops with the chassis; the named lock is released at
+shutdown even when the block raises; the directory is served on the control plane port with
+each file's own media type. Files that must outlive a moved `var/` belong under
+`context.paths.durable_dir` (default `data/`), reachable per module as
+`context.durable_module_dir("greeter")`.
+
 ## 4. Prove it (60 seconds)
 
 ```bash
@@ -130,8 +158,18 @@ kdx --home . modules list            # metrics appears with origin 'project'
 kdx --home . modules show metrics    # spec + live health
 kdx --home . run --duration 3        # the sampler thread runs and stops cleanly
 kdx --home . metrics status          # your CLI command, wired by register_cli
+kdx --home . config check            # unknown keys and your schema, enforced
+kdx --home . rpc greeter             # one command inside the running daemon
+kdx --home . doctor                  # modules, scheduled tasks, named locks, static mounts
 make check                           # still green
 ```
+
+Every capability past the seven contract members is an optional hook: `workers()` hands
+the sampler thread to supervision (a thread that dies moves the module to `failed`),
+`diagnostics()` adds a line to `kdx doctor`, `config_schema()` declares the keys the module
+reads so `kdx config check` can gate CI, `ipc_routes()` publishes a control-plane path, and
+`static_dirs()` publishes a directory. Declare only what the module actually has - the
+chassis `getattr`s the rest.
 
 Add a test while you are here: build the smallest chassis root in `tmp_path`, boot a
 `Chassis`, and assert on `health()` - not on log text.

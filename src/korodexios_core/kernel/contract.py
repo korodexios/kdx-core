@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import threading
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -235,6 +236,76 @@ class Module:
         self._state = ModuleState.STOPPED
         self._started_at = None
 
+    def config_schema(self) -> Any:
+        """Declare the configuration this module reads.
+
+        Return ConfigField instances, a ConfigSchema, or a manifest-shaped mapping
+        or list; the chassis normalizes all of them. The default declares nothing,
+        which is a valid answer for a module with no configuration.
+        """
+        return ()
+
+    def ipc_routes(self) -> tuple[Any, ...]:
+        """Declare control-plane routes this module serves on the chassis listener."""
+        return ()
+
+    def static_dirs(self) -> tuple[Any, ...]:
+        """Declare directories this module serves as static content on the control plane.
+
+        Return IpcStaticMount objects: a route prefix and a directory, and the
+        chassis serves those files on its own port with the media type read from
+        each file. A module that ships a dashboard declares the mount here instead
+        of opening a web server of its own.
+        """
+        return ()
+
+    def diagnostics(self) -> tuple[Any, ...]:
+        """Contribute named checks, with severity and hint, to 'kdx doctor'."""
+        return ()
+
+    @property
+    def scheduler(self) -> Any:
+        """Return the chassis periodic task scheduler; declare tasks in start().
+
+        A scheduled task runs on the chassis clock with the chassis' own shutdown
+        budget, so recurring work needs no thread, no stop flag, and no join.
+        """
+        return self.require_context().scheduler
+
+    def workers(self) -> Any:
+        """Return the background threads start() launched, for supervision.
+
+        Accepts a mapping of name to thread or a sequence of (name, thread)
+        pairs; the chassis watches each one and marks this module FAILED when an
+        expected worker dies on its own.
+        """
+        return ()
+
+    def on_config_reload(self, config: Any) -> None:
+        """React to a chassis configuration reload.
+
+        The chassis re-reads the layers, publishes core.config.reloaded, and calls
+        this hook with the module's fresh scoped view. The default records the
+        event so an operator can see the hook landed in the log.
+        """
+        if self._context is not None:
+            self.logger.debug(
+                "module notified of configuration reload", version=self.version
+            )
+
+    def watch_worker(
+        self,
+        thread: threading.Thread,
+        *,
+        name: str = "",
+        expected: bool = True,
+    ) -> Any:
+        """Ask the chassis to supervise one of this module's threads."""
+        supervisor = self.require_context().supervisor
+        if supervisor is None:
+            return None
+        return supervisor.watch(self.name, thread, name=name, expected=expected)
+
     def health(self) -> dict[str, Any]:
         """Return the module's self-report shown by 'kdx modules show'."""
         uptime = (time.time() - self._started_at) if self._started_at else 0.0
@@ -299,5 +370,6 @@ def contract_help() -> str:
     """Return the contract cheat sheet printed by 'kdx modules show --help'."""
     return (
         "contract: name, description, version, init(context), "
-        "register_cli(surface), start(), stop()"
+        "register_cli(surface), start(), stop(); optional: dependencies, "
+        "load_order, config_schema, ipc_routes, static_dirs, diagnostics, workers"
     )

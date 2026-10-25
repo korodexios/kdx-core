@@ -8,14 +8,22 @@ from enum import IntEnum
 from pathlib import Path
 from typing import Any, cast
 
-from ..constants import ENV_PREFIX, KEY_SEPARATOR
+from ..constants import (
+    ENV_PREFIX,
+    KEY_SEPARATOR,
+    REDACTION,
+    SECRET_KEY_COMPOUNDS,
+    SECRET_KEY_SEGMENTS,
+    SECRET_KEY_WORDS,
+)
 from ..exceptions import ConfigurationError, ConfigValueError
 from . import keys as key_rules
 from .defaults import CORE_DEFAULTS, with_runtime_defaults
 from .loaders import (
     load_config_file,
-    load_dotenv,
-    load_environment,
+    load_dotenv_layer,
+    load_environment_layer,
+    normalize_alias_mapping,
     split_list_value,
     unflatten_mapping,
 )
@@ -60,9 +68,43 @@ class ConfigEntry:
     source: ConfigSource
     origin: str
 
-    def as_row(self) -> tuple[str, str, str]:
-        """Return (key, rendered value, source label) for CLI tables."""
-        return (self.key, _render_value(self.value), self.source.label())
+    def as_row(self, redact: bool = False) -> tuple[str, str, str]:
+        """Return (key, rendered value, source label) for CLI tables.
+
+        With *redact* on, a sensitive value is replaced by the chassis redaction
+        marker, so a report can be pasted into an issue without leaking a secret.
+        """
+        value = redact_value(self.value) if redact and is_secret_key(self.key) else self.value
+        return (self.key, _render_value(value), self.source.label())
+
+
+def is_secret_key(key: str) -> bool:
+    """Return True when *key* names a value that should not be printed in clear.
+
+    A key is sensitive when any of its dot-separated segments names a secret
+    (token, password, api_key, ...). Matching runs on whole segments, on the
+    snake_case words inside a segment, and on two-word compounds, so
+    'core.ipc.auth' stays readable while 'core.ipc.token', 'modules.x.api_key'
+    and 'modules.backup.aws_access_key_id' are all masked.
+    """
+    segments = [part.strip().lower() for part in str(key).split(KEY_SEPARATOR) if part.strip()]
+    for segment in segments:
+        if segment in SECRET_KEY_SEGMENTS:
+            return True
+        words = [word for word in segment.split("_") if word]
+        if any(word in SECRET_KEY_WORDS for word in words):
+            return True
+        joined = f"_{'_'.join(words)}_"
+        if any(marker in joined for marker in SECRET_KEY_COMPOUNDS):
+            return True
+    return False
+
+
+def redact_value(value: Any, *, marker: str = REDACTION) -> Any:
+    """Return *marker* for a non-empty string value, otherwise *value* unchanged."""
+    if isinstance(value, str) and value.strip():
+        return marker
+    return value
 
 
 def _render_value(value: Any) -> str:
@@ -194,6 +236,7 @@ class LayeredConfig:
         config_file: Path | None = None,
         local_config_file: Path | None = None,
         env_file: Path | None = None,
+        env_origins: Mapping[str, str] | None = None,
     ) -> None:
         base = dict(CORE_DEFAULTS)
         if defaults:
@@ -226,6 +269,9 @@ class LayeredConfig:
         self._config_file = config_file
         self._local_config_file = local_config_file
         self._env_file = env_file
+        self._env_origins = {
+            str(key): str(value) for key, value in (env_origins or {}).items()
+        }
 
     @classmethod
     def load(
@@ -251,10 +297,14 @@ class LayeredConfig:
             or _prefix_from(file_values)
             or str(CORE_DEFAULTS["core.env.prefix"])
         )
-        dotenv_values = load_dotenv(env_file, resolved_prefix) if env_file else {}
-        live_values = load_environment(env, resolved_prefix)
+        aliases = _aliases_from(cli_overrides, local_values, file_values, env)
+        dotenv_values, dotenv_origins = (
+            load_dotenv_layer(env_file, resolved_prefix, aliases) if env_file else ({}, {})
+        )
+        live_values, live_origins = load_environment_layer(env, resolved_prefix, aliases)
         env_layer: dict[str, Any] = dict(dotenv_values)
         env_layer.update(live_values)  # a real environment variable beats the .env file
+        env_origins = {**dotenv_origins, **live_origins}
         return cls(
             defaults=with_runtime_defaults(runtime_defaults or {}),
             file_values=file_values,
@@ -265,6 +315,7 @@ class LayeredConfig:
             config_file=config_file,
             local_config_file=local_config_file,
             env_file=env_file,
+            env_origins=env_origins,
         )
 
     @property
@@ -321,6 +372,7 @@ class LayeredConfig:
             config_file=self._config_file,
             local_config_file=self._local_config_file,
             env_file=self._env_file,
+            env_origins=dict(self._env_origins),
         )
 
     def _lookup(self, key: str) -> tuple[bool, ConfigEntry | None]:
@@ -329,7 +381,10 @@ class LayeredConfig:
             return False, None
         for layer in reversed(self._layers):
             if dotted in layer.values:
-                return True, ConfigEntry(dotted, layer.values[dotted], layer.source, layer.origin)
+                origin = layer.origin
+                if layer.source is ConfigSource.ENV:
+                    origin = self._env_origins.get(dotted, layer.origin)
+                return True, ConfigEntry(dotted, layer.values[dotted], layer.source, origin)
         return False, None
 
     def resolve(self, key: str) -> ConfigEntry:
@@ -415,12 +470,29 @@ class LayeredConfig:
         """Return the project-owned keys among every layer."""
         return key_rules.project_key_names(self.keys())
 
-    def as_dict(self) -> dict[str, Any]:
-        """Return the merged flat view, highest precedence winning."""
+    def is_secret(self, key: str) -> bool:
+        """Return True when the value behind *key* is sensitive by key name."""
+        return is_secret_key(str(key))
+
+    def secret_keys(self) -> tuple[str, ...]:
+        """Return the sensitive keys among every layer, sorted."""
+        return tuple(key for key in self.keys() if is_secret_key(key))
+
+    def as_dict(self, redact: bool = False) -> dict[str, Any]:
+        """Return the merged flat view, highest precedence winning.
+
+        With *redact* on, sensitive string values are replaced by the chassis
+        redaction marker so the mapping is safe to print, log, or post.
+        """
         merged: dict[str, Any] = {}
         for layer in self._layers:
             merged.update(layer.values)
-        return merged
+        if not redact:
+            return merged
+        return {
+            key: redact_value(value) if is_secret_key(key) else value
+            for key, value in merged.items()
+        }
 
     def as_nested(self) -> dict[str, Any]:
         """Return the merged view expanded back into nested mappings."""
@@ -435,9 +507,17 @@ class LayeredConfig:
                 resolved.append(entry)
         return resolved
 
-    def describe_rows(self, limit: int | None = None) -> list[tuple[str, str, str]]:
-        """Return (key, value, source) rows for 'kdx config show'."""
-        rows = [entry.as_row() for entry in self.entries()]
+    def describe_rows(
+        self,
+        limit: int | None = None,
+        redact: bool = False,
+    ) -> list[tuple[str, str, str]]:
+        """Return (key, value, source) rows for 'kdx config show'.
+
+        Redaction is opt-out only in the sense that the CLI passes it on by
+        default; the library stays honest by defaulting to the raw value.
+        """
+        rows = [entry.as_row(redact=redact) for entry in self.entries()]
         return rows[:limit] if limit else rows
 
     def child(self, prefix: str) -> ScopedConfig:
@@ -461,6 +541,36 @@ def _prefix_from(file_values: Mapping[str, Any]) -> str | None:
     if isinstance(value, str) and value.strip():
         return value.strip().upper()
     return None
+
+
+def _aliases_from(
+    cli_values: Mapping[str, Any] | None,
+    local_values: Mapping[str, Any],
+    file_values: Mapping[str, Any],
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Merge declared environment aliases, highest precedence last.
+
+    core.env.aliases maps a legacy variable name to the canonical chassis key it
+    feeds. A project migrating to the chassis can therefore keep exporting
+    LEGACY_TOKEN while the chassis reads core.ipc.token, with provenance naming
+    the variable that actually carried the value.
+    """
+    merged: dict[str, str] = {}
+    declared_values: list[Any] = []
+    if environ is not None:
+        for variable in ("KDX_CORE__ENV__ALIASES", "KORODEXIOS_CORE__ENV__ALIASES"):
+            raw = str(environ.get(variable, "")).strip()
+            if raw:
+                declared_values.append(raw)
+    for layer in (file_values, local_values, cli_values):
+        if isinstance(layer, Mapping):
+            declared = layer.get("core.env.aliases")
+            if declared is not None:
+                declared_values.append(declared)
+    for declared in declared_values:
+        merged.update(normalize_alias_mapping(declared))
+    return merged
 
 
 def _fallback_for(coercer: Callable[..., Any]) -> Any:

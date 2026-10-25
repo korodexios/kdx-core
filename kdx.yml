@@ -30,6 +30,7 @@ core:
     token: ""                  # static shared secret; empty means a fresh one per boot
     auth: true                 # false lets anyone on the network read /api/v1/status
     allow_anonymous_shutdown: false  # keep POST /api/v1/shutdown authenticated
+    static: true               # serve module static_dirs() on this port too
   logs:
     poll_interval: 0.5         # seconds between reads for 'kdx logs --follow'
   cli:
@@ -37,8 +38,21 @@ core:
     interactive: true
     confirmations: true
     width: 100
+  paths:
+    state_dir: var                 # logs, chassis.ipc, chassis.lock
+    data_dir: var/lib              # module-owned writable data
+  instance:
+    lock: true                     # one daemon per root; a second one exits 1
+  async:
+    enabled: false                 # --asyncio starts the managed event loop
+    shutdown_timeout: 2.0          # budget for cancelling pending coroutines
+  supervision:
+    enabled: true                  # watch the worker threads modules declare
+  reload:
+    sighup: true                   # SIGHUP reloads configuration without exiting
   env:
     prefix: KDX
+    aliases: {}                    # LEGACY_VARIABLE: core.dotted.key
 
 # Per-module configuration. Each module receives a scoped view of "modules.<name>".
 modules:

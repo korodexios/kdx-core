@@ -4,21 +4,28 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Sequence
-from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from ..exceptions import CliError
-from ..kernel.cli_contract import CliArgument, CliCommand, CliRequest
-
-_TYPE_MAP: dict[str, Callable[[Any], Any]] = {
-    "str": str,
-    "int": int,
-    "float": float,
-    "path": Path,
-}
+from ..kernel.cli_contract import (
+    CliArgument,
+    CliCommand,
+    CliRequest,
+    add_command_arguments,
+)
 
 COMMAND_ATTR = "__kdx_command__"
 HANDLER_ATTR = "__kdx_handler__"
+
+
+def _dest_for_depth(depth: int) -> str:
+    """Return the subparsers dest for one nesting level.
+
+    'subcommand' stays the public name for the first level, which is what a
+    module handler reads out of a namespace today; deeper levels get their own
+    attribute so no level overwrites another's choice.
+    """
+    return "subcommand" if depth <= 0 else f"kdx_group_{depth}"
 
 
 class ArgparseSurface:
@@ -37,9 +44,26 @@ class ArgparseSurface:
         return self._context
 
     def add_command(self, command: CliCommand) -> None:
-        """Create a subparser (plus nested subparsers for groups)."""
+        """Create one subparser tree, at whatever depth the command declares.
+
+        Nesting is recursive, so a module can contribute 'kdx mod action' today
+        and 'kdx mod group action' tomorrow without the chassis learning a third
+        level of its own: each group opens the subparsers its children need, and
+        every runnable node binds its own handler path.
+        """
+        self._add_tree(self._subparsers, command, command.name, depth=0)
+        self._added.append(command)
+
+    def _add_tree(
+        self,
+        parent: Any,
+        command: CliCommand,
+        path: str,
+        *,
+        depth: int,
+    ) -> argparse.ArgumentParser:
         try:
-            parser = self._subparsers.add_parser(
+            parser = parent.add_parser(
                 command.name, help=command.help or argparse.SUPPRESS, parents=self._parents
             )
         except argparse.ArgumentError as exc:
@@ -49,19 +73,26 @@ class ArgparseSurface:
             ) from exc
         self._add_arguments(parser, command.args)
         if command.subcommands:
-            nested = parser.add_subparsers(dest="subcommand", metavar="action")
+            nested = parser.add_subparsers(dest=_dest_for_depth(depth), metavar="action")
             for child in command.subcommands:
-                child_parser = nested.add_parser(
-                    child.name,
-                    help=child.help or argparse.SUPPRESS,
-                    parents=self._parents,
-                )
-                self._add_arguments(child_parser, child.args)
-                self._bind(child_parser, child, f"{command.name} {child.name}")
-            self._bind(parser, command, command.name, group=True)
+                self._add_tree(nested, child, f"{path} {child.name}", depth=depth + 1)
+            self._bind(parser, command, path, group=True)
         else:
-            self._bind(parser, command, command.name)
-        self._added.append(command)
+            self._bind(parser, command, path)
+        return cast("argparse.ArgumentParser", parser)
+
+    def depth(self) -> int:
+        """Return the deepest command tree this surface rendered (0 when empty)."""
+        return max((command.depth for command in self._added), default=0)
+
+    def leaves(self) -> list[str]:
+        """Return every runnable command path, space-joined, in registration order."""
+        paths: list[str] = []
+        for command in self._added:
+            for path, node in command.walk():
+                if node.handler is not None:
+                    paths.append(path)
+        return paths
 
     def _bind(
         self,
@@ -89,29 +120,7 @@ class ArgparseSurface:
     def _add_arguments(
         self, parser: argparse.ArgumentParser, arguments: tuple[CliArgument, ...]
     ) -> None:
-        for argument in arguments:
-            kwargs: dict[str, Any] = {}
-            is_positional = all(not str(flag).startswith("-") for flag in argument.flags)
-            if argument.help:
-                kwargs["help"] = argument.help
-            if argument.metavar:
-                kwargs["metavar"] = argument.metavar
-            if argument.action:
-                kwargs["action"] = argument.action
-            if argument.nargs is not None:
-                kwargs["nargs"] = argument.nargs
-            if argument.choices:
-                kwargs["choices"] = list(argument.choices)
-            if is_positional:
-                parser.add_argument(*argument.flags, **kwargs)
-                continue
-            if argument.dest:
-                kwargs["dest"] = argument.dest
-            if argument.default is not None:
-                kwargs["default"] = argument.default
-            if not argument.action and argument.type != "flag":
-                kwargs["type"] = _TYPE_MAP.get(argument.type, str)
-            parser.add_argument(*argument.flags, **kwargs)
+        add_command_arguments(parser, arguments)
 
     def resolve(
         self, namespace: argparse.Namespace

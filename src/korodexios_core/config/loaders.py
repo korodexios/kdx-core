@@ -171,6 +171,85 @@ def normalize_env_key(
     return None
 
 
+def parse_env_alias(text: str) -> tuple[str, str] | None:
+    """Parse one alias declaration 'LEGACY_NAME=core.ipc.token'.
+
+    The left side is an environment variable name, the right side the canonical
+    chassis key it feeds; a declaration that names itself is dropped.
+    """
+    cleaned = str(text).strip()
+    if not cleaned or "=" not in cleaned:
+        return None
+    left, right = cleaned.split("=", 1)
+    name = left.strip().upper().replace("-", "_")
+    dotted = KEY_SEPARATOR.join(
+        part.strip().lower().replace("-", "_")
+        for part in right.split(KEY_SEPARATOR)
+        if part.strip()
+    )
+    if not _ENV_KEY_PATTERN.match(name) or not dotted:
+        return None
+    if name.lower() == dotted.replace(KEY_SEPARATOR, "_"):
+        return None
+    return name, dotted
+
+
+def normalize_alias_mapping(data: Any) -> dict[str, str]:
+    """Return {ENV_VAR: dotted.key} from a configuration value.
+
+    Accepts a mapping (the natural YAML shape) or a list of 'NAME=key' strings
+    (the natural CLI and environment shape). Environment names are upper-cased;
+    malformed entries are skipped so one typo never breaks the boot.
+    """
+    aliases: dict[str, str] = {}
+    if isinstance(data, Mapping):
+        for name, value in data.items():
+            cleaned = str(name).strip().upper().replace("-", "_")
+            dotted = str(value).strip().lower()
+            if cleaned and dotted and _ENV_KEY_PATTERN.match(cleaned):
+                aliases[cleaned] = dotted
+        return aliases
+    if isinstance(data, str):
+        data = [item for item in data.split(",") if item.strip()]
+    if isinstance(data, (list, tuple)):
+        for item in data:
+            parsed = parse_env_alias(str(item))
+            if parsed is not None:
+                aliases[parsed[0]] = parsed[1]
+    return aliases
+
+
+def apply_env_aliases(
+    pairs: Sequence[tuple[str, str]],
+    aliases: Mapping[str, str],
+) -> dict[str, tuple[str, str]]:
+    """Map *pairs* through *aliases*; return {dotted_key: (value, origin)}.
+
+    The first alias that supplies a key wins, and the origin names the variable
+    that carried the value, which is what keeps provenance honest for a legacy
+    name with its own prefix.
+    """
+    resolved: dict[str, tuple[str, str]] = {}
+    wanted = {str(name).strip().upper(): str(key) for name, key in aliases.items()}
+    for name, value in pairs:
+        cleaned = str(name).strip().upper()
+        dotted = wanted.get(cleaned)
+        if dotted is None or dotted in resolved:
+            continue
+        resolved[dotted] = (str(value), f"environment alias {cleaned}")
+    return resolved
+
+
+def load_env_aliases(
+    environ: Mapping[str, str],
+    aliases: Mapping[str, str],
+) -> dict[str, tuple[str, str]]:
+    """Apply *aliases* to a live environment mapping."""
+    if not aliases:
+        return {}
+    return apply_env_aliases([(str(key), str(value)) for key, value in environ.items()], aliases)
+
+
 def _strip_inline_comment(value: str) -> str:
     for marker in _COMMENT_MARKERS:
         index = value.find(marker)
@@ -198,8 +277,8 @@ def _unquote_env_value(value: str) -> str:
     return _strip_inline_comment(value)
 
 
-def load_dotenv(path: Path, prefix: str = ENV_PREFIX) -> dict[str, str]:
-    """Parse a .env file into flat dotted keys, ignoring foreign prefixes."""
+def parse_dotenv_pairs(path: Path) -> list[tuple[str, str]]:
+    """Read *path* into (NAME, raw value) pairs, rejecting malformed lines."""
     text = read_text(path)
     pairs: list[tuple[str, str]] = []
     for lineno, raw_line in enumerate(text.splitlines(), start=1):
@@ -221,13 +300,67 @@ def load_dotenv(path: Path, prefix: str = ENV_PREFIX) -> dict[str, str]:
                 hint="Keys use letters, digits, underscores, dots, and dashes.",
             )
         pairs.append((key, raw_value.strip()))
+    return pairs
+
+
+def load_dotenv(
+    path: Path,
+    prefix: str = ENV_PREFIX,
+    aliases: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Parse a .env file into flat dotted keys, ignoring foreign prefixes.
+
+    Aliased names are read first, so a properly prefixed variable always wins
+    over a legacy name that was mapped to the same key.
+    """
+    return load_dotenv_layer(path, prefix, aliases)[0]
+
+
+def load_dotenv_layer(
+    path: Path,
+    prefix: str = ENV_PREFIX,
+    aliases: Mapping[str, str] | None = None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Read a .env file into (values, alias origins).
+
+    Aliased names are read first so a properly prefixed variable always wins; the
+    origin map then names the legacy variable only where it actually supplied the
+    value.
+    """
+    pairs = parse_dotenv_pairs(path)
     values: dict[str, str] = {}
+    origins: dict[str, str] = {}
+    for aliased, (raw_value, origin) in apply_env_aliases(pairs, aliases or {}).items():
+        values[aliased] = _unquote_env_value(raw_value)
+        origins[aliased] = origin
     for token in env_prefixes(prefix):
         for key, raw_value in pairs:
             dotted = normalize_exact_key(key, token)
-            if dotted is not None and dotted not in values:
-                values[dotted] = _unquote_env_value(raw_value)
-    return values
+            if dotted is None or dotted in values:
+                continue
+            values[dotted] = _unquote_env_value(raw_value)
+            origins.pop(dotted, None)
+    return values, origins
+
+
+def load_environment_layer(
+    environ: Mapping[str, str],
+    prefix: str = ENV_PREFIX,
+    aliases: Mapping[str, str] | None = None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Read a live environment into (values, alias origins).
+
+    A variable that already spells a chassis key under the configured prefix wins
+    over an alias mapped to the same key, which keeps migration additive.
+    """
+    values = load_environment(environ, prefix)
+    origins: dict[str, str] = {}
+    for dotted, (value, origin) in load_env_aliases(environ, aliases or {}).items():
+        if dotted in values:
+            continue
+        values[dotted] = value
+        origins[dotted] = origin
+    return values, origins
 
 
 def load_environment(

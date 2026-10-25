@@ -103,6 +103,38 @@ class ChassisError(KorodexiosError):
     """The chassis itself reached an unusable state."""
 
 
+class InstanceLockError(ChassisError):
+    """Another live chassis already owns this root directory."""
+
+    default_hint = "Stop the running daemon first, or run 'kdx status' to see it."
+
+
+class LockTimeoutError(ChassisError):
+    """A named lock stayed busy for the whole time the caller was willing to wait."""
+
+    default_hint = "Shorten the critical section, raise the timeout, or run 'kdx doctor'."
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        name: str = "",
+        timeout: float | None = None,
+        hint: str | None = None,
+    ) -> None:
+        super().__init__(message, hint=hint)
+        self.name = name
+        self.timeout = timeout
+
+    def render(self) -> str:
+        """Append the lock name and the waited time to the base rendering."""
+        base = super().render()
+        if not self.name:
+            return base
+        waited = "without waiting" if self.timeout in (None, 0.0) else f"after {self.timeout}s"
+        return f"{base}\n    lock: {self.name} ({waited})"
+
+
 class CliError(KorodexiosError):
     """The command line was used incorrectly or a command failed politely."""
 

@@ -10,12 +10,16 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from ..config.layered import LayeredConfig
+from ..config.loaders import normalize_alias_mapping
 from ..constants import TAG_ERROR, TAG_NOTE, TRACEBACK_ENV_VAR, ExitCode
 from ..exceptions import KorodexiosError
 from ..kernel.chassis import Chassis, ChassisOptions, stdin_is_tty
 from ..kernel.cli_contract import CliRequest
+from ..kernel.ipc import DISCOVERY_NAME, IpcDiscovery
+from ..paths import AppPaths
 from ..version import format_version
-from .commands import core_commands, wizard_command
+from .commands import core_commands, render_rpc_reply, wizard_command
 from .render import write_line
 from .surface import HANDLER_ATTR, ArgparseSurface
 
@@ -278,6 +282,43 @@ def _add_global_flags(parser: argparse.ArgumentParser) -> None:
         default=argparse.SUPPRESS,
         help="Accept defaults; never prompt (also auto-detected for non-TTY runs).",
     )
+    group.add_argument(
+        "--asyncio",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Run module coroutines on a chassis-managed asyncio loop.",
+    )
+    group.add_argument(
+        "--no-asyncio",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Skip the asyncio loop; 'run_async' uses a private loop per call.",
+    )
+    group.add_argument(
+        "--no-instance-lock",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Let a second daemon share this chassis root.",
+    )
+    group.add_argument(
+        "--instance-lock",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Require the chassis-level instance lock (default).",
+    )
+    group.add_argument(
+        "--remote",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Delegate the command to a live daemon; never boot a chassis here.",
+    )
+    group.add_argument(
+        "--env-alias",
+        metavar="NAME=KEY",
+        action="append",
+        default=argparse.SUPPRESS,
+        help="Map a legacy environment variable onto a config key (repeatable).",
+    )
 
 
 def _cli_overrides(namespace: argparse.Namespace) -> dict[str, Any]:
@@ -341,6 +382,17 @@ def _cli_overrides(namespace: argparse.Namespace) -> dict[str, Any]:
         overrides["core.cli.confirmations"] = False
     if getattr(namespace, "no_autodiscover", False):
         overrides["core.modules.autodiscover"] = False
+    if getattr(namespace, "no_asyncio", False):
+        overrides["core.async.enabled"] = False
+    if getattr(namespace, "asyncio", False):
+        overrides["core.async.enabled"] = True
+    if getattr(namespace, "no_instance_lock", False):
+        overrides["core.instance.lock"] = False
+    if getattr(namespace, "instance_lock", False):
+        overrides["core.instance.lock"] = True
+    env_aliases = getattr(namespace, "env_alias", None)
+    if env_aliases:
+        overrides["core.env.aliases"] = normalize_alias_mapping(list(env_aliases))
     enabled_modules = getattr(namespace, "enable_module", None)
     if enabled_modules:
         overrides["core.modules.enabled"] = list(enabled_modules)
@@ -361,11 +413,24 @@ def _options(namespace: argparse.Namespace) -> ChassisOptions:
             return None
         return Path(str(value)).expanduser().resolve()
 
+    overrides = _cli_overrides(namespace)
+    asyncio_enabled: bool | None = None
+    if getattr(namespace, "asyncio", False):
+        asyncio_enabled = True
+    if getattr(namespace, "no_asyncio", False):
+        asyncio_enabled = False
+    instance_lock: bool | None = None
+    if getattr(namespace, "instance_lock", False):
+        instance_lock = True
+    if getattr(namespace, "no_instance_lock", False):
+        instance_lock = False
     return ChassisOptions(
         home=to_path(getattr(namespace, "home", None)),
         config_file=to_path(getattr(namespace, "config", None)),
         env_file=to_path(getattr(namespace, "env_file", None)),
-        cli_overrides=_cli_overrides(namespace),
+        cli_overrides=overrides,
+        instance_lock=instance_lock,
+        asyncio_enabled=asyncio_enabled,
         extra_module_dirs=tuple(
             to_path(value) or Path(".") for value in getattr(namespace, "modules_dir", None) or []
         ),
@@ -407,19 +472,91 @@ def _launch_wizard(context: Any, surface: Any) -> int:
     return RootWizard(ux, context, commands, options={"surface": surface}).run()
 
 
+def _remote_command_path(tokens: Sequence[str]) -> tuple[str, list[str]]:
+    """Split the leftover argv into a command path and the tokens after it.
+
+    'kdx --remote heartbeat status -n 5' reaches this as ['heartbeat', 'status',
+    '-n', '5'] because the bootstrap parser already consumed the global flags.
+    The path runs up to the first option-looking token; everything after it goes
+    to the daemon, which parses it against the command's own declared arguments.
+    A leading 'rpc' is the explicit delegation verb, not part of the path.
+    """
+    path: list[str] = []
+    stop = len(tokens)
+    for position, token in enumerate(tokens):
+        if str(token).startswith("-"):
+            stop = position
+            break
+        path.append(str(token))
+    rest = [str(token) for token in tokens[stop:]]
+    if path and path[0] == "rpc":
+        path = path[1:]
+    return " ".join(path), rest
+
+
+def _remote_client(pre_args: argparse.Namespace) -> tuple[AppPaths, LayeredConfig]:
+    """Resolve paths and configuration the way the chassis does, without booting one."""
+    paths = AppPaths.discover(
+        root=str(pre_args.home) if getattr(pre_args, "home", None) else None,
+        config_file=str(pre_args.config) if getattr(pre_args, "config", None) else None,
+        env_file=str(pre_args.env_file) if getattr(pre_args, "env_file", None) else None,
+    )
+    config = LayeredConfig.load(
+        config_file=paths.config_file,
+        local_config_file=paths.local_config_file,
+        env_file=paths.env_file,
+        environ=os.environ,
+        cli_overrides=_cli_overrides(pre_args),
+        runtime_defaults={"core.home": str(paths.root)},
+    )
+    return paths.with_state_dir(config.get_str("core.paths.state_dir")), config
+
+
+def _delegate_remote(pre_args: argparse.Namespace, tokens: Sequence[str]) -> int:
+    """Forward the command to a live daemon over its control plane; boot nothing."""
+    command, argv_rest = _remote_command_path(tokens)
+    if not command:
+        print(f"{TAG_ERROR} --remote needs a command to delegate", file=sys.stderr)
+        print(f"{TAG_NOTE} kdx --remote heartbeat status", file=sys.stderr)
+        return int(ExitCode.USAGE_ERROR)
+    paths, config = _remote_client(pre_args)
+    discovery_path = Path(paths.state_dir) / DISCOVERY_NAME
+    token = str(config.get_str("core.ipc.token", "") or "").strip()
+    timeout = float(config.get_float("core.ipc.timeout", 2.0))
+    discovery = IpcDiscovery.load(discovery_path)
+    if discovery is not None and token and not discovery.token:
+        discovery.token = token
+    if discovery is None or not discovery.is_process_alive():
+        print(f"{TAG_NOTE} no chassis daemon answering; run 'kdx run' first", file=sys.stderr)
+        print(f"{TAG_NOTE} looked for {discovery_path}", file=sys.stderr)
+        return int(ExitCode.ERROR)
+    args: dict[str, Any] = {"argv": argv_rest} if argv_rest else {}
+    try:
+        code, payload = discovery.call(command, args, timeout=timeout)
+    except OSError as exc:
+        print(f"{TAG_ERROR} no control plane answering at {discovery.base_url()}", file=sys.stderr)
+        print(f"{TAG_NOTE} {exc}", file=sys.stderr)
+        return int(ExitCode.ERROR)
+    render_rpc_reply(payload, command, as_json=False)
+    return int(ExitCode.SUCCESS) if code < 400 else int(ExitCode.ERROR)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the console client and return the process exit code."""
     argv = list(sys.argv[1:] if argv is None else argv)
 
     bootstrap = build_bootstrap_parser()
     try:
-        pre_args, _ = bootstrap.parse_known_args(argv)
+        pre_args, extra_args = bootstrap.parse_known_args(argv)
     except SystemExit as bootstrap_exit:
         return _system_exit_code(bootstrap_exit)
 
     if getattr(pre_args, "version", False):
         write_line(format_version())
         return int(ExitCode.SUCCESS)
+
+    if getattr(pre_args, "remote", False):
+        return _delegate_remote(pre_args, [str(item) for item in extra_args])
 
     chassis: Chassis | None = None
     try:

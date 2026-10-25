@@ -128,6 +128,39 @@ def test_stop_timeout_marks_failure() -> None:
     assert "did not finish" in (record.error or "")
 
 
+def test_collect_headless_populates_commands_without_a_surface() -> None:
+    """The kernel collects the command tree itself, so an embedded daemon can dispatch."""
+    registry = ModuleRegistry(DummyLogger())
+    module = ScriptedModule("scripted")
+    registry.register(module, make_spec("scripted"))
+    assert registry.commands() == []
+    collected = registry.collect_headless()
+    assert [command.name for command in collected] == ["scripted"]
+    assert [command.name for command in registry.commands()] == ["scripted"]
+
+
+def test_register_cli_runs_once_across_surfaces() -> None:
+    """A second surface replays recorded commands; the hook is never asked twice."""
+    registry = ModuleRegistry(DummyLogger())
+    module = ScriptedModule("counter")
+    registry.register(module, make_spec("counter"))
+
+    class Surface:
+        def __init__(self) -> None:
+            self.added: list[object] = []
+
+        def add_command(self, command: object) -> None:
+            self.added.append(command)
+
+    first = registry.collect_headless()
+    surface = Surface()
+    second = registry.collect_cli(surface)
+    assert [command.name for command in first] == ["counter"]
+    assert [command.name for command in second] == ["counter"]
+    assert surface.added == first  # the very same command objects, replayed
+    assert module.calls.count("register_cli") == 1
+
+
 def test_collect_cli_records_commands() -> None:
     registry = ModuleRegistry(DummyLogger())
     module = ScriptedModule("scripted")

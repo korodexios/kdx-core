@@ -23,6 +23,9 @@ the short list of what ships next; the README keeps one sentence about it.
 | 12 | Operator ergonomics: `kdx logs --rotate` (archive the file, the running chassis reopens the path), `kdx doctor --json` for machines, and the i18n convention for seeded projects (stdlib gettext, source strings as the fallback) | **delivered** |
 | 13 | Configuration honesty: unknown-key detection at boot, `kdx config check` as a CI gate, a versioned `doctor --json` payload (`schema: 1`), a seed that installs the chassis from the repository today (`--chassis-source`), a CI workflow contract test, and a coverage ratchet in `make check` | **delivered** |
 | 14 | Naming purge: two console scripts (`kdx`, `korodexios`), `kdx_module.toml` manifests, `kdx.log`, `X-Kdx-Token`, `kdx.*` loggers, `KorodexiosError`/`KorodexiosLogger` (core API `v2`), the `GET /api/v1/schema` contract endpoint, global flags for every core setting, per-module READMEs, and `CHANGELOG.md` | **delivered** |
+| 15 | Core API `v2` production hardening, additive throughout: single-instance lock (`var/chassis.lock`), SIGHUP and `POST /api/v1/reload` configuration reload without exit, `kdx rpc` and `kdx --remote` command delegation over `POST /api/v1/rpc`, declarative `IpcRoute` registration, declarative module configuration schemas gated by `kdx config check`, secret redaction in `kdx config show` (`--reveal`), environment aliasing with provenance, configurable `state_dir`/`data_dir` auto-prepared at create, an opt-in managed asyncio loop, worker supervision that marks a module `failed`, and module-contributed `kdx doctor` diagnostics | **delivered** |
+
+| 16 | Core API `v2` primitives, additive throughout: arbitrary-depth `CliCommand` nesting with `CliArgument.required` and honest `default is not None` handling, custom control-plane content types (`IpcResponse`, `guess_content_type`) and `register_static_dir(route_prefix, directory_path)` static mounts with `ETag`, `HEAD`, and traversal guards, a named-lock registry (`Chassis.acquire_lock`, `context.paths.lock`, `NamedLockRegistry` in `var/locks/`) released as one unit at shutdown, `core.paths.durable_dir` as the project's durable storage role, and a periodic task scheduler (`context.schedule`, `TaskScheduler`) that runs on the chassis clock and stops inside `stop_timeout` | **delivered** |
 
 ## Next
 
@@ -31,7 +34,12 @@ the short list of what ships next; the README keeps one sentence about it.
    freshly seeded project installs today without waiting for an index.
 2. **A Textual/TUI front end** over the same declarative `CliCommand` tree the wizard
    already reads - no module knows a second surface exists.
-3. **Windows in CI** waits for one more run. The red was ours, not mypy's: the runner
+3. **Built-in modules adopt the v2 hooks**: `heartbeat` already hands its ticker thread to
+   supervision through `workers()`; none of the three proof modules declares a
+   `config_schema()`, `ipc_routes()`, `diagnostics()`, `static_dirs()`, or a scheduled task yet.
+   Declaring them - and taking a named lock instead of inventing a private lock file - is the
+   honest dogfood for the new contract.
+4. **Windows in CI** waits for one more run. The red was ours, not mypy's: the runner
    starts bash with `-e`, so the failing mypy call ended the step before any diagnostic
    ran, and the POSIX-only `os.sysconf` / `os.getrusage` reads failed the Windows
    platform check. What remains is the Windows runtime path - test, boot, and seed steps

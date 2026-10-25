@@ -6,17 +6,25 @@ import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .kernel.locks import NamedLock
 
 from .constants import (
     CONFIG_CANDIDATES,
     CONFIG_ENV_VARS,
     DATA_DIR_NAME,
+    DEFAULT_LOCK_TIMEOUT,
     DOTENV_NAME,
+    DURABLE_DIR_NAME,
     ENV_FILE_ENV_VARS,
     HOME_ENV_VAR,
     HOME_ENV_VARS,
+    INSTANCE_LOCK_NAME,
     LOCAL_CONFIG_CANDIDATES,
+    LOCK_FILE_SUFFIX,
+    LOCKS_DIR_NAME,
     LOG_DIR_NAME,
     MODULES_DIR_NAME,
     ROOT_MARKER_FILES,
@@ -28,8 +36,35 @@ from .exceptions import PathDiscoveryError
 _PACKAGE_DIR = Path(__file__).resolve().parent
 
 
+_MAX_LOCK_NAME = 64
+_LOCK_CHARACTERS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-. "
+)
+
+
 def _coerce_path(value: str | os.PathLike[str]) -> Path:
     return Path(value).expanduser()
+
+
+def lock_name(name: str) -> str:
+    """Return *name* as a safe named-lock label, or raise ValueError.
+
+    A lock name becomes a file name, so it is exactly one label: no separators, no
+    '..', no leading dot, at most 64 characters. A space is allowed, so
+    'nightly sweep' stays readable in a report and honest on disk.
+    """
+    cleaned = str(name).strip()
+    if not cleaned:
+        raise ValueError("a named lock needs a name")
+    if len(cleaned) > _MAX_LOCK_NAME:
+        raise ValueError(f"lock name {name!r} is longer than {_MAX_LOCK_NAME} characters")
+    if not _LOCK_CHARACTERS.issuperset(cleaned):
+        raise ValueError(
+            f"lock name {name!r} may only contain letters, digits, '_', '.', '-', and spaces"
+        )
+    if cleaned.startswith(".") or ".." in cleaned:
+        raise ValueError(f"lock name {name!r} may not start with a dot or contain '..'")
+    return cleaned
 
 
 def _is_chassis_project_file(candidate: Path) -> bool:
@@ -104,6 +139,7 @@ class AppPaths:
     state_dir: Path = Path(".")
     log_dir: Path = Path(".")
     data_dir: Path = Path(".")
+    durable_dir: Path = Path(".")
     builtin_modules_dir: Path = _PACKAGE_DIR / MODULES_DIR_NAME
     extra_module_dirs: tuple[Path, ...] = ()
 
@@ -169,6 +205,7 @@ class AppPaths:
             state_dir=state_dir,
             log_dir=state_dir / Path(LOG_DIR_NAME).name,
             data_dir=state_dir / Path(DATA_DIR_NAME).name,
+            durable_dir=resolved_root / DURABLE_DIR_NAME,
             builtin_modules_dir=_PACKAGE_DIR / MODULES_DIR_NAME,
             extra_module_dirs=tuple(
                 Path(item).expanduser().resolve() for item in extra_module_dirs
@@ -188,6 +225,86 @@ class AppPaths:
             return self
         return self._clone(log_dir=self.resolve_under_root(value))
 
+    @property
+    def lock_file(self) -> Path:
+        """Return the single-instance lock path inside the state directory."""
+        return self.state_dir / INSTANCE_LOCK_NAME
+
+    @property
+    def locks_dir(self) -> Path:
+        """Return the directory holding this instance's named advisory locks."""
+        return self.state_dir / LOCKS_DIR_NAME
+
+    def lock_path(self, name: str) -> Path:
+        """Return the file backing named lock *name*; creates nothing."""
+        return self.locks_dir / f"{lock_name(name)}{LOCK_FILE_SUFFIX}"
+
+    def lock(
+        self,
+        name: str,
+        *,
+        timeout: float | None = DEFAULT_LOCK_TIMEOUT,
+        blocking: bool = True,
+        metadata: Mapping[str, Any] | None = None,
+        logger: Any = None,
+    ) -> NamedLock:
+        """Take named lock *name* in this layout; raise when it stays busy.
+
+        The lock primitives live in the kernel, so the import is deferred: the
+        filesystem layer must not pull kernel code in at module load.
+        """
+        from .kernel.locks import NamedLock
+
+        handle = NamedLock(
+            self.lock_path(name), name=lock_name(name), metadata=metadata, logger=logger
+        )
+        return handle.acquire(timeout=timeout, blocking=blocking)
+
+    def named_lock_files(self) -> tuple[str, ...]:
+        """Return every named lock file on disk, sorted; empty when none exists."""
+        if not self.locks_dir.is_dir():
+            return ()
+        return tuple(
+            sorted(
+                item.name
+                for item in self.locks_dir.iterdir()
+                if item.is_file() and item.name.endswith(LOCK_FILE_SUFFIX)
+            )
+        )
+
+    def with_state_dir(self, value: str | os.PathLike[str] | None) -> AppPaths:
+        """Return a copy whose state directory points at 'value'.
+
+        The log and data directories are children of the state directory, so a
+        configured state directory moves them with it unless they were configured
+        explicitly.
+        """
+        if not value:
+            return self
+        state = self.resolve_under_root(value)
+        return self._clone(
+            state_dir=state,
+            log_dir=state / Path(LOG_DIR_NAME).name,
+            data_dir=state / Path(DATA_DIR_NAME).name,
+        )
+
+    def with_data_dir(self, value: str | os.PathLike[str] | None) -> AppPaths:
+        """Return a copy whose data directory points at 'value'."""
+        if not value:
+            return self
+        return self._clone(data_dir=self.resolve_under_root(value))
+
+    def with_durable_dir(self, value: str | os.PathLike[str] | None) -> AppPaths:
+        """Return a copy whose durable directory points at 'value'.
+
+        The durable directory is a project-level role, so relocating the state
+        directory never moves it: a run that throws away its logs keeps the
+        databases and ledgers an operator committed.
+        """
+        if not value:
+            return self
+        return self._clone(durable_dir=self.resolve_under_root(value))
+
     def with_extra_module_dirs(self, dirs: Sequence[str | os.PathLike[str]]) -> AppPaths:
         """Return a copy with additional plugin search directories."""
         merged = list(self.extra_module_dirs)
@@ -206,6 +323,7 @@ class AppPaths:
             "state_dir": self.state_dir,
             "log_dir": self.log_dir,
             "data_dir": self.data_dir,
+            "durable_dir": self.durable_dir,
             "builtin_modules_dir": self.builtin_modules_dir,
             "extra_module_dirs": self.extra_module_dirs,
         }
@@ -218,10 +336,26 @@ class AppPaths:
         target.mkdir(parents=True, exist_ok=True)
         return target
 
+    def durable_module_dir(self, name: str) -> Path:
+        """Return (and create) the durable directory for one module.
+
+        Durable means trackable: the SQLite file or ledger an operator commits
+        lands here rather than in the gitignored state tree.
+        """
+        target = self.durable_dir / "modules" / name
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+
     def ensure_directories(self) -> tuple[Path, ...]:
         """Create the runtime directories, returning the ones that now exist."""
         created: list[Path] = []
-        for directory in (self.state_dir, self.log_dir, self.data_dir):
+        for directory in (
+            self.state_dir,
+            self.log_dir,
+            self.data_dir,
+            self.durable_dir,
+            self.locks_dir,
+        ):
             try:
                 directory.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
@@ -242,6 +376,9 @@ class AppPaths:
             "state_dir": str(self.state_dir),
             "log_dir": str(self.log_dir),
             "data_dir": str(self.data_dir),
+            "durable_dir": str(self.durable_dir),
+            "lock_file": str(self.lock_file),
+            "locks_dir": str(self.locks_dir),
             "builtin_modules_dir": str(self.builtin_modules_dir),
             "extra_module_dirs": [str(item) for item in self.extra_module_dirs],
         }
@@ -279,6 +416,7 @@ def paths_from_mapping(data: Mapping[str, Any]) -> AppPaths:
         state_dir=to_path("state_dir"),
         log_dir=to_path("log_dir"),
         data_dir=to_path("data_dir"),
+        durable_dir=to_path("durable_dir"),
         builtin_modules_dir=to_path("builtin_modules_dir"),
         extra_module_dirs=tuple(Path(str(item)) for item in extra),
     )

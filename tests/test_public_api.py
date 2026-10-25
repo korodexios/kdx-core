@@ -41,6 +41,35 @@ FROZEN_SURFACE = (
 )
 
 
+V2_SURFACE = (
+    "ConfigKind",
+    "ConfigField",
+    "ConfigSchema",
+    "ConfigIssue",
+    "InstanceLock",
+    "LockHolder",
+    "InstanceLockError",
+    "IpcRoute",
+    "IpcRequest",
+    "AsyncRuntime",
+    "WorkerSupervisor",
+    "WorkerRecord",
+    "DiagnosticCheck",
+    "DiagnosticSeverity",
+    "REDACTION",
+    "is_secret_key",
+    "redact_value",
+    "IpcResponse",
+    "IpcStaticMount",
+    "guess_content_type",
+    "NamedLock",
+    "NamedLockRegistry",
+    "LockTimeoutError",
+    "TaskScheduler",
+    "ScheduledTask",
+)
+
+
 def test_every_exported_name_resolves() -> None:
     for name in korodexios_core.__all__:
         assert getattr(korodexios_core, name) is not None, name
@@ -56,7 +85,13 @@ def test_public_surface_is_unique_and_freeze_complete() -> None:
 
 def test_core_api_version_is_frozen_at_two() -> None:
     assert korodexios_core.CORE_API_VERSION == "2"
-    assert korodexios_core.__version__.startswith("0.1.0")
+    assert korodexios_core.__version__.startswith("0.2.0")
+
+
+def test_core_api_v2_names_are_exported() -> None:
+    # Core API v2 grew additively: these names must resolve from the package root.
+    for name in V2_SURFACE:
+        assert getattr(korodexios_core, name) is not None, name
 
 
 def test_frozen_contract_is_importable_from_the_package_root() -> None:

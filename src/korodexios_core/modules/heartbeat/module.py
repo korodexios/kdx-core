@@ -87,6 +87,10 @@ class HeartbeatModule(Module):
         super().stop()
         self.logger.info("heartbeat thread stopped", ticks=self._ticks)
 
+    def workers(self) -> dict[str, threading.Thread]:
+        """Hand the ticker thread to chassis supervision (the optional v2 hook)."""
+        return {"heartbeat": self._thread} if self._thread is not None else {}
+
     def health(self) -> dict[str, Any]:
         """Report counters alongside the standard lifecycle health block."""
         data = super().health()

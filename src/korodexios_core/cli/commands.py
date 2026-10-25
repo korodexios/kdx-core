@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -11,6 +13,7 @@ from ..kernel.cli_contract import CliArgument, CliCommand, CliRequest
 from ..kernel.ipc import (
     DEFAULT_PORT,
     DISCOVERY_NAME,
+    RELOAD_PATH,
     STATUS_PATH,
     IpcDiscovery,
     IpcError,
@@ -216,6 +219,70 @@ def core_commands(chassis: Chassis) -> list[CliCommand]:
             group="core",
         ),
         CliCommand(
+            name="reload",
+            help="Ask a running daemon to re-read its configuration (SIGHUP over IPC).",
+            args=(
+                CliArgument(
+                    ("--json",),
+                    dest="as_json",
+                    action="store_true",
+                    help="Emit the reload summary as JSON.",
+                ),
+                CliArgument(
+                    ("--target",),
+                    dest="target",
+                    metavar="URL",
+                    help="post to http://host:port directly, skipping the local discovery file",
+                ),
+                CliArgument(
+                    ("--token",),
+                    dest="target_token",
+                    metavar="TOKEN",
+                    help="shared token for a remote endpoint with auth enabled",
+                ),
+            ),
+            handler=_reload_command,
+            group="core",
+        ),
+        CliCommand(
+            name="rpc",
+            help="Run one module command inside a live daemon instead of booting a chassis.",
+            args=(
+                CliArgument(
+                    ("rpc_command",),
+                    metavar="COMMAND",
+                    nargs="*",
+                    help="module command path to delegate, for example: kdx rpc heartbeat status",
+                ),
+                CliArgument(
+                    ("--args",),
+                    dest="args_json",
+                    metavar="JSON",
+                    help="arguments as a JSON object, for example --args JSON",
+                ),
+                CliArgument(
+                    ("--json",),
+                    dest="as_json",
+                    action="store_true",
+                    help="Emit the daemon's reply as JSON.",
+                ),
+                CliArgument(
+                    ("--target",),
+                    dest="target",
+                    metavar="URL",
+                    help="post to http://host:port directly, skipping the local discovery file",
+                ),
+                CliArgument(
+                    ("--token",),
+                    dest="target_token",
+                    metavar="TOKEN",
+                    help="shared token for a remote endpoint with auth enabled",
+                ),
+            ),
+            handler=_rpc_command,
+            group="core",
+        ),
+        CliCommand(
             name="modules",
             help="Inspect auto-discovered modules.",
             group="core",
@@ -303,6 +370,12 @@ def core_commands(chassis: Chassis) -> list[CliCommand]:
                             dest="as_json",
                             action="store_true",
                             help="Emit the mapping as JSON.",
+                        ),
+                        CliArgument(
+                            ("--reveal",),
+                            dest="reveal",
+                            action="store_true",
+                            help="print sensitive values in clear instead of masked",
                         ),
                     ),
                     handler=_config_show_command,
@@ -432,10 +505,83 @@ def _doctor_command(request: CliRequest) -> int:
                 f"{ipc.get('host', '-')}:{ipc.get('port', '-')}" if ipc.get("running") else "-",
             ),
             ("requests served", ipc.get("requests", 0)),
+            ("errors served", ipc.get("errors", 0)),
             ("discovery file", report.get("ipc_file", "-")),
+            (
+                "module routes",
+                ", ".join(str(route.get("path")) for route in ipc.get("routes") or [])
+                or "(none)",
+            ),
             ("process memory", memory.get("rss", "-")),
         ]
     )
+    instance = dict(report.get("instance") or {})
+    async_block = dict(report.get("async") or {})
+    supervision = dict(report.get("supervision") or {})
+    diagnostics = dict(report.get("diagnostics") or {})
+    print_section("Instance and concurrency")
+    holder = instance.get("holder")
+    print_key_values(
+        [
+            ("instance lock", str(instance.get("lock", "-"))),
+            ("lock held", format_bool(bool(instance.get("held")))),
+            ("lock holder", str((holder or {}).get("pid", "-")) if holder else "(free)"),
+            ("daemon", str(instance.get("daemon") or "(not running)")),
+            ("asyncio loop", format_bool(bool(async_block.get("running")))),
+            (
+                "async tasks",
+                f"submitted={async_block.get('submitted', 0)} "
+                f"completed={async_block.get('completed', 0)} "
+                f"failed={async_block.get('failed', 0)}",
+            ),
+            ("workers watched", supervision.get("watched", 0)),
+            ("workers dead", supervision.get("dead", 0) or "(none)"),
+        ]
+    )
+    tasks = dict(report.get("scheduler") or {})
+    locks = dict(report.get("locks") or {})
+    mounts = list(report.get("static") or [])
+    stale_locks = ", ".join(str(name) for name in locks.get("stale") or [])
+    print_section("Chassis primitives")
+    print_key_values(
+        [
+            (
+                "scheduled tasks",
+                f"scheduled={tasks.get('scheduled', 0)} runs={tasks.get('runs', 0)} "
+                f"failures={tasks.get('failures', 0)}"
+                + ("" if tasks.get("enabled", True) else " (scheduler paused)"),
+            ),
+            (
+                "task names",
+                ", ".join(str(task.get("name")) for task in tasks.get("tasks") or []) or "(none)",
+            ),
+            (
+                "named locks",
+                f"held={locks.get('held', 0)} on_disk={len(locks.get('on_disk') or [])}"
+                + (f" stale={stale_locks}" if stale_locks else ""),
+            ),
+            (
+                "lock names",
+                ", ".join(str(name) for name in locks.get("names") or []) or "(none)",
+            ),
+            (
+                "static mounts",
+                ", ".join(str(mount.get("route_prefix")) for mount in mounts) or "(none)",
+            ),
+        ]
+    )
+    print_section("Diagnostics")
+    checks = list(diagnostics.get("checks") or [])
+    if not checks:
+        write_status("no diagnostics findings", tag=TAG_OK)
+    for item in checks:
+        severity = str(item.get("severity", "info"))
+        tag = TAG_ERROR if severity in ("error", "warning") else TAG_NOTE
+        hint = f" [{item['hint']}]" if item.get("hint") else ""
+        write_line(
+            f"  {tag} {item.get('module', 'chassis')}/{item.get('name', '-')}: "
+            f"{item.get('message', '')}{hint}"
+        )
     print_section("Modules")
     modules = report["modules"]
     dependencies = chassis.registry.dependency_report()
@@ -467,7 +613,9 @@ def _doctor_command(request: CliRequest) -> int:
         write_status("module discovery problems:", tag=TAG_NOTE)
         for failure in report["discovery"]["failures"]:
             write_line(f"  {TAG_ERROR} {failure['name']} [{failure['stage']}] {failure['message']}")
-    return int(ExitCode.ERROR) if modules["failed"] else int(ExitCode.SUCCESS)
+    if modules["failed"] or diagnostics.get("errors"):
+        return int(ExitCode.ERROR)
+    return int(ExitCode.SUCCESS)
 
 
 def _modules_list_command(request: CliRequest) -> int:
@@ -874,11 +1022,14 @@ def _modules_show_command(request: CliRequest) -> int:
 
 
 def _config_show_command(request: CliRequest) -> int:
-    """Print resolved configuration keys with provenance."""
+    """Print resolved configuration keys with provenance, secrets masked."""
     chassis = _chassis(request)
     prefix = str(request.option("key") or "").strip()
+    reveal = bool(request.flag("reveal"))
     rows = [
-        row for row in chassis.config.describe_rows() if not prefix or row[0].startswith(prefix)
+        row
+        for row in chassis.config.describe_rows(redact=not reveal)
+        if not prefix or row[0].startswith(prefix)
     ]
     if request.flag("as_json"):
         dump_json({row[0]: {"value": row[1], "source": row[2]} for row in rows})
@@ -889,6 +1040,10 @@ def _config_show_command(request: CliRequest) -> int:
     print_table(rows, headers=("key", "value", "source"))
     write_line()
     write_line(f"{TAG_NOTE} precedence: CLI > environment > config file > built-in defaults")
+    if not reveal:
+        write_line(
+            f"{TAG_NOTE} sensitive values are masked; pass --reveal to print them in clear"
+        )
     return int(ExitCode.SUCCESS)
 
 
@@ -910,10 +1065,11 @@ def _config_file_command(request: CliRequest) -> int:
 
 
 def _config_check_command(request: CliRequest) -> int:
-    """Report configuration keys the chassis does not read."""
+    """Report keys the chassis does not read and module schema violations."""
     chassis = _chassis(request)
     unknown = chassis.config.unknown_keys(chassis.registry.names())
     project_keys = list(chassis.config.project_keys())
+    issues = chassis.registry.validate_schemas(chassis.config)
     report = {
         "config_file": (
             str(chassis.config.config_file) if chassis.config.config_file else None
@@ -928,11 +1084,17 @@ def _config_check_command(request: CliRequest) -> int:
             }
             for key, hint in unknown
         ],
+        "schemas": {
+            "modules": len(chassis.registry.schemas()),
+            "issues": [issue.as_dict() for issue in issues],
+        },
         "project_keys": project_keys,
     }
     if request.flag("as_json"):
         dump_json(report)
-        return int(ExitCode.CONFIG_ERROR) if unknown else int(ExitCode.SUCCESS)
+        if unknown or issues:
+            return int(ExitCode.CONFIG_ERROR)
+        return int(ExitCode.SUCCESS)
     print_key_values(
         [
             ("config file", report["config_file"] or "(none: defaults only)"),
@@ -941,15 +1103,31 @@ def _config_check_command(request: CliRequest) -> int:
             ("project keys", ", ".join(project_keys) or "(none)"),
         ]
     )
+    declared = chassis.registry.schemas()
+    write_line()
+    print_section("Module configuration schemas")
+    if not declared:
+        write_status("no module declares a configuration schema", tag=TAG_NOTE)
+    for name, schema in sorted(declared.items()):
+        secrets = ", ".join(schema.secrets()) or "-"
+        write_line(
+            f"  {name}: {len(schema.fields)} keys, "
+            f"required={', '.join(schema.required_keys()) or '-'} secrets={secrets}"
+        )
     for key, hint in unknown:
         write_status(
             f"unknown configuration key {key} [{chassis.config.origin_of(key)}]"
             + _advice_for(hint),
             tag=TAG_ERROR,
         )
-    if unknown:
+    for issue in issues:
+        origin = issue.source or chassis.config.origin_of(issue.key)
+        if not origin or origin == "unknown":
+            origin = "unset"
+        write_status(f"{issue.key}: {issue.message} [{origin}]", tag=TAG_ERROR)
+    if unknown or issues:
         write_status(
-            f"{len(unknown)} configuration keys are not read by the chassis",
+            f"{len(unknown) + len(issues)} configuration findings need attention",
             tag=TAG_NOTE,
         )
         return int(ExitCode.CONFIG_ERROR)
@@ -957,6 +1135,131 @@ def _config_check_command(request: CliRequest) -> int:
     return int(ExitCode.SUCCESS)
 
 
+def _client_discovery(request: CliRequest, chassis: Chassis) -> tuple[IpcDiscovery | None, Path]:
+    """Resolve the daemon endpoint a client-side command should talk to."""
+    default_port = int(chassis.config.get_int("core.ipc.port", DEFAULT_PORT)) or DEFAULT_PORT
+    token = str(
+        request.option("target_token") or chassis.config.get_str("core.ipc.token", "") or ""
+    ).strip()
+    target = str(request.option("target") or "").strip()
+    discovery_path = Path(chassis.paths.state_dir) / DISCOVERY_NAME
+    try:
+        if target:
+            remote_client = IpcDiscovery.remote(
+                target, default_port=default_port, token=token
+            )
+            return remote_client, discovery_path
+        return IpcDiscovery.load(discovery_path), discovery_path
+    except IpcError as exc:
+        write_line(f"{TAG_ERROR} {exc}")
+        if exc.hint:
+            write_line(f"{TAG_NOTE} {exc.hint}")
+        return None, discovery_path
+
+def _reload_command(request: CliRequest) -> int:
+    """Ask a running daemon to re-read its configuration over the control plane."""
+    chassis = _chassis(request)
+    timeout = float(chassis.config.get_float("core.ipc.timeout", 2.0))
+    discovery, discovery_path = _client_discovery(request, chassis)
+    if discovery is None or not discovery.is_process_alive():
+        write_line(f"{TAG_NOTE} chassis daemon is not running")
+        write_line(f"{TAG_NOTE} looked for {discovery_path}")
+        write_line(f"{TAG_NOTE} a SIGHUP to the daemon does the same thing")
+        return int(ExitCode.SUCCESS)
+    try:
+        code, payload = discovery.request(RELOAD_PATH, method="POST", timeout=timeout)
+    except OSError as exc:
+        write_line(f"{TAG_ERROR} no control plane answering at {discovery.base_url()}")
+        write_line(f"{TAG_NOTE} {exc}")
+        return int(ExitCode.ERROR)
+    if code in (401, 403):
+        write_line(f"{TAG_ERROR} the daemon rejected this client (token required)")
+        return int(ExitCode.ERROR)
+    if code >= 400:
+        write_line(f"{TAG_ERROR} reload failed: {payload}")
+        return int(ExitCode.ERROR)
+    if request.flag("as_json"):
+        dump_json(payload)
+        return int(ExitCode.SUCCESS)
+    changed = list(payload.get("changed") or [])
+    print_key_values(
+        [
+            ("endpoint", discovery.base_url()),
+            ("reloads", str(payload.get("reloads", 1))),
+            ("keys changed", str(len(changed))),
+            ("changed", ", ".join(changed[:8]) or "(none)"),
+        ]
+    )
+    write_status("configuration reloaded; the daemon kept running", tag=TAG_OK)
+    return int(ExitCode.SUCCESS)
+
+def _rpc_command(request: CliRequest) -> int:
+    """Delegate one module command to the live daemon over the control plane."""
+    chassis = _chassis(request)
+    timeout = float(chassis.config.get_float("core.ipc.timeout", 2.0))
+    tokens = [str(item) for item in (request.option("rpc_command") or [])]
+    if not tokens:
+        write_line(f"{TAG_ERROR} kdx rpc needs a command to delegate")
+        write_line(f"{TAG_NOTE} kdx rpc heartbeat status -- -n 5")
+        return int(ExitCode.USAGE_ERROR)
+    raw_args = request.option("args_json")
+    args: dict[str, Any]
+    if raw_args:
+        try:
+            decoded = json.loads(str(raw_args))
+        except ValueError as exc:
+            write_line(f"{TAG_ERROR} --args is not valid JSON: {exc}")
+            return int(ExitCode.USAGE_ERROR)
+        if not isinstance(decoded, dict):
+            write_line(f"{TAG_ERROR} --args must be a JSON object")
+            return int(ExitCode.USAGE_ERROR)
+        args = {str(key): value for key, value in decoded.items()}
+    else:
+        args = {}
+    discovery, discovery_path = _client_discovery(request, chassis)
+    if discovery is None or not discovery.is_process_alive():
+        write_line(f"{TAG_NOTE} no chassis daemon answering; run 'kdx run' first")
+        write_line(f"{TAG_NOTE} looked for {discovery_path}")
+        return int(ExitCode.ERROR)
+    command = " ".join(tokens)
+    try:
+        code, payload = discovery.call(command, args, timeout=timeout)
+    except OSError as exc:
+        write_line(f"{TAG_ERROR} no control plane answering at {discovery.base_url()}")
+        write_line(f"{TAG_NOTE} {exc}")
+        return int(ExitCode.ERROR)
+    render_rpc_reply(payload, command, as_json=bool(request.flag("as_json")))
+    if code in (401, 403):
+        return int(ExitCode.ERROR)
+    return int(ExitCode.SUCCESS) if code < 400 else int(ExitCode.ERROR)
+def render_rpc_reply(payload: Mapping[str, Any], command: str, *, as_json: bool) -> None:
+    """Print a daemon RPC reply the same way whether 'kdx rpc' or '--remote' sent it."""
+    if as_json:
+        dump_json(payload)
+        return
+    ok = bool(payload.get("ok"))
+    result = payload.get("result")
+    if ok and isinstance(result, dict):
+        print_key_values(
+            [
+                ("command", str(result.get("path") or command)),
+                ("exit code", str(result.get("exit_code", 0))),
+                ("module", str(result.get("module", "-"))),
+            ]
+        )
+        health = result.get("health")
+        if isinstance(health, dict):
+            print_key_values(
+                [
+                    ("state", str(health.get("state", "-"))),
+                    ("version", str(health.get("version", "-"))),
+                    ("error", str(health.get("error") or "(none)")),
+                ]
+            )
+    elif not ok:
+        write_status(str(payload.get("error") or "the daemon rejected the call"), tag=TAG_ERROR)
+    else:
+        write_status(f"{command}: {result}", tag=TAG_OK)
 def _advice_for(hint: str) -> str:
     """Return the parenthetical hint for an unknown configuration key."""
     if not hint:

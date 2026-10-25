@@ -24,6 +24,20 @@ REQUIRED_DOCS = {
 }
 
 
+def test_docs_name_the_released_version() -> None:
+    """A tag ships docs that name its own version, never the previous one."""
+    source = read(REPO_ROOT / "src/korodexios_core/version.py")
+    match = re.search('__version__: Final\\[str\\] = "([^"]+)"', source)
+    assert match is not None, "version.py must keep the annotated assignment"
+    version = match.group(1)
+    assert f"**Release:** `v{version}`" in read(REPO_ROOT / "README.md")
+    guide = read(DOCS / "AGENTS_GUIDE.md")
+    assert f"| Version | `{version}`" in guide
+    assert f"| Version | `{version}`" in read(REPO_ROOT / "llms.txt")
+    assert f"@v{version}" in read(DOCS / "CLI_REFERENCE.md")
+    assert f"## [{version}]" in read(REPO_ROOT / "CHANGELOG.md")
+
+
 def read(path: Path) -> str:
     """Return *path* as UTF-8 text."""
     return path.read_text(encoding="utf-8")

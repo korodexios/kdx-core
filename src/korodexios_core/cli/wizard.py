@@ -47,11 +47,26 @@ class RootWizard:
         self._options = dict(options or {})
         if not self._commands:
             raise ValueError("the wizard needs at least one visible command")
+        self._index: dict[str, CliCommand] = {}
+        for command in self._commands:
+            for path, node in command.walk():
+                self._index[path] = node
 
     @property
     def commands(self) -> list[CliCommand]:
         """Return the commands offered by this wizard."""
         return list(self._commands)
+
+    @property
+    def paths(self) -> tuple[str, ...]:
+        """Return every runnable command path, space-joined, as the menu reaches it.
+
+        The wizard and argparse read the same tree, so this is the list a doc
+        generator or a smoke test wants: 'heartbeat status', not just 'heartbeat'.
+        """
+        return tuple(
+            path for path, node in self._index.items() if node.handler is not None
+        )
 
     def run(self) -> int:
         """Run the wizard loop and return a process exit code."""
@@ -82,11 +97,17 @@ class RootWizard:
         return command, command.name
 
     def _submenu(self, command: CliCommand, path: str) -> tuple[CliCommand, str] | None:
-        """Drill into a command group; returns None when the user goes back."""
+        """Drill one level into a command group; None when the user goes back.
+
+        The label carries the path walked so far, so a third level reads as
+        'vault index action' instead of a bare 'action' - the menu has to say
+        where the operator already is.
+        """
         children = list(command.subcommands)
         options = [MenuOption(label=child.name, hint=child.help) for child in children]
         options.append(MenuOption(label=BACK_LABEL))
-        index = self._ux.menu(f"{path} action", options, default_index=1)
+        label = f"{path} {'group' if any(child.is_group for child in children) else 'action'}"
+        index = self._ux.menu(label, options, default_index=1)
         if index == len(options):
             return None
         child = children[index - 1]
@@ -98,8 +119,11 @@ class RootWizard:
         current = command
         while current.is_group:
             if not self._ux.interactive:
-                current = current.subcommands[0]
-                seen = f"{seen} {current.name}"
+                # A non-interactive run takes the first runnable leaf, at any
+                # depth, instead of stopping at the first child of a deep group.
+                leaf = current.leaves[0]
+                seen = f"{seen} {leaf.name}".strip()
+                current = leaf
                 continue
             picked = self._submenu(current, seen)
             if picked is None:
@@ -129,7 +153,7 @@ class RootWizard:
         answers: dict[str, Any] = {}
         overrides = WIZARD_FLAG_DEFAULTS.get(command.name, {})
         for argument in command.args:
-            dest = argument.dest or argument.flags[-1].lstrip("-")
+            dest = argument.destination()
             answers[dest] = self._ask_argument(argument, dest, overrides, path)
         return argparse.Namespace(**answers)
 

@@ -20,7 +20,7 @@ docs. `kdx --help` lists every command, including the ones modules contributed.
 | pip in a venv | `pip install korodexios-core` | from an index, once published |
 | uv | `uv pip install korodexios-core` | the same wheel |
 | pipx / uv tool | `pipx install korodexios-core` | the two console scripts land on PATH |
-| git bootstrap | `pip install "korodexios-core @ git+ssh://git@github.com/korodexios/kdx-core.git@v0.1.0"` | the documented path before an index publish |
+| git bootstrap | `pip install "korodexios-core @ git+ssh://git@github.com/korodexios/kdx-core.git@v0.2.0"` | the documented path before an index publish |
 | development | `pip install -e ".[dev]"` | the chassis repository itself |
 
 The wheel carries `py.typed` and every built-in module manifest
@@ -46,6 +46,10 @@ manifests it needs. The sdist carries `docs/`, `README.md`, `AGENTS.md`, `llms.t
 | `--ipc-token TOKEN` | static shared secret for the control plane | empty (ephemeral) |
 | `--ipc-timeout SECONDS` | client timeout for control-plane reads | `2.0` |
 | `--no-ipc` | do not open the control plane in `kdx run` | ipc enabled |
+| `--instance-lock` / `--no-instance-lock` | claim or skip `var/chassis.lock` for this run | lock claimed |
+| `--asyncio` / `--no-asyncio` | start or skip the chassis-managed asyncio loop | loop off |
+| `--env-alias NAME=KEY` | map a legacy environment variable onto a dotted key (repeatable) | - |
+| `--remote` | delegate the command to a running daemon over IPC, then exit | - |
 | `--allow-anonymous-shutdown` | unauthenticated clients may stop the daemon | off |
 | `--tick-interval SECONDS` | lifecycle tick interval | `1.0` |
 | `--stop-timeout SECONDS` | budget for module `stop()` hooks | `5.0` |
@@ -89,6 +93,40 @@ Reports endpoint, auth policy, shutdown policy, the source of the endpoint, chas
 state, uptime, ticks, and every module's health. A 401 prints a hint to pass `--token`
 or set `KDX_CORE__IPC__TOKEN`.
 
+## `kdx reload`
+
+```bash
+kdx reload                      # ask the running daemon to re-read its configuration
+kdx reload --json               # {"reloaded": true, "changed": [...]}
+```
+
+The daemon stays up: the layers are re-read with the same precedence, the changed keys
+are published as `core.config.reloaded`, and every module's optional `on_config_reload`
+hook runs with its scoped view. Log level changes apply immediately; moving a path role
+(`core.paths.*`, `core.log.dir`) needs a restart. With no daemon answering the command
+prints the note and exits `0` - a reload is never an error, and `kdx doctor` tells you
+whether SIGHUP is wired.
+
+## `kdx rpc`
+
+```bash
+kdx rpc heartbeat status                 # run a module command inside the daemon
+kdx rpc heartbeat status --args '{"lines": 5}'
+kdx rpc backup run --json                # the daemon's reply, verbatim
+kdx rpc db index rebuild --args "{"lines": 8}"}   # a nested path, any depth
+```
+
+The client reads `var/chassis.ipc`, posts one `POST /api/v1/rpc`, and prints the answer:
+`ok`, `command`, and `result` on success, `error` plus the daemon's HTTP status otherwise.
+Exit code is `0` when the daemon's command exited `0`, else `1`; an unknown command is `404`
+on the wire and `1` here. `kdx --remote heartbeat status` is the same delegation spelled
+as a global flag: the client never boots a chassis of its own.
+
+The command path nests as deep as the module declared it: the daemon walks
+`CliCommand.subcommands` token by token, so `kdx rpc db index rebuild` is one rpc call. Its
+reply carries `path` and `depth`, and a name that resolves to a group with no handler answers
+`404` naming the group that has no such child.
+
 ## `kdx doctor`
 
 ```bash
@@ -97,7 +135,14 @@ kdx doctor --json             # the same report as JSON
 ```
 
 Works without a running daemon - it boots the chassis in-process, so it is the first
-command to run when something looks misconfigured.
+command to run when something looks misconfigured. The report covers the instance lock
+(held, stale, and whether a daemon answers), the asyncio loop, watched workers, and the
+diagnostics every module contributes; `kdx doctor --json` carries the same under
+`instance`, `async`, `supervision`, `scheduler`, `locks`, `static`, and `diagnostics`. Scheduled
+tasks that keep failing and lock files left behind by a dead process report diagnostics of
+their own, so the run explains a stuck task and an abandoned lock without a module having to
+mention either. A module in `failed` health or an `error` diagnostic exits the command `1`,
+so it works as a deployment gate.
 
 ## `kdx logs`
 
@@ -134,8 +179,9 @@ immediately runnable.
 kdx config show                       # every resolved key with its source
 kdx config show --key core.log        # only keys under a prefix
 kdx config show --json                # mapping as JSON
+kdx config show --reveal              # show secret values instead of ***redacted***
 kdx config file                       # which file won, and the local override if any
-kdx config check                      # keys nothing reads, with the closest known key
+kdx config check                      # unknown keys, module schema violations
 kdx config check --json               # the same report for machines
 ```
 
@@ -148,7 +194,11 @@ foreign top-level key (`greeting`, `app.name`, `project.owner`) is the project's
 it is listed as information and never fails the command. The chassis logs the same
 findings once at boot, on stderr, and `kdx doctor --json` carries them under
 `config.unknown`. The command exits `3` (configuration error) when it finds a key
-nothing reads, so CI can gate on it.
+nothing reads, so CI can gate on it. The second half of the report is declarative
+module schemas: `config_schema()` hooks are collected at discovery, validated against
+the module's scoped keys, and printed under "Module configuration schemas". A required
+key with no value, a value that will not coerce, or a value outside the declared
+`choices` is an error and exits `3`; the JSON payload carries them under `schemas.issues`.
 
 ## `kdx init`
 
@@ -165,7 +215,7 @@ The seed ships `kdx.yml`, `.env.example`, `Makefile`, `README.md`, `AGENTS.md`,
 smoke tests. It passes `make check` on arrival.
 
 The chassis dependency is pinned to the repository by default
-(`korodexios-core @ git+https://github.com/korodexios/kdx-core.git@v0.1.0`), so a fresh
+(`korodexios-core @ git+https://github.com/korodexios/kdx-core.git@v0.2.0`), so a fresh
 venv can `pip install -e .` the seeded project before any index publish. Pass
 `--chassis-source index` once the package is on an index; an unknown choice is refused
 with a hint.
@@ -179,6 +229,39 @@ runs and `--yes` skip the prompts.
 ## `kdx version`
 
 Prints the chassis version, the core API version, and the Python runtime line.
+
+## Command nesting and arguments
+
+Module commands are trees, not flat names, and every surface reads the same tree:
+
+```bash
+kdx db index rebuild --table page --lines 8   # argparse builds this from subcommands
+kdx wizard                                    # the menu descends group by group
+kdx rpc db index rebuild                      # the daemon walks the same path
+```
+
+- A group is a `CliCommand` with `subcommands` and no handler; asking for the group alone
+  prints its usage (CLI) or answers `404` (rpc) - never a silent no-op.
+- An option declared `required=True` is honoured: leaving it out exits `2`. It is refused for
+  `store_true`, `count`, and `*_const` actions, because a flag is `False` when absent.
+- A positional argument with `nargs="?"` and a `default` lands on that default, not on
+  `None`; a positional is mandatory unless its `nargs` says otherwise.
+- Duplicate or blank names inside one tree are rejected when the command is built, so a typo
+  fails at import time instead of three levels down.
+
+The chassis primitives, and the keys that configure them:
+
+| Setting | Config key | Env | Default |
+| --- | --- | --- | --- |
+| Durable storage role | `core.paths.durable_dir` | `KDX_CORE__PATHS__DURABLE_DIR` | `data` |
+| Periodic tasks on | `core.scheduler.enabled` | `KDX_CORE__SCHEDULER__ENABLED` | `true` |
+| Scheduler on its own thread | `core.scheduler.threaded` | `KDX_CORE__SCHEDULER__THREADED` | `false` |
+| Serve module static mounts | `core.ipc.static` | `KDX_CORE__IPC__STATIC` | `true` |
+
+Named locks live in `&lt;state_dir&gt;/locks/&lt;name&gt;.lock`: `kdx doctor` lists them, and shutdown
+releases every name the chassis took. Files that must outlive a moved `var/` belong under
+`core.paths.durable_dir` (default `data/`), and recurring work belongs in
+`context.schedule(interval_seconds, callback)`.
 
 ## Built-in module commands
 
@@ -226,7 +309,10 @@ local clients need no change; remote clients pass `--target`.
 
 - Non-TTY runs never prompt; `--yes` also forces defaults in a TTY.
 - `--json` is available on `doctor`, `status`, `modules list`, `modules show`,
-  `modules create`, `config show`, and the module status commands.
+  `modules create`, `config show`, `config check`, `reload`, `rpc`, and the module status
+  commands.
+- `kdx reload` exits `0` even with no daemon running; `kdx rpc` and `kdx --remote` exit `1`
+  when nothing answers, because the operator asked for work that did not happen.
 - Diagnostics go to stderr, UI output to stdout: redirect stderr away and stdout stays
   parseable.
 - `--home PATH` makes any command runnable from anywhere; it beats `KDX_HOME`.
