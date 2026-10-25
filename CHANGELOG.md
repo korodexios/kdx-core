@@ -5,8 +5,31 @@ history lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## [Unreleased]
 
-_Nothing pending: the working tree is the `v0.2.7` tag._
+_Nothing pending: the working tree is the `v0.2.8` tag._
 
+## [0.2.8] - 2026-10-25
+
+Maintenance patch on the platform edges: the two places that reached for a POSIX-only
+call now answer for their platform once, at import, so a Windows type check is clean with
+no `type: ignore` left on a POSIX attribute, and a tag's release artifacts stop waiting on
+hosts that only report. Nothing in the frozen surface changed shape - no new package-root
+export, no changed signature, no renamed configuration key.
+
+### Fixed
+
+- **The instance lock and the memory probe resolve their platform at import**:
+  `instance_lock` maps one private pair of calls onto `msvcrt.locking` on Windows and
+  `fcntl.flock` on POSIX, and `ipc.process_memory()` reads `resource.getrusage` only where
+  that module exists, so `mypy --strict --platform win32` reports no errors for a daemon
+  that only ever runs there. The lock also stopped carrying a platform module reference it
+  never called.
+
+### Changed
+
+- **A release follows the Linux bar**: the CI matrix marks a macOS or Windows failure
+  `continue-on-error`, so a tag publishes its wheel and sdist once the Linux legs and the
+  package audit pass instead of publishing nothing because one host went red. The
+  portability hosts keep running, keep reporting, and keep their diagnostics branch.
 ## [0.2.7] - 2026-10-25
 
 Maintenance and hardening patch: retention stops being a side effect of a copy, a

@@ -13,7 +13,7 @@ section is a contract, not a suggestion. Human-oriented narrative lives in
 | Distribution | `korodexios-core` |
 | Import root | `korodexios_core` |
 | Console scripts | `kdx` (primary short alias), `korodexios` (canonical) |
-| Version | `0.2.7` (production), core API frozen at `v2` (additive changes only inside v2) |
+| Version | `0.2.8` (production), core API frozen at `v2` (additive changes only inside v2) |
 | Runtime | CPython 3.11+, stdlib first (PyYAML for config, rich for the CLI surface) |
 | Config file | `kdx.yml` / `kdx.yaml` / `kdx.json` (then `korodexios.*`) |
 | Env prefix | `KDX_` primary; `KORODEXIOS_` is the canonical long prefix |
@@ -693,7 +693,9 @@ non-blocking (`timeout=0.0`, the default: try once, raise `LockTimeoutError`) or
 (`timeout=2.0`, retrying every 20 ms), and `blocking=False` means one attempt. The lock file
 carries `pid`, `label`, `name`, `started_at`, `host`, and `port`, so `holder()` and `is_stale()`
 answer who owns it and whether that owner is gone - the same honesty as the instance lock,
-one name at a time. Shutdown releases every name the chassis took (`release_all()`), so a
+one name at a time. Which call takes that lock - `fcntl.flock` on POSIX, `msvcrt.locking` on
+Windows - is chosen once at import, so no acquisition pays a function-level import and no
+type checker meets a POSIX-only attribute on Windows (`v0.2.8`). Shutdown releases every name the chassis took (`release_all()`), so a
 crashed run leaves a *stale* file, not a permanent lock: `kdx doctor` reports it as `info`.
 `chassis.lock(name)` inspects the registry and reserves the name in one guarded step, so two
 threads that claim the same name at the same moment never both pass a check: the loser

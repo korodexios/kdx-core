@@ -89,6 +89,14 @@ directory ignores dot files, swap files, and names `lock_name()` refuses | **del
   and the wheel and sdist exclusions are declared in `pyproject.toml` and audited by the suite,
   so `var/`, `*.log`, `*.tmp`, byte code, and dev caches can never ride into a publish | **delivered** |
 
+| 24 | `v0.2.8` types the platform edges and lets one platform carry a release: the
+  instance lock resolves `msvcrt.locking` on Windows and `fcntl.flock` on POSIX once at
+  import, `ipc.process_memory()` reads `resource.getrusage` only where that module exists,
+  and `mypy --strict --platform win32` is clean with no `type: ignore` left on a POSIX
+  attribute; the lock drops the platform module reference it kept but never called; and the
+  CI matrix marks a macOS or Windows failure `continue-on-error`, so a tag publishes its
+  wheel and sdist on the Linux bar while the portability hosts keep reporting | **delivered** |
+
 ## Next
 
 1. **Publish to an index.** PyPI through trusted publishing. The git bootstrap is
@@ -102,11 +110,12 @@ directory ignores dot files, swap files, and names `lock_name()` refuses | **del
    `retention` diagnostic row. The next honest step is putting that window in front of a person:
    a `kdx backup retention` report (window, sweep interval, archives standing, last sweep, space
    taken back) so an operator can ask what the policy did without reading JSON.
-4. **Windows in CI** waits for one more run. The red was ours, not mypy's: the runner
-   starts bash with `-e`, so the failing mypy call ended the step before any diagnostic
-   ran, and the POSIX-only `os.sysconf` / `os.getrusage` reads failed the Windows
-   platform check. What remains is the Windows runtime path - test, boot, and seed steps
-   now get to run there for the first time.
+4. **Windows in CI** types clean and waits on its runtime path. The red was ours, not
+   mypy's: the runner starts bash with `-e`, so the failing mypy call ended the step
+   before any diagnostic ran, and the POSIX-only `os.sysconf` / `os.getrusage` reads
+   failed the Windows platform check - `v0.2.8` resolved those reads at import, so a
+   `--platform win32` check reports no errors. What remains is the Windows runtime path:
+   test, boot, and seed steps now get to run there for the first time.
 
 ## Release cadence
 

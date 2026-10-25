@@ -52,6 +52,10 @@ jobs:
   check:
     name: check (${{ matrix.os }} / Python ${{ matrix.python }})
     needs: [prepare]
+    # Linux is the release bar. A macOS or Windows leg carries a warning mark and
+    # keeps a tag's release artifacts moving: a portability mark missing on one
+    # host is information, not a reason to publish nothing at all.
+    continue-on-error: ${{ matrix.os != 'ubuntu-latest' }}
     # A failing Windows check publishes its first diagnostics line as a git note,
     # which is readable over SSH without a signed-in browser.
     permissions:

@@ -519,6 +519,22 @@ class IpcError(ValueError):
         self.hint = hint
 
 
+if sys.platform == "win32":  # pragma: no cover - Windows only
+    def _ru_maxrss() -> int | None:
+        """Return peak resident memory; Windows answers no ru_maxrss to a caller."""
+        return None
+
+else:
+    import resource
+
+    def _ru_maxrss() -> int | None:
+        """Return peak resident memory in the unit this platform reports it in."""
+        try:
+            return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        except (OSError, ValueError):
+            return None
+
+
 def process_memory() -> dict[str, Any]:
     """Return this process's resident memory, best effort, cross-platform."""
     result: dict[str, Any] = {"rss_bytes": None, "rss": "-", "source": "unavailable"}
@@ -531,15 +547,11 @@ def process_memory() -> dict[str, Any]:
             return result
     except (OSError, ValueError, IndexError):
         return result
-    try:
-        import resource
-
-        usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    usage = _ru_maxrss()
+    if usage is not None:
         scale = 1 if IS_LINUX else 1024
         rss = int(usage) * scale
         result.update(rss_bytes=rss, rss=_human_bytes(rss), source="getrusage")
-    except (ImportError, ValueError, OSError):
-        pass
     return result
 
 

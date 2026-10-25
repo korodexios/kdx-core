@@ -311,7 +311,7 @@ The freeze policy is mechanical:
 | `korodexios_core.CORE_API_VERSION` | the string a module can assert against |
 
 The wheel ships a `py.typed` marker, so type information travels with the package. A patch
-release on the `0.2` line (`0.2.1`, `0.2.2`, `0.2.3`, `0.2.4`, `0.2.5`, `0.2.6`, `0.2.7`) carries hardening and dogfooding under the same
+release on the `0.2` line (`0.2.1`, `0.2.2`, `0.2.3`, `0.2.4`, `0.2.5`, `0.2.6`, `0.2.7`, `0.2.8`) carries hardening and dogfooding under the same
 `v2` surface: no new export, no changed signature, no renamed configuration key.
 Core API v2 added, without breaking a single existing import: `InstanceLock` and
 `LockHolder`, `AsyncRuntime`, `WorkerSupervisor` and `WorkerRecord`, `DiagnosticCheck` and
@@ -330,7 +330,10 @@ operator moves `state_dir`, a `time.sleep()` loop with no shutdown path.
   runtime role does; `data_dir` stays the module-data role. `ensure_directories()` prepares all
   of them at `create()`, so no module has to mkdir anything.
 - **Named locks.** One registry per chassis, one file per name, an `flock` on the descriptor
-  plus a JSON payload naming the live holder. Acquisition is non-blocking by default
+  plus a JSON payload naming the live holder. Which primitive takes that lock -
+  `fcntl.flock` on POSIX, `msvcrt.locking` on Windows - is resolved once at import, so no
+  runtime branch pays a function-level import and no type checker meets a POSIX-only
+  attribute on Windows (`v0.2.8`). Acquisition is non-blocking by default
   (`timeout=0.0`), because holding a lock is a coordination decision and queueing is a design
   decision the caller makes. Shutdown releases every name the process took, so a crash leaves
   a *stale* file that `kdx doctor` can explain rather than a permanent lock. `hold(name)`

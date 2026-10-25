@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import sys
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -33,15 +34,31 @@ __all__ = [
 _LOCK_BYTES: int = 4096
 
 
-def _platform_locker() -> Any:
-    """Return the platform module that can take a non-blocking exclusive lock."""
-    if os.name == "nt":  # pragma: no cover - Windows only
-        import msvcrt
+if sys.platform == "win32":  # pragma: no cover - Windows only
+    import msvcrt
 
-        return msvcrt
+    def _lock_exclusive(descriptor: int, *, block: bool) -> None:
+        """Claim a Windows byte-range lock, restarting the seek each time."""
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        mode = msvcrt.LK_LOCK if block else msvcrt.LK_NBLCK
+        msvcrt.locking(descriptor, mode, _LOCK_BYTES)
+
+    def _unlock_exclusive(descriptor: int) -> None:
+        """Release the Windows byte-range lock on *descriptor*."""
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, _LOCK_BYTES)
+
+else:
     import fcntl
 
-    return fcntl
+    def _lock_exclusive(descriptor: int, *, block: bool) -> None:
+        """Take an exclusive POSIX flock, refusing to wait unless asked."""
+        flags = fcntl.LOCK_EX if block else fcntl.LOCK_EX | fcntl.LOCK_NB
+        fcntl.flock(descriptor, flags)
+
+    def _unlock_exclusive(descriptor: int) -> None:
+        """Release the POSIX flock on *descriptor*."""
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
 
 
 def lock_descriptor(descriptor: int, *, block: bool = False) -> None:
@@ -50,35 +67,19 @@ def lock_descriptor(descriptor: int, *, block: bool = False) -> None:
     The non-blocking form (the default) raises OSError the moment the lock is
     busy, which is what every chassis caller wants: fail fast, then say who holds
     it. ``block=True`` waits on the OS instead, for a caller that would rather
-    queue than poll.
+    queue than poll. Which primitive answers that call is decided once, at import,
+    because the two platforms name it differently.
     """
-    if os.name == "nt":  # pragma: no cover - Windows only
-        import msvcrt
-
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        if block:
-            msvcrt.locking(descriptor, msvcrt.LK_LOCK, _LOCK_BYTES)  # type: ignore[attr-defined]
-        else:
-            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, _LOCK_BYTES)  # type: ignore[attr-defined]
-        return
-    import fcntl
-
-    flags = fcntl.LOCK_EX if block else fcntl.LOCK_EX | fcntl.LOCK_NB
-    fcntl.flock(descriptor, flags)
+    _lock_exclusive(descriptor, block=block)
 
 
 def unlock_descriptor(descriptor: int) -> None:
     """Release the platform's exclusive lock on *descriptor*."""
-    if os.name == "nt":  # pragma: no cover - Windows only
-        import msvcrt
-
+    if sys.platform == "win32":  # pragma: no cover - Windows only
         with contextlib.suppress(OSError):
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            msvcrt.locking(descriptor, msvcrt.LK_UNLCK, _LOCK_BYTES)  # type: ignore[attr-defined]
-        return
-    import fcntl
-
-    fcntl.flock(descriptor, fcntl.LOCK_UN)
+            _unlock_exclusive(descriptor)
+    else:
+        _unlock_exclusive(descriptor)
 
 
 def pid_alive(pid: int) -> bool:
@@ -172,7 +173,6 @@ class InstanceLock:
         self._metadata: dict[str, Any] = dict(metadata or {})
         self._logger = logger
         self._descriptor: int | None = None
-        self._locker = _platform_locker()
 
     @property
     def path(self) -> Path:

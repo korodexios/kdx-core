@@ -73,6 +73,18 @@ def test_matrix_is_planned_by_the_prepare_job() -> None:
     assert 'refs/tags/v*' in body  # a tag runs the full matrix, a branch push the trimmed one
 
 
+def test_portability_legs_report_without_blocking_the_release() -> None:
+    """Linux is the release bar; a macOS or Windows leg is a warning, not a hold.
+
+    A tag used to publish nothing at all the moment one portability host went red,
+    so the workflow must say which failures an operator may ship under - and which
+    never may.
+    """
+    check = jobs(parsed())["check"]
+    policy = str(check.get("continue-on-error"))
+    assert "matrix.os != 'ubuntu-latest'" in policy, "only Linux failures block a release"
+
+
 def test_no_job_condition_reads_the_matrix() -> None:
     """A job-level `if` cannot see `matrix`; only a step-level one can."""
     for name, job in jobs(parsed()).items():
