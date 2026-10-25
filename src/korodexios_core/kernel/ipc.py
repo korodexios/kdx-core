@@ -11,6 +11,7 @@ with `core.ipc.auth` deciding whether a token is required to read status.
 from __future__ import annotations
 
 import contextlib
+import errno
 import hmac
 import json
 import mimetypes
@@ -689,6 +690,23 @@ class _ControlServer(ThreadingHTTPServer):
     kdx_ipc: IpcServer
 
 
+_TEARDOWN_ERRNOS: Final[frozenset[int]] = frozenset(
+    {errno.EBADF, errno.EPIPE, errno.ECONNRESET, errno.ECONNABORTED}
+)
+
+
+def _is_teardown_error(exc: BaseException) -> bool:
+    """Return True when *exc* is a socket that closed underneath a live handler.
+
+    Stopping the control plane closes the listening socket while a worker thread is still
+    answering a client: the peer goes away, the descriptor goes away, and the handler is
+    left holding a write nobody will read. That is an ending, not a fault.
+    """
+    if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+        return True
+    return isinstance(exc, OSError) and int(getattr(exc, "errno", 0) or 0) in _TEARDOWN_ERRNOS
+
+
 class _ControlHandler(BaseHTTPRequestHandler):
     """Routes the chassis control plane, the module routes, and the token check."""
 
@@ -720,6 +738,21 @@ class _ControlHandler(BaseHTTPRequestHandler):
         self._dispatch("DELETE")
 
     def _dispatch(self, method: str) -> None:
+        """Answer one request, and swallow only a socket that closed while answering it.
+
+        The chassis stops while a client may still be mid-request. A pipe or descriptor
+        that vanished is recorded and ends this connection; any other error is left to
+        rise, because a handler that hides a real fault answers nothing at all.
+        """
+        try:
+            self._route(method)
+        except OSError as exc:
+            if not _is_teardown_error(exc):
+                raise
+            self.close_connection = True
+            self._note_socket_gone(exc, f"{method} dispatch")
+
+    def _route(self, method: str) -> None:
         ipc = cast("_ControlServer", self.server).kdx_ipc
         path = normalize_route_path(self.path)
         module_route = ipc.lookup_route(path)
@@ -924,22 +957,47 @@ class _ControlHandler(BaseHTTPRequestHandler):
         *,
         body: bool = True,
     ) -> None:
-        """Write one response, whatever its media type, with the given headers."""
-        self.send_response(code)
-        self.send_header("Content-Type", content_type)
-        if code != 304:
-            self.send_header("Content-Length", str(len(raw)))
-        for key, value in headers:
-            self.send_header(str(key), str(value))
-        self.send_header("Connection", "close")
-        # The header alone does not end the dispatch loop. A client that asked for
-        # HTTP/1.1 keep-alive would leave this handler waiting for the next request on
-        # a socket the chassis never reuses, so the handler says the same thing the
-        # header says and the connection closes after this response.
-        self.close_connection = True
-        self.end_headers()
-        if body and code != 304:
-            self.wfile.write(raw)
+        """Write one response, whatever its media type, with the given headers.
+
+        The client may stop reading, or the chassis may stop serving, between the status
+        line and the body: a socket that closed mid-response is answered quietly here too.
+        """
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", content_type)
+            if code != 304:
+                self.send_header("Content-Length", str(len(raw)))
+            for key, value in headers:
+                self.send_header(str(key), str(value))
+            self.send_header("Connection", "close")
+            # The header alone does not end the dispatch loop. A client that asked for
+            # HTTP/1.1 keep-alive would leave this handler waiting for the next request
+            # on a socket the chassis never reuses, so the handler says the same thing the
+            # header says and the connection closes after this response.
+            self.close_connection = True
+            self.end_headers()
+            if body and code != 304:
+                self.wfile.write(raw)
+        except OSError as exc:
+            if not _is_teardown_error(exc):
+                raise
+            self._note_socket_gone(exc, f"response {code}")
+
+    def _note_socket_gone(self, exc: OSError, where: str) -> None:
+        """Say once that the socket closed underneath this response.
+
+        A control plane that is stopping has decided to stop talking: a client that is
+        still mid-request is the expected ending, so it is logged at debug level. The same
+        socket error while the plane is running is worth one line to the operator.
+        """
+        ipc = getattr(self.server, "kdx_ipc", None)
+        logger = getattr(ipc, "logger", None)
+        if logger is None:
+            return
+        running = bool(getattr(ipc, "running", True))
+        level = logger.warning if running else logger.debug
+        message = "ipc socket closed mid-response" if running else "ipc socket closed at shutdown"
+        level(message, path=str(self.path), where=where, error=str(exc))
 
     def log_message(self, format: str, *args: Any) -> None:
         """Route request logging to the chassis logger, never to stderr directly."""
@@ -1350,14 +1408,29 @@ class IpcServer:
         return payload
 
     def _write_discovery(self) -> None:
+        """Publish the discovery file so a reader never finds it half written.
+
+        'kdx status' and an external health check read this file at any moment, including
+        the first millisecond of boot. Truncating it in place showed those readers an empty
+        file, which they read as a daemon that is not running, so the payload lands in a
+        sibling this process owns and is renamed into place in one filesystem step.
+        """
         target = self._options.discovery_path
         if target is None or self._discovery is None:
             return
         target.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps(self._discovery.as_dict(), sort_keys=True)
-        descriptor = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        payload = json.dumps(self._discovery.as_dict(), sort_keys=True) + "\n"
+        temporary = target.parent / f"{target.name}.tmp.{os.getpid()}"
+        descriptor = os.open(str(temporary), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(payload + "\n")
+            handle.write(payload)
+            handle.flush()
+        try:
+            os.replace(str(temporary), str(target))
+        except OSError:
+            with contextlib.suppress(OSError):
+                temporary.unlink()
+            raise
         with contextlib.suppress(OSError):
             os.chmod(str(target), 0o600)
 

@@ -13,7 +13,7 @@ section is a contract, not a suggestion. Human-oriented narrative lives in
 | Distribution | `korodexios-core` |
 | Import root | `korodexios_core` |
 | Console scripts | `kdx` (primary short alias), `korodexios` (canonical) |
-| Version | `0.2.4` (production), core API frozen at `v2` (additive changes only inside v2) |
+| Version | `0.2.5` (production), core API frozen at `v2` (additive changes only inside v2) |
 | Runtime | CPython 3.11+, stdlib first (PyYAML for config, rich for the CLI surface) |
 | Config file | `kdx.yml` / `kdx.yaml` / `kdx.json` (then `korodexios.*`) |
 | Env prefix | `KDX_` primary; `KORODEXIOS_` is the canonical long prefix |
@@ -519,7 +519,9 @@ dependency order -> lifecycle loop -> `stop()` in reverse -> close logging.
   accessible and is announced as `127.0.0.1` in the discovery file.
 - The discovery file is `var/chassis.ipc`, mode `0600`, holding `pid`, `host`, `port`,
   `token`, `started_at`. Read it with `IpcDiscovery.load(path)` or reach a remote
-  daemon with `IpcDiscovery.remote("http://host:port")`.
+  daemon with `IpcDiscovery.remote("http://host:port")`. The chassis writes the file to a
+  `0600` sibling and renames it into place, so a reader never finds it empty and mistakes a
+  healthy daemon for a dead one (`v0.2.5`).
 - The shared secret is `core.ipc.token` (`KDX_CORE__IPC__TOKEN`). When it is empty the
   chassis mints an ephemeral token at boot (`token_source: ephemeral`); set it to make
   the secret stable across restarts (`token_source: static`).
@@ -530,6 +532,9 @@ dependency order -> lifecycle loop -> `stop()` in reverse -> close logging.
 - Every answer ends the connection: the handler sends `Connection: close` and sets its own
   `close_connection` flag, so a client that offered HTTP/1.1 keep-alive gets one response and
   a closed socket instead of waiting for a second answer (`v0.2.4`).
+- A socket that closes while the control plane is stopping is an ending, not a fault: the
+  handler records one quiet line - debug while the chassis stops, warning while it runs - and
+  answers the next client. A fault that is not a socket is never swallowed (`v0.2.5`).
 - `POST /api/v1/reload` re-reads the configuration in the running daemon; the reply
   carries `reloaded` and the list of `changed` keys.
 - `POST /api/v1/rpc` with `{"command": "heartbeat status", "args": {...}}` runs one
@@ -731,6 +736,10 @@ task behind. A callback may take scheduler decisions of its own - schedule anoth
 unschedule a neighbour, or withdraw its own name mid-run - because a sweep works from a
 snapshot of what was due, taken with the guard held, and calls each task with the guard
 released: self-cancellation is a decision, not a missed beat (`v0.2.4`).
+`backup_engine` is the shipped pairing of the two primitives (`v0.2.5`): when `schedule_interval` is
+positive the module declares an `auto_sweep` task, and the copy that task starts takes the same
+named lock a manual `kdx backup run` takes, so a sweep that arrives mid-copy steps aside, counts
+the refusal, and says so in `kdx doctor` instead of reporting a failing task.
 
 ### 16.4 Configuration and public surface
 

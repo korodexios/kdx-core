@@ -178,6 +178,14 @@ cannot order.
   handler sets its own `close_connection` flag, so an HTTP/1.1 client that offered keep-alive
   receives exactly one answer and a closed socket; the dispatch loop never waits for a
   request that will not come (`v0.2.4`).
+- **Atomic discovery.** The endpoint announcement in `var/chassis.ipc` is written to a `0600` sibling
+  the process owns and renamed into place, so a reader - `kdx status`, an external health check -
+  finds a complete file or the previous one, never the empty window a truncated publish left
+  behind (`v0.2.5`).
+- **Teardown is quiet.** Stopping the plane closes the listening socket while a client may still
+  be mid-request. A broken pipe, a reset peer, or a descriptor that vanished is the expected
+  ending: the handler records one line and keeps serving, at debug level while the chassis
+  stops and at warning while it runs. A fault that is not a socket is never swallowed (`v0.2.5`).
 
 ## 6. Signal handling and exit codes
 
@@ -229,7 +237,10 @@ started.
 so the built-in needs no thread of its own and the beats stop with the clock. A callback
 may also take scheduler decisions of its own: a sweep runs from a snapshot taken with the
 guard held and calls each task with the guard released, so a task may schedule another one,
-unschedule its neighbour, or withdraw its own name (`v0.2.4`).
+unschedule its neighbour, or withdraw its own name (`v0.2.4`). `backup_engine` pairs the two
+primitives in shipped code (`v0.2.5`): a `schedule_interval` declares an `auto_sweep` task, and the
+copy that task starts takes the same named lock a manual run takes, so a sweep that arrives
+while a copy is running steps aside by decision of the lock, not by luck of timing.
 - The bus is lock-protected; handlers run outside the lock, so a handler may do
   anything the bus API allows without deadlocking.
 - Logging is thread-safe by construction (one `LoggerFactory`, stdlib handlers).
@@ -288,7 +299,7 @@ The freeze policy is mechanical:
 | `korodexios_core.CORE_API_VERSION` | the string a module can assert against |
 
 The wheel ships a `py.typed` marker, so type information travels with the package. A patch
-release on the `0.2` line (`0.2.1`, `0.2.2`, `0.2.3`, `0.2.4`) carries hardening and dogfooding under the same
+release on the `0.2` line (`0.2.1`, `0.2.2`, `0.2.3`, `0.2.4`, `0.2.5`) carries hardening and dogfooding under the same
 `v2` surface: no new export, no changed signature, no renamed configuration key.
 Core API v2 added, without breaking a single existing import: `InstanceLock` and
 `LockHolder`, `AsyncRuntime`, `WorkerSupervisor` and `WorkerRecord`, `DiagnosticCheck` and
@@ -315,7 +326,9 @@ operator moves `state_dir`, a `time.sleep()` loop with no shutdown path.
   from two threads cannot both pass a check and then wait on a collision it already lost. A claim that cannot write its owner payload is
 withdrawn: the descriptor is released and the error re-raised, so no caller trusts a lock
 that names nobody (`v0.2.3`). `backup_engine` takes one of these locks per run, which is how
-two copies of the same tree are kept from the same destination.
+two copies of the same tree are kept from the same destination. A scan of the locks directory
+answers with only the names a lock could have written: a dot file, an editor's swap file, and
+any name `lock_name()` refuses are not locks and never look stale (`v0.2.5`).
 - **Periodic tasks.** A task is data: interval, callback, first delay, repeat flag. The
   chassis clock decides when it is due, the scheduler runs it, catches its exceptions, and
   publishes `core.task.run` / `core.task.failed`, so a module's recurring work stops exactly

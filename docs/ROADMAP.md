@@ -60,6 +60,14 @@ snapshot and calls callbacks unlocked; the control plane sets `close_connection`
 call the base `start()`/`stop()` so `kdx doctor` reports a running module as `running`; and the
 coverage floor moves to `87` | **delivered** |
 
+| 21 | `v0.2.5` pairs the chassis primitives in shipped code and hardens three edges of the
+control plane: `backup_engine` runs an optional periodic `auto_sweep` task whose copy takes the
+same named lock a manual run takes (`modules.backup_engine.schedule_interval`, `auto_prune_days`
+with stamped copies aged out of the destination), the discovery file is published by rename
+from a `0600` sibling so a polling reader never finds it empty, a socket that closes during
+shutdown is answered quietly instead of raising in the handler, and a scan of the locks
+directory ignores dot files, swap files, and names `lock_name()` refuses | **delivered** |
+
 ## Next
 
 1. **Publish to an index.** PyPI through trusted publishing. The git bootstrap is
@@ -67,11 +75,10 @@ coverage floor moves to `87` | **delivered** |
    freshly seeded project installs today without waiting for an index.
 2. **A Textual/TUI front end** over the same declarative `CliCommand` tree the wizard
    already reads - no module knows a second surface exists.
-3. **Two primitives meet in one built-in**: `v0.2.4` left every built-in scheduling, locking,
-   declaring, and - now - reporting a real worker thread. The next dogfood is the pair: a
-   scheduled sweep that takes a named lock, so `context.schedule()` and the lock primitive are
-   proven together in shipped code, and a manual run that arrives mid-sweep is refused on
-   the spot.
+3. **Retention with a clock of its own**: `v0.2.5` paired the scheduler with the named lock, and
+   `auto_prune_days` ages stamped copies out of the destination after a copy lands. The next
+   honest step is a sweep that prunes on its own schedule, even when no copy is due, so
+   retention becomes a decision the chassis clock makes for its own reasons.
 4. **Windows in CI** waits for one more run. The red was ours, not mypy's: the runner
    starts bash with `-e`, so the failing mypy call ended the step before any diagnostic
    ran, and the POSIX-only `os.sysconf` / `os.getrusage` reads failed the Windows

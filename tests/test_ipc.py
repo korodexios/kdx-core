@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import errno
 import http.client
 import inspect
 import json
 import os
 import socket
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -27,6 +29,7 @@ from korodexios_core.kernel.ipc import (
     SHUTDOWN_PATH,
     STATUS_PATH,
     TOKEN_HEADER,
+    IpcDiscovery,
     IpcOptions,
     IpcRoute,
     IpcServer,
@@ -446,3 +449,189 @@ def test_the_handler_means_the_close_header(tmp_path: Path) -> None:
             connection.close()
     finally:
         server.stop()
+
+
+class RecordingLogger:
+    """Minimal chassis logger double: remembers each line with its level."""
+
+    def __init__(self) -> None:
+        self.lines: list[tuple[str, str]] = []
+
+    def debug(self, message: str, **_fields: object) -> None:
+        self.lines.append(("debug", str(message)))
+
+    def info(self, message: str, **_fields: object) -> None:
+        self.lines.append(("info", str(message)))
+
+    def warning(self, message: str, **_fields: object) -> None:
+        self.lines.append(("warning", str(message)))
+
+    def error(self, message: str, **_fields: object) -> None:
+        self.lines.append(("error", str(message)))
+
+    def exception(self, message: str, **_fields: object) -> None:
+        self.lines.append(("error", str(message)))
+
+
+def request_health(port: int) -> bytes:
+    """Send one raw health request and return whatever the control plane sent back."""
+    with socket.create_connection(("127.0.0.1", port), timeout=2.0) as connection:
+        connection.sendall(
+            ("GET " + HEALTH_PATH + " HTTP/1.1" + chr(13) + chr(10)
+             + "Host: 127.0.0.1" + chr(13) + chr(10)
+             + "Connection: close" + chr(13) + chr(10)
+             + chr(13) + chr(10)).encode("utf-8")
+        )
+        return connection.recv(65536)
+
+
+def test_the_discovery_file_lands_in_one_filesystem_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The discovery file is renamed into place, so no reader ever opens a truncated one."""
+    server, _ = make_server(tmp_path)
+    try:
+        target = tmp_path / DISCOVERY_NAME
+        target.write_text(
+            json.dumps({"pid": -1, "note": "the previous daemon"}) + "\n", encoding="utf-8"
+        )
+        observed: list[tuple[int, int, str]] = []
+        replace = os.replace
+
+        def spy(source: object, destination: object) -> None:
+            temp = Path(str(source))
+            landed = Path(str(destination))
+            size = temp.stat().st_size
+            mode = temp.stat().st_mode & 0o777
+            previous = landed.read_text(encoding="utf-8") if landed.exists() else ""
+            observed.append((size, mode, previous))
+            replace(source, destination)
+
+        monkeypatch.setattr(ipc_module.os, "replace", spy)
+        server._write_discovery()
+        assert len(observed) == 1, "one publication is one rename"
+        size, mode, previous = observed[0]
+        assert size > 0, "the payload is whole before the rename"
+        assert mode == 0o600, "the token in the payload is not world readable"
+        assert previous.strip(), "the file it replaced was still whole at that moment"
+        payload = json.loads(target.read_text(encoding="utf-8"))
+        assert "note" not in payload, "the previous daemon's file is gone"
+        assert int(payload["pid"]) == os.getpid()
+        assert int(payload["port"]) > 0
+        assert list(target.parent.glob(DISCOVERY_NAME + ".tmp.*")) == []
+    finally:
+        server.stop()
+
+
+def test_no_reader_finds_the_discovery_file_half_written(tmp_path: Path) -> None:
+    """A polling reader never catches the discovery file empty while the chassis publishes."""
+    server, _ = make_server(tmp_path)
+    try:
+        target = tmp_path / DISCOVERY_NAME
+        stop = threading.Event()
+        empty: list[int] = []
+        broken: list[str] = []
+
+        def poll() -> None:
+            while not stop.is_set():
+                try:
+                    raw = target.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                if not raw.strip():
+                    empty.append(len(raw))
+                    continue
+                try:
+                    json.loads(raw)
+                except ValueError:
+                    broken.append(raw[:24])
+
+        reader = threading.Thread(target=poll, name="kdx-test-discovery-reader", daemon=True)
+        reader.start()
+        for _ in range(60):
+            server._write_discovery()
+        stop.set()
+        reader.join(timeout=2.0)
+        assert empty == [], "an atomic publish leaves no empty window to fall into"
+        assert broken == [], "a reader never decodes a half-written payload"
+        target.write_text("", encoding="utf-8")
+        assert IpcDiscovery.load(target) is None, "an empty file is what a dead daemon looks like"
+        server._write_discovery()
+        assert IpcDiscovery.load(target) is not None
+    finally:
+        server.stop()
+
+
+def test_a_socket_that_closes_mid_response_does_not_end_the_control_plane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pipe in the handler's face is an ending, not a fault: the plane keeps serving."""
+    server, _ = make_server(tmp_path)
+    server.logger = RecordingLogger()
+
+    def hung_up(self: object) -> None:
+        raise BrokenPipeError(32, "Broken pipe")
+
+    monkeypatch.setattr(ipc_module._ControlHandler, "end_headers", hung_up)
+    port = int(server.discovery.port)  # type: ignore[union-attr]
+    assert request_health(port) == b""
+    monkeypatch.undo()
+    status, _ = http_call(server.discovery.base_url(), HEALTH_PATH)  # type: ignore[union-attr]
+    assert status == 200, "the control plane answers the next client"
+    assert ("warning", "ipc socket closed mid-response") in server.logger.lines
+    assert server.running is True
+    server.stop()
+
+
+def test_a_socket_closed_while_the_plane_is_stopping_is_logged_quietly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """While the chassis is stopping, a client mid-request is the expected ending."""
+    server, _ = make_server(tmp_path)
+    server.logger = RecordingLogger()
+
+    def reset(self: object) -> None:
+        raise ConnectionResetError(104, "Connection reset by peer")
+
+    monkeypatch.setattr(ipc_module._ControlHandler, "end_headers", reset)
+    monkeypatch.setattr(ipc_module.IpcServer, "running", property(lambda _self: False))
+    request_health(int(server.discovery.port))  # type: ignore[union-attr]
+    lines = server.logger.lines
+    assert ("debug", "ipc socket closed at shutdown") in lines
+    assert not [line for line in lines if line[0] == "warning"], "stopping is not a warning"
+    server.stop()
+
+
+def test_a_descriptor_that_vanished_mid_request_ends_the_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A descriptor closed underneath a live handler is swallowed; the connection ends."""
+    server, _ = make_server(tmp_path)
+    server.logger = RecordingLogger()
+
+    def bad_descriptor(self: object, method: str) -> None:
+        raise OSError(errno.EBADF, "Bad file descriptor")
+
+    monkeypatch.setattr(ipc_module._ControlHandler, "_route", bad_descriptor)
+    assert request_health(int(server.discovery.port)) == b""  # type: ignore[union-attr]
+    assert ("warning", "ipc socket closed mid-response") in server.logger.lines
+    assert server.running is True
+    server.stop()
+
+
+def test_a_real_fault_is_not_swept_under_a_closed_socket(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """The handler hides only a socket that closed; a real fault still reaches the operator."""
+    server, _ = make_server(tmp_path)
+    server.logger = RecordingLogger()
+
+    def not_a_socket(self: object, method: str) -> None:
+        raise ValueError("not a socket")
+
+    monkeypatch.setattr(ipc_module._ControlHandler, "_route", not_a_socket)
+    request_health(int(server.discovery.port))  # type: ignore[union-attr]
+    captured = capfd.readouterr()
+    assert "ValueError" in captured.err, "socketserver reports the fault the handler raised"
+    assert not [line for line in server.logger.lines if "socket closed" in line[1]]
+    server.stop()

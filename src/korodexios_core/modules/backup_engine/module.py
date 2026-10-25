@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import shutil
+import time
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Final, cast
 
@@ -21,8 +24,10 @@ from ...kernel.contract import Module
 from ...kernel.diagnostics import DiagnosticCheck, DiagnosticSeverity
 from ...kernel.ipc import IpcRequest, IpcRoute
 from ...kernel.locks import LockTimeoutError, NamedLock
+from ...kernel.scheduler import ScheduledTask
 from ...validate import parse_size
 from .engine import (
+    STAMP_FORMAT,
     BackupError,
     BackupPlan,
     BackupResult,
@@ -37,6 +42,9 @@ from .engine import (
 DEFAULT_EXCLUDES = (".git", ".venv", "__pycache__", "var", "node_modules", "*.pyc", "*.log")
 CONFIGURED_EVENT = "backup.configured"
 COMPLETED_EVENT = "backup.completed"
+PRUNED_EVENT = "backup.pruned"
+SWEEP_TASK: Final[str] = "auto_sweep"
+SECONDS_PER_DAY: Final[float] = 86_400.0
 
 
 class BackupEngineModule(Module):
@@ -62,10 +70,28 @@ class BackupEngineModule(Module):
         self._last: BackupResult | None = None
         self._refusals = 0
         self._last_refusal: str = ""
+        self._schedule_interval = 0.0
+        self._auto_prune_days = 0
+        self._sweep_task: ScheduledTask | None = None
+        self._sweeps = 0
+        self._sweeps_refused = 0
+        self._pruned = 0
 
     def init(self, context: CoreContext) -> None:
-        """Resolve scoped settings; paths fall back to chassis data directories."""
+        """Resolve scoped settings; paths fall back to chassis data directories.
+
+        Counters describe the run the operator is looking at: a chassis that
+        re-initializes this module starts counting again, and 'kdx doctor' never
+        blames yesterday's refusals on today's copy.
+        """
         super().init(context)
+        self._runs = 0
+        self._last = None
+        self._refusals = 0
+        self._last_refusal = ""
+        self._sweeps = 0
+        self._sweeps_refused = 0
+        self._pruned = 0
         default_source = str(context.paths.root)
         default_dest = str(context.paths.data_dir / "backups")
         self._source = Path(str(self.config.get_str("source", default_source)))
@@ -78,12 +104,16 @@ class BackupEngineModule(Module):
         self._max_bytes = parse_size(raw_max) if raw_max.strip() else None
         self._dry_run = bool(self.config.get_bool("dry_run", False))
         self._follow_symlinks = bool(self.config.get_bool("follow_symlinks", False))
+        self._schedule_interval = max(0.0, float(self.config.get_float("schedule_interval", 0.0)))
+        self._auto_prune_days = max(0, int(self.config.get_int("auto_prune_days", 0)))
         self.logger.debug(
             "backup_engine configured",
             source=str(self._source),
             dest=str(self._dest),
             max_bytes=self._max_bytes,
             dry_run=self._dry_run,
+            schedule_interval=round(self._schedule_interval, 3),
+            auto_prune_days=self._auto_prune_days,
         )
 
     def config_schema(self) -> ConfigSchema:
@@ -133,6 +163,20 @@ class BackupEngineModule(Module):
                     default=False,
                     description="Follow symlinks while walking the source tree.",
                 ),
+                ConfigField(
+                    "schedule_interval",
+                    kind=ConfigKind.FLOAT,
+                    default=0.0,
+                    description=(
+                        "Seconds between automatic sweeps; 0 leaves copying to the operator."
+                    ),
+                ),
+                ConfigField(
+                    "auto_prune_days",
+                    kind=ConfigKind.INT,
+                    default=0,
+                    description="Keep stamped copies for this many days; 0 keeps every copy.",
+                ),
             ),
         )
 
@@ -174,6 +218,7 @@ class BackupEngineModule(Module):
                 )
             )
         checks.append(self._destination_check(settings.dest))
+        checks.append(self._sweep_check())
         if self._refusals:
             checks.append(self._refusal_check())
         return tuple(checks)
@@ -286,7 +331,7 @@ class BackupEngineModule(Module):
         )
 
     def start(self) -> None:
-        """Mark the module running and announce the resolved configuration."""
+        """Mark the module running, announce the configuration, and schedule the sweep."""
         super().start()
         settings = self.settings()
         self.bus.publish(
@@ -300,13 +345,24 @@ class BackupEngineModule(Module):
             dest=str(settings.dest),
             mode="dry run" if settings.dry_run else "copy",
         )
+        sweep = self._start_sweep()
+        if sweep is not None:
+            self.logger.info(
+                f"{TAG_OK} backup sweep scheduled",
+                task=SWEEP_TASK,
+                interval_seconds=round(self._schedule_interval, 3),
+                auto_prune_days=self._auto_prune_days,
+            )
 
     def stop(self) -> None:
-        """Mark the module stopped; no files or handles stay open between runs."""
+        """Withdraw the sweep and report the counters; nothing stays open between runs."""
+        self._stop_sweep()
         super().stop()
         self.logger.info(
             f"{TAG_NOTE} backup engine stopped",
             runs=self._runs,
+            sweeps=self._sweeps,
+            pruned=self._pruned,
             last_files=self._last.copied if self._last else 0,
         )
 
@@ -342,6 +398,8 @@ class BackupEngineModule(Module):
             self._release_run_lock(handle)
         self._runs += 1
         self._last = result
+        if not result.dry_run:
+            self._pruned += self._prune_old_copies(plan.settings.dest, keep=plan.target)
         self.bus.publish(
             COMPLETED_EVENT,
             {"target": str(plan.target), "copied": result.copied, "dry_run": result.dry_run},
@@ -396,9 +454,161 @@ class BackupEngineModule(Module):
                 "dest": str(self._dest),
                 "last_copied": self._last.copied if self._last else 0,
                 "refusals": self._refusals,
+                "sweep_interval_seconds": round(self._schedule_interval, 3),
+                "sweep_scheduled": self._sweep_task is not None,
+                "sweeps": self._sweeps,
+                "sweeps_refused": self._sweeps_refused,
+                "sweep_first_due_seconds": (
+                    None
+                    if self._sweep_task is None
+                    else round(max(0.0, self._sweep_task.next_due - time.monotonic()), 3)
+                ),
+                "auto_prune_days": self._auto_prune_days,
+                "pruned": self._pruned,
             }
         )
         return base
+
+
+    def _start_sweep(self) -> ScheduledTask | None:
+        """Hand the periodic sweep to the chassis clock, when one is configured.
+
+        A sweep is a task, not a thread: the chassis clock decides when it is due, and the
+        copy it starts takes the same named lock a manual 'kdx backup run' takes, so the two
+        primitives are proven together. The first sweep lands one interval out, so booting
+        never opens with a copy.
+        """
+        context = self.context
+        if context is None or self._schedule_interval <= 0.0:
+            return None
+        task = context.schedule(
+            interval_seconds=self._schedule_interval,
+            callback=self._sweep_backup,
+            name=SWEEP_TASK,
+            module=self.name,
+        )
+        self._sweep_task = task
+        return task
+
+    def _stop_sweep(self) -> None:
+        """Withdraw the sweep: a stopped module leaves no task on the chassis clock."""
+        task = self._sweep_task
+        self._sweep_task = None
+        scheduler = self.scheduler if self.context is not None else None
+        if task is not None and scheduler is not None:
+            scheduler.unschedule(task.name)
+
+    def _sweep_backup(self) -> None:
+        """Copy the tree on the clock, stepping aside for a copy already running.
+
+        This is the pairing of two chassis primitives: the clock decides when work is due,
+        and the named lock decides whether this process may copy. A refusal is a decision the
+        sweep honours, so it is counted and logged rather than reported as a failing task.
+        Any other backup error - an unreadable source, a budget exceeded - is left to rise,
+        because the scheduler records it and 'kdx doctor' says which task keeps failing.
+        """
+        plan = self.plan()
+        refusals = self._refusals
+        try:
+            result = self.run_backup(plan)
+        except BackupError as exc:
+            if self._refusals == refusals:
+                raise
+            self._sweeps_refused += 1
+            self.logger.info(
+                f"{TAG_NOTE} backup sweep stepped aside",
+                reason=str(exc),
+                interval_seconds=round(self._schedule_interval, 3),
+            )
+            return
+        self._sweeps += 1
+        self.logger.info(
+            f"{TAG_OK} backup sweep copied",
+            target=str(result.plan.target),
+            files=result.copied,
+            bytes_copied=result.bytes_copied,
+        )
+
+    @staticmethod
+    def _stamp_time(label: str) -> float | None:
+        """Return the moment *label* names, when it is a stamp this chassis would write."""
+        try:
+            parsed = datetime.strptime(label, STAMP_FORMAT)
+        except ValueError:
+            return None
+        return parsed.timestamp()
+
+    def _prune_old_copies(self, dest: Path, *, keep: Path | None = None) -> int:
+        """Remove stamped copies older than 'auto_prune_days'; 0 keeps every copy.
+
+        Only a directory directly inside the destination whose own name is a backup stamp is
+        a candidate, so a folder the operator put there by hand is never deleted, and the
+        copy this run just made is always kept.
+        """
+        days = self._auto_prune_days
+        if days <= 0 or not dest.is_dir():
+            return 0
+        cutoff = time.time() - days * SECONDS_PER_DAY
+        removed = 0
+        for child in sorted(dest.iterdir()):
+            if not child.is_dir() or child == keep:
+                continue
+            stamp = self._stamp_time(child.name)
+            if stamp is None or stamp >= cutoff:
+                continue
+            try:
+                shutil.rmtree(child)
+            except OSError as exc:
+                self.logger.warning(
+                    f"{TAG_NOTE} backup copy stayed", copy=str(child), reason=str(exc)
+                )
+                continue
+            removed += 1
+        if removed:
+            self.bus.publish(PRUNED_EVENT, {"days": days, "removed": removed}, source=self.name)
+        return removed
+
+    def _sweep_check(self) -> DiagnosticCheck:
+        """Report the periodic sweep the chassis clock runs, and whether it is still there."""
+        every = round(self._schedule_interval, 3)
+        if self._schedule_interval <= 0.0:
+            return DiagnosticCheck(
+                name="sweep",
+                message="automatic sweep is left to the operator",
+                hint="set modules.backup_engine.schedule_interval to copy on the clock",
+                module=self.name,
+            )
+        task = self._sweep_task
+        if task is None:
+            if self.context is None:
+                return DiagnosticCheck(
+                    name="sweep",
+                    message=f"automatic sweep every {every} s waits for a chassis",
+                    module=self.name,
+                )
+            return DiagnosticCheck(
+                name="sweep",
+                message=f"automatic sweep every {every} s has no clock to run on",
+                severity=DiagnosticSeverity.WARNING,
+                hint="set core.scheduler.enabled to true, or leave schedule_interval at 0",
+                module=self.name,
+            )
+        scheduler = self.context.scheduler if self.context is not None else None
+        live = scheduler is not None and scheduler.task(task.name) is task
+        if not live:
+            return DiagnosticCheck(
+                name="sweep",
+                message=f"automatic sweep task {task.name} is gone",
+                severity=DiagnosticSeverity.WARNING,
+                hint="a scheduled task was withdrawn; restart the module to declare it again",
+                module=self.name,
+            )
+        return DiagnosticCheck(
+            name="sweep",
+            message=f"auto_sweep copies every {every} s ({self._sweeps} copied, "
+            f"{self._sweeps_refused} stepped aside)",
+            module=self.name,
+        )
 
 
 def _plan_arguments() -> tuple[CliArgument, ...]:

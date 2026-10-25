@@ -5,7 +5,53 @@ history lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## [Unreleased]
 
-_Nothing pending: the working tree is the `v0.2.4` tag._
+_Nothing pending: the working tree is the `v0.2.5` tag._
+
+## [0.2.5] - 2026-10-26
+
+The last primitive pairing lands in shipped code: a built-in module now takes a named lock from a
+task the chassis clock started. Three rough edges that only a running control plane and an editor
+could find are smoothed. Nothing in the frozen surface changed shape - no new export, no changed
+signature, no renamed configuration key.
+
+### Added
+
+- **`backup_engine` copies on the clock, under the lock**: `modules.backup_engine.schedule_interval`
+  (default `0.0`, which leaves copying to the operator) declares an `auto_sweep` periodic task, and the
+  copy that task starts takes the same named lock a manual `kdx backup run` takes. That is the pairing
+  the roadmap asked for - `context.schedule()` and `NamedLock` proven together by shipped code - and it
+  changes what a collision means: a sweep that arrives while a copy is running steps aside by
+  decision of the lock, counts the refusal, and says so in `kdx doctor` rather than reporting a task
+  that keeps failing. `modules.backup_engine.auto_prune_days` (default `0`, keep every copy) ages stamped
+  copies out of the destination after a copy lands: only a child whose own name is a backup stamp
+  is a candidate, so a folder the operator made by hand is never a backup, and the copy that just
+  landed is always kept. `health()` carries `sweep_interval_seconds`, `sweep_scheduled`, `sweeps`,
+  `sweeps_refused`, `sweep_first_due_seconds`, `auto_prune_days`, and `pruned`; `diagnostics()` answers with a `sweep` row
+  for each of the four honest states: left to the operator, waiting for a clock, gone, running.
+
+### Fixed
+
+- **The discovery file is published in one filesystem step**: `IpcServer` truncated `var/chassis.ipc`
+  in place, so a reader that polled the file during boot - `kdx status`, an external health check -
+  could find zero bytes, fail to decode them, and conclude the daemon was dead. The payload now
+  lands in a `0600` sibling the process owns and is renamed into place with `os.replace()`, so a reader
+  finds a complete announcement or the previous one, never a half-written one.
+- **A socket that closes during teardown stops raising**: stopping the control plane closes the
+  listening socket while a worker thread may still be answering a client, and `BrokenPipeError`,
+  `ConnectionResetError`, or an `OSError` carrying `EBADF` escaped the handler to stderr. The handler
+  recognises those endings, ends the connection, and records one line - `debug` while the chassis is
+  stopping, `warning` while it is still running. A fault that is not a socket is still left to rise:
+  `kdx doctor` loses no sleep over a peer that hung up, and nobody hides a real bug.
+- **A locks scan answers with locks**: `AppPaths.named_lock_files()` and
+  `NamedLockRegistry` listed any file ending in `.lock`, so an editor's `.backup.lock` swap file, a dot
+  file, and a stray `notes:bad.lock` appeared to `kdx doctor` as held or stale names. Both scans now ask
+  `lock_name()` whether the stem is a name a lock could have written, and refuse the artefacts.
+
+### Changed
+
+- **Module counters describe the run the operator is looking at**: a chassis that re-initializes
+  `backup_engine` starts counting again, so `runs`, `refusals`, `sweeps`, and `pruned` are today's numbers and
+  `kdx doctor` never blames yesterday's refused copy on today's.
 
 ## [0.2.4] - 2026-10-26
 

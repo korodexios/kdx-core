@@ -20,7 +20,7 @@ docs. `kdx --help` lists every command, including the ones modules contributed.
 | pip in a venv | `pip install korodexios-core` | from an index, once published |
 | uv | `uv pip install korodexios-core` | the same wheel |
 | pipx / uv tool | `pipx install korodexios-core` | the two console scripts land on PATH |
-| git bootstrap | `pip install "korodexios-core @ git+ssh://git@github.com/korodexios/kdx-core.git@v0.2.4"` | the documented path before an index publish |
+| git bootstrap | `pip install "korodexios-core @ git+ssh://git@github.com/korodexios/kdx-core.git@v0.2.5"` | the documented path before an index publish |
 | development | `pip install -e ".[dev]"` | the chassis repository itself |
 
 The wheel carries `py.typed` and every built-in module manifest
@@ -156,6 +156,10 @@ and `kdx backup run` answers that refusal with exit `1` and a hint instead of a 
 Since `v0.2.4` `system_info` reports its load sampler too: whether the watcher thread is alive,
 parked by configuration, parked because the platform has no load average, or stopped on its
 own - and a thread that stopped on its own is what worker supervision marks `failed`.
+Since `v0.2.5` the same rows carry the periodic sweep: `backup_engine` says whether `auto_sweep`
+is scheduled, how many copies it has landed, and how many stepped aside for a copy already
+running. The locks directory is read with the same care: an editor's swap file, a dot file,
+and a name no lock could answer to are never reported as a held or stale lock.
 
 ## `kdx logs`
 
@@ -235,7 +239,7 @@ The seed ships `kdx.yml`, `.env.example`, `Makefile`, `README.md`, `AGENTS.md`,
 smoke tests. It passes `make check` on arrival.
 
 The chassis dependency is pinned to the repository by default
-(`korodexios-core @ git+https://github.com/korodexios/kdx-core.git@v0.2.4`), so a fresh
+(`korodexios-core @ git+https://github.com/korodexios/kdx-core.git@v0.2.5`), so a fresh
 venv can `pip install -e .` the seeded project before any index publish. Pass
 `--chassis-source index` once the package is on an index; an unknown choice is refused
 with a hint.
@@ -331,6 +335,9 @@ local clients need no change; remote clients pass `--target`.
 - A `--log-json` line keeps the types the module passed: a count is a JSON number, a flag
   is a boolean, a nested mapping stays a mapping; only a `Path`, an exception, or another
   object arrives as shortened text.
+- `var/chassis.ipc` is published by a rename from a sibling the process owns, never truncated
+  in place: a script that polls the file during boot reads a complete announcement or the
+  previous one, never a half-written payload it cannot decode.
 - The control plane answers one request per connection: a client that offers HTTP/1.1
   keep-alive still gets one response and a closed socket, so a script never waits for a
   second answer on a socket the chassis will not reuse.

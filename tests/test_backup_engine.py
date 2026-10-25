@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import time
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -12,6 +14,7 @@ from korodexios_core.cli.entry import main
 from korodexios_core.constants import ExitCode
 from korodexios_core.kernel.chassis import Chassis, ChassisOptions
 from korodexios_core.kernel.cli_contract import CliCommand
+from korodexios_core.kernel.diagnostics import DiagnosticSeverity
 from korodexios_core.modules.backup_engine import (
     MODULE,
     BackupEngineModule,
@@ -20,6 +23,7 @@ from korodexios_core.modules.backup_engine import (
     build_plan,
     execute_plan,
 )
+from korodexios_core.modules.backup_engine.engine import STAMP_FORMAT, default_stamp
 from korodexios_core.paths import AppPaths
 from tests.test_chassis import build_chassis
 
@@ -273,3 +277,141 @@ def test_the_run_lock_is_a_named_lock_file(tmp_path: Path) -> None:
     finally:
         chassis.shutdown()
 
+
+def sweep_chassis(tmp_path: Path, **overrides: object) -> Chassis:
+    """Return a chassis whose backup_engine copies a small tree on the chassis clock."""
+    root = tmp_path / "project"
+    source = root / "tiny"
+    (source / "sub").mkdir(parents=True)
+    (source / "a.txt").write_text("alpha\n", encoding="utf-8")
+    (source / "sub" / "b.txt").write_text("beta\n", encoding="utf-8")
+    settings: dict[str, object] = {
+        "core.log.file_enabled": False,
+        "core.ipc.enabled": False,
+        "core.lifecycle.tick_interval": 0.02,
+        "modules.backup_engine.source": str(source),
+        "modules.backup_engine.schedule_interval": 0.05,
+        "modules.backup_engine.auto_prune_days": 1,
+    }
+    settings.update(overrides)
+    paths = AppPaths.discover(root=str(root), environ={})
+    chassis = Chassis.create(
+        ChassisOptions(
+            home=paths.root,
+            environ={},
+            install_signals=False,
+            cli_overrides=settings,
+        )
+    )
+    chassis.initialize()
+    chassis.start(ipc=False)
+    return chassis
+
+
+def stamped_copies(dest: Path) -> list[Path]:
+    """Return the children of *dest* whose own name is a backup stamp."""
+    found: list[Path] = []
+    for child in sorted(dest.iterdir()):
+        try:
+            datetime.strptime(child.name, STAMP_FORMAT)
+        except ValueError:
+            continue
+        if child.is_dir():
+            found.append(child)
+    return found
+
+
+def backdated(dest: Path, label: str, days: float) -> Path:
+    """Create a stamped copy under *dest* as if it were made *days* ago."""
+    moment = time.time() - days * 86_400.0
+    copy = dest / default_stamp(moment)
+    copy.mkdir(parents=True, exist_ok=True)
+    os.utime(copy, (moment, moment))
+    assert copy.name == label, "the helper names the copy by its stamp"
+    return copy
+
+
+def test_the_periodic_sweep_runs_through_the_named_lock(tmp_path: Path) -> None:
+    """One module, both primitives: the clock runs the copy and the lock guards it."""
+    chassis = sweep_chassis(tmp_path)
+    try:
+        module = chassis.registry.require("backup_engine").module
+        dest = Path(module.settings().dest)
+        assert {"schedule_interval", "auto_prune_days"} <= {
+            field.key for field in module.config_schema().fields
+        }
+        task = chassis.scheduler.task("auto_sweep")
+        assert task is not None, "a configured interval declares the task"
+        assert task.module == "backup_engine", "the task belongs to the module that declared it"
+        assert module.health()["sweep_scheduled"] is True
+        assert chassis.locks.names() == (), "no lock is taken before the clock says it is due"
+        assert chassis.run_forever(duration=0.25) == int(ExitCode.SUCCESS)
+        assert module.health()["sweeps"] >= 1, "the clock ran the copy"
+        copies = stamped_copies(dest)
+        assert copies, "a swept copy landed in the destination"
+        assert sorted(p.name for p in copies[0].rglob("*") if p.is_file()) == ["a.txt", "b.txt"]
+        assert chassis.locks.names() == (), "a finished sweep releases the name it took"
+        assert chassis.paths.named_lock_files() == ("backup_engine.lock",)
+        assert chassis.supervise() == [], "a scheduled sweep loses no worker"
+        rows = {check.name: check for check in module.diagnostics()}
+        assert rows["sweep"].severity is DiagnosticSeverity.INFO
+        assert "auto_sweep" in rows["sweep"].message
+    finally:
+        chassis.shutdown()
+    assert chassis.scheduler.task("auto_sweep") is None, "a stopped module leaves no task behind"
+
+
+def test_a_sweep_steps_aside_for_a_copy_already_running(tmp_path: Path) -> None:
+    """The lock decides whether the sweep may copy; a refusal is counted, never fatal."""
+    chassis = sweep_chassis(tmp_path)
+    try:
+        module = chassis.registry.require("backup_engine").module
+        dest = Path(module.settings().dest)
+        dest.mkdir(parents=True, exist_ok=True)
+        with chassis.lock("backup_engine", timeout=0.0):
+            module._sweep_backup()
+        assert stamped_copies(dest) == [], "a sweep that could not copy created no folder"
+        assert module.health()["sweeps_refused"] == 1
+        assert module.health()["sweeps"] == 0
+        rows = {check.name: check for check in module.diagnostics()}
+        assert rows["lock"].severity is DiagnosticSeverity.WARNING
+        assert rows["sweep"].severity is DiagnosticSeverity.INFO
+        assert "stepped aside" in rows["sweep"].message
+        module._sweep_backup()
+        assert stamped_copies(dest), "the next sweep copies once the lock is free"
+        assert module.health()["sweeps"] == 1
+    finally:
+        chassis.shutdown()
+
+
+def test_auto_prune_ages_stamped_copies_out(tmp_path: Path) -> None:
+    """'auto_prune_days' removes old stamped copies and never touches a hand-made folder."""
+    chassis = sweep_chassis(tmp_path)
+    try:
+        module = chassis.registry.require("backup_engine").module
+        dest = Path(module.settings().dest)
+        old = backdated(dest, default_stamp(time.time() - 5 * 86_400.0), 5)
+        hand = dest / "hand-made"
+        hand.mkdir()
+        assert module.health()["auto_prune_days"] == 1
+        assert chassis.run_forever(duration=0.2) == int(ExitCode.SUCCESS)
+        assert not old.exists(), "a copy past the retention window is gone"
+        assert hand.is_dir(), "a folder the operator made is never treated as a backup"
+        assert module.health()["pruned"] >= 1
+        assert stamped_copies(dest), "the sweep still lands a fresh copy"
+    finally:
+        chassis.shutdown()
+
+
+def test_zero_retention_keeps_every_copy(tmp_path: Path) -> None:
+    """'auto_prune_days: 0' says keep every copy, however old it is."""
+    chassis = sweep_chassis(tmp_path, **{"modules.backup_engine.auto_prune_days": 0})
+    try:
+        module = chassis.registry.require("backup_engine").module
+        dest = Path(module.settings().dest)
+        old = backdated(dest, default_stamp(time.time() - 400 * 86_400.0), 400)
+        assert chassis.run_forever(duration=0.2) == int(ExitCode.SUCCESS)
+        assert old.is_dir(), "no retention means no removal"
+        assert module.health()["pruned"] == 0
+    finally:
+        chassis.shutdown()

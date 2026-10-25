@@ -67,6 +67,22 @@ def lock_name(name: str) -> str:
     return cleaned
 
 
+def is_lock_file_name(name: str) -> bool:
+    """Return whether *name* names a lock file this chassis could have written.
+
+    A lock name is exactly one label, so an editor's swap file, a dot file, and a stray
+    'foo:bar.lock' are not locks merely because they end in '.lock'. A scan of the locks
+    directory answers with only the files whose stem a named lock would accept.
+    """
+    if not name.endswith(LOCK_FILE_SUFFIX) or name.startswith("."):
+        return False
+    try:
+        lock_name(name[: -len(LOCK_FILE_SUFFIX)])
+    except ValueError:
+        return False
+    return True
+
+
 def _is_chassis_project_file(candidate: Path) -> bool:
     if candidate.name in ROOT_MARKER_FILES:
         return True
@@ -271,14 +287,18 @@ class AppPaths:
         return handle.acquire(timeout=timeout, blocking=blocking)
 
     def named_lock_files(self) -> tuple[str, ...]:
-        """Return every named lock file on disk, sorted; empty when none exists."""
+        """Return every named lock file on disk, sorted; empty when none exists.
+
+        An editor that kept a swap file in the locks directory, and a dot file, are not
+        locks: only names a lock would accept are listed.
+        """
         if not self.locks_dir.is_dir():
             return ()
         return tuple(
             sorted(
                 item.name
                 for item in self.locks_dir.iterdir()
-                if item.is_file() and item.name.endswith(LOCK_FILE_SUFFIX)
+                if item.is_file() and is_lock_file_name(item.name)
             )
         )
 

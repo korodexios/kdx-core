@@ -19,7 +19,17 @@ from korodexios_core.paths import AppPaths
 
 from .conftest import PROJECT_CONFIG
 
-BACKUP_KEYS = ("source", "dest", "include", "exclude", "max_size", "dry_run", "follow_symlinks")
+BACKUP_KEYS = (
+    "source",
+    "dest",
+    "include",
+    "exclude",
+    "max_size",
+    "dry_run",
+    "follow_symlinks",
+    "schedule_interval",
+    "auto_prune_days",
+)
 
 VIOLATING_CONFIG = """
 core:
@@ -76,6 +86,9 @@ def test_backup_engine_declares_every_key_it_reads() -> None:
     assert kinds["source"] is ConfigKind.PATH
     assert kinds["include"] is ConfigKind.LIST
     assert kinds["dry_run"] is ConfigKind.BOOL
+    # v0.2.5 added the periodic sweep: the clock interval and the retention window.
+    assert kinds["schedule_interval"] is ConfigKind.FLOAT
+    assert kinds["auto_prune_days"] is ConfigKind.INT
 
 
 def test_heartbeat_and_system_info_declare_their_keys() -> None:

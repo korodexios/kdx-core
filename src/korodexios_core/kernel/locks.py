@@ -30,7 +30,7 @@ from ..constants import (
     LOCK_POLL_INTERVAL,
 )
 from ..exceptions import LockTimeoutError
-from ..paths import lock_name
+from ..paths import is_lock_file_name, lock_name
 from .instance_lock import LockHolder, lock_descriptor, pid_alive, unlock_descriptor
 
 __all__ = [
@@ -465,14 +465,18 @@ class NamedLockRegistry:
         return f"{len(names)} named lock(s) held: {', '.join(names)}"
 
     def _scan_files(self) -> tuple[Path, ...]:
-        """Return every named lock file on disk; empty when the directory is absent."""
+        """Return every lock file the chassis wrote; empty when the directory is absent.
+
+        Editor artefacts and dot files in the locks directory are not locks, and a stale
+        inspection never asks who held a swap file.
+        """
         if not self._directory.is_dir():
             return ()
         return tuple(
             sorted(
                 item
                 for item in self._directory.iterdir()
-                if item.is_file() and item.name.endswith(LOCK_FILE_SUFFIX)
+                if item.is_file() and is_lock_file_name(item.name)
             )
         )
 

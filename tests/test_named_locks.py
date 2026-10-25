@@ -10,6 +10,7 @@ import pytest
 from korodexios_core.exceptions import LockTimeoutError
 from korodexios_core.kernel.chassis import Chassis, ChassisOptions
 from korodexios_core.kernel.locks import NamedLock, NamedLockRegistry
+from korodexios_core.paths import AppPaths, is_lock_file_name
 
 
 def make_registry(tmp_path: Path) -> NamedLockRegistry:
@@ -216,3 +217,36 @@ def write_root(root: Path) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def test_editor_artefacts_are_not_locks(tmp_path: Path) -> None:
+    """A swap file in the locks directory is not a lock the chassis should report."""
+    registry = make_registry(tmp_path)
+    registry.directory.mkdir(parents=True)
+    payload = '{"pid": 999999, "label": "gone", "name": "dead"}'
+    for name in (".backup.lock", "..lock", "notes:bad.lock", "index.lock", "notes.txt"):
+        (registry.directory / name).write_text("", encoding="utf-8")
+    (registry.directory / ".dead.lock").write_text(payload, encoding="utf-8")
+    (registry.directory / "dead.lock").write_text(payload, encoding="utf-8")
+    assert [item.name for item in registry._scan_files()] == [
+        "dead.lock",
+        "index.lock",
+    ]
+    assert registry.as_dict()["on_disk"] == ["dead", "index"]
+    assert registry.stale_names() == ("dead",), "a dot file is never a stale owner"
+
+
+def test_named_lock_files_ignores_files_a_lock_cannot_name(tmp_path: Path) -> None:
+    """'kdx doctor' reads this directory: an editor's leftovers never look like a lock."""
+    root = tmp_path / "project"
+    root.mkdir(parents=True)
+    paths = AppPaths.discover(root=str(root), environ={})
+    paths.locks_dir.mkdir(parents=True, exist_ok=True)
+    for name in (".backup.lock", "backup.lock", "index.lock", "bad:lock.lock", "notes.txt"):
+        (paths.locks_dir / name).write_text("", encoding="utf-8")
+    assert paths.named_lock_files() == ("backup.lock", "index.lock")
+    assert is_lock_file_name("backup.lock") is True
+    assert is_lock_file_name(".backup.lock") is False
+    assert is_lock_file_name("bad:lock.lock") is False
+    assert is_lock_file_name("notes.txt") is False
+    assert is_lock_file_name("notes.lock.lock") is True
