@@ -80,6 +80,8 @@ class RegisteredModule:
     routes: tuple[IpcRoute, ...] = ()
     statics: tuple[IpcStaticMount, ...] = ()
     checks: tuple[DiagnosticCheck, ...] = ()
+    declarations_after_init: bool = False
+    """True once the declarative hooks were read with the module context in hand."""
 
     def declared_keys(self) -> tuple[str, ...]:
         """Return the configuration keys this module declared."""
@@ -118,6 +120,7 @@ class RegisteredModule:
             "secret_keys": list(self.schema.secrets()) if self.schema is not None else [],
             "routes": [route.as_dict() for route in self.routes],
             "diagnostics": [check.as_dict() for check in self.checks],
+            "declarations_after_init": self.declarations_after_init,
         }
 
 
@@ -208,12 +211,25 @@ def _dependency_cycles(records: list[RegisteredModule]) -> list[str]:
 
 
 def _call_hook(module: Any, name: str, logger: Any) -> Any:
-    """Call an optional module hook, isolating a broken one from the boot."""
+    """Call an optional module hook, isolating a broken one from the boot.
+
+    The chassis collects the declarative hooks when a module registers, which is before
+    `init(context)` has run: a module that reads its configuration, paths, or logger in
+    `ipc_routes()` or `diagnostics()` therefore raises `ModuleContractError` on the first
+    pass. That is not a boot failure - the hooks are collected again once `init()` ran - so
+    the expected case is logged at debug level and the module keeps its baseline report.
+    """
     hook = getattr(module, name, None)
     if not callable(hook):
         return None
     try:
         return hook()
+    except ModuleContractError as exc:
+        logger.debug(
+            f"module hook {name} ran before init(context): {exc}",
+            module=getattr(module, "name", "?"),
+        )
+        return None
     except Exception as exc:
         logger.error(
             f"module hook {name} failed: {type(exc).__name__}: {exc}",
@@ -305,7 +321,11 @@ def _static_for_module(mount: IpcStaticMount, name: str) -> IpcStaticMount:
 
 
 def collect_diagnostics(module: Any, name: str, logger: Any) -> tuple[DiagnosticCheck, ...]:
-    """Return the diagnostic checks a module contributes to 'kdx doctor'."""
+    """Return the diagnostic checks a module contributes to 'kdx doctor'.
+
+    A module queried before `init(context)` that raised `ModuleContractError` contributes no
+    checks on that pass; the chassis asks again after `init()` ran.
+    """
     declared = _call_hook(module, "diagnostics", logger)
     if declared is None:
         return ()
@@ -462,13 +482,32 @@ class ModuleRegistry:
             collected.extend(record.commands)
         return collected
 
+    def collect_declarations(self, name: str) -> RegisteredModule:
+        """Collect one module's declarative hooks again, now that `init(context)` ran.
+
+        Registration reads the hooks before the module has a context, so a hook that
+        inspects configuration, paths, or its logger can only answer truthfully here. The
+        hooks are declarative, so collecting them twice is idempotent - and this second
+        pass is what `kdx doctor`, `kdx config check`, and the control plane end up using.
+        """
+        record = self.require(name)
+        label = record.spec.name
+        record.schema = collect_schema(record.module, label, self._logger)
+        record.routes = collect_ipc_routes(record.module, label, self._logger)
+        record.statics = collect_static_dirs(record.module, label, self._logger)
+        record.checks = collect_diagnostics(record.module, label, self._logger)
+        record.declarations_after_init = True
+        return record
+
     def initialize_all(self, context: CoreContext) -> list[RegisteredModule]:
-        """Call init(context) on every new module, in load order."""
+        """Call init(context) on every new module, in load order, then re-read its hooks."""
         results: list[RegisteredModule] = []
         for record in self.ordered():
             if record.state is not ModuleState.NEW:
                 continue
             results.append(self._run(record, "init", partial(_call_init, record, context)))
+            if record.initialized:
+                self.collect_declarations(record.spec.name)
         return results
 
     def collect_headless(self) -> list[CliCommand]:

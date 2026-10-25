@@ -132,7 +132,16 @@ class ModuleProtocol(Protocol):
 
 
 class Module:
-    """Convenience base class implementing the contract with real defaults."""
+    """Convenience base class implementing the contract with real defaults.
+
+    The chassis drives a module in one order: discovered, registered, `init(context)`,
+    `register_cli(surface)`, `start()`, `stop()`. The optional declarative hooks -
+    `config_schema()`, `ipc_routes()`, `static_dirs()`, `diagnostics()` - are read at
+    registration, before `init(context)` has run, and collected again once it has. A module
+    that needs its configuration, paths, or logger to answer one of those hooks returns an
+    empty or baseline report on the first pass and never raises: an inspection command such
+    as `kdx doctor` may ask at any point in that sequence.
+    """
 
     name: str = ""
     description: str = ""
@@ -260,7 +269,11 @@ class Module:
         return ()
 
     def diagnostics(self) -> tuple[Any, ...]:
-        """Contribute named checks, with severity and hint, to 'kdx doctor'."""
+        """Contribute named checks, with severity and hint, to 'kdx doctor'.
+
+        The chassis may ask before `init(context)` ran; return `()`, or checks that need nothing
+        but class state, and the real findings once the context exists.
+        """
         return ()
 
     @property
@@ -307,7 +320,11 @@ class Module:
         return supervisor.watch(self.name, thread, name=name, expected=expected)
 
     def health(self) -> dict[str, Any]:
-        """Return the module's self-report shown by 'kdx modules show'."""
+        """Return the module's self-report shown by 'kdx modules show'.
+
+        This hook may run before `init(context)` or after `stop()`, so a report built from context
+        state has to tolerate both: the baseline below needs no context at all.
+        """
         uptime = (time.time() - self._started_at) if self._started_at else 0.0
         return {
             "name": self.name,

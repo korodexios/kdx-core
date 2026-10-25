@@ -13,16 +13,18 @@ section is a contract, not a suggestion. Human-oriented narrative lives in
 | Distribution | `korodexios-core` |
 | Import root | `korodexios_core` |
 | Console scripts | `kdx` (primary short alias), `korodexios` (canonical) |
-| Version | `0.2.0` (production), core API frozen at `v2` (additive changes only inside v2) |
+| Version | `0.2.1` (production), core API frozen at `v2` (additive changes only inside v2) |
 | Runtime | CPython 3.11+, stdlib first (PyYAML for config, rich for the CLI surface) |
 | Config file | `kdx.yml` / `kdx.yaml` / `kdx.json` (then `korodexios.*`) |
 | Env prefix | `KDX_` primary; `KORODEXIOS_` is the canonical long prefix |
+| Mapping defaults | a mapping-valued chassis key is a namespace: `core.env.aliases.NAME` is a valid chassis path |
 | Layout | `kernel/` infrastructure, `modules/` pure discovery root, `cli/` thin clients |
 | State dir | `var/` (logs, `chassis.ipc`, `chassis.lock`); never committed |
 | Instance lock | `var/chassis.lock` in the state dir; a second daemon on the same root exits `1` |
 | Named locks | `var/locks/<name>.lock` via `Chassis.acquire_lock(name)` or `context.paths.lock(name)`; released as one unit at shutdown |
 | Durable dir | `data/` (`core.paths.durable_dir`): project state that outlives a moved `state_dir` |
 | Periodic tasks | `context.schedule(interval_seconds, callback)`: the chassis clock runs them and stops them inside `stop_timeout` |
+| Hook ordering | the declarative hooks are read at registration and collected again after `init(context)`; inspection commands initialize discovered modules first |
 | Public surface | the package root `__all__`; anything deeper is importable but internal |
 
 ## 1. Golden Rules of the Chassis
@@ -96,6 +98,16 @@ opportunities, never requirements - the chassis `getattr`s them and moves on:
 
 - A hook that raises is logged and skipped: a broken `diagnostics()` never stops a boot,
   a doctor run, or a reload.
+- The chassis reads the declarative hooks when a module registers, which is before
+  `init(context)` has run, and collects them again once it has. A hook that needs
+  configuration, paths, or its logger therefore answers with an empty or baseline report on
+  the first pass - `()`, never an exception - and its real findings appear in `kdx doctor`,
+  `kdx config check`, and the control plane after initialization. Registration-time failures
+  are logged at debug level for exactly that reason.
+- `kdx doctor` and `kdx modules show` initialize the discovered modules before asking for
+  `diagnostics()` or `health()`: an inspection command never queries a module that has only
+  been discovered. `kdx modules show` still records a hook failure as `health_error` rather than
+  letting it end the report.
 - `kdx doctor` also reports the chassis' own checks (log file, state dirs, stale lock,
   control-plane errors, failing scheduled tasks, abandoned named locks), so a module only
   contributes what the core cannot know.
@@ -311,6 +323,10 @@ What the blueprint proves:
 - `core.env.aliases` (plus `kdx --env-alias NAME=core.key`) maps a legacy environment
   variable onto a dotted key. The alias appears in provenance as
   `environment alias NAME`, and a real `KDX_` variable always outranks it.
+- A mapping-valued default is a namespace, not a leaf: `core.env.aliases.LEGACY_RUN_MODE` is a
+  chassis path, so `kdx config check` accepts the subkeys a project declares under it. Its
+  `did you mean` answer stays inside the namespace the typo named - a module's own sibling key
+  for a module-scoped typo, and never an unrelated loaded module.
 - Module code never sees the `modules.<name>.` prefix; the chassis strips it.
 
 ## 5. Namespaced Logging
@@ -451,9 +467,13 @@ dependency order -> lifecycle loop -> `stop()` in reverse -> close logging.
 | Handled chassis or CLI failure | `1` |
 | Usage error (bad flags) | `2` |
 | Configuration error | `3` |
+| A command's own verdict code (`4`-`125`) | passed through unchanged |
 | SIGINT | `130` |
 | SIGTERM | `143` |
 
+- A command handler returns an integer and `kdx` returns it verbatim: a module command may
+  report a domain verdict (`4`, `42`, `77`) and a deployment script branches on it. Only the
+  chassis' own failures are mapped to the codes above.
 - The chassis installs signal handlers; a module must never call `signal.signal`.
 - `stop()` always runs, including after a failed `start()`, and is bounded by
   `core.lifecycle.stop_timeout`.

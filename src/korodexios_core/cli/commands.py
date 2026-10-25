@@ -445,8 +445,15 @@ def _version_command(request: CliRequest) -> int:
 
 
 def _doctor_command(request: CliRequest) -> int:
-    """Render the environment inspection report."""
+    """Render the environment inspection report.
+
+    The report asks each module for diagnostics and health, so the chassis initializes
+    the discovered modules first: a hook that reads its configuration or paths needs the
+    context `init(context)` handed it, and a module that was only discovered would
+    otherwise be asked too early.
+    """
     chassis = _chassis(request)
+    chassis.ensure_initialized()
     report = chassis.health_report()
     interactive = _interactivity(chassis)
     report["interface"] = interactive
@@ -979,8 +986,7 @@ def _modules_create_command(request: CliRequest) -> int:
 def _modules_show_command(request: CliRequest) -> int:
     """Show one (or all) modules in detail, initializing on demand."""
     chassis = _chassis(request)
-    if chassis.state.value in ("new", "prepared"):
-        chassis.initialize()
+    chassis.ensure_initialized()
     name = request.option("name")
     records = [chassis.registry.require(str(name))] if name else list(chassis.registry.ordered())
     payload: list[dict[str, Any]] = []

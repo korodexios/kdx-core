@@ -88,6 +88,15 @@ provenance and `kdx doctor` can explain a surprise. `ScopedConfig` gives a modul
 `modules.<name>` subtree with automatic fallback to global keys, so module config keys
 never repeat the module name.
 
+- **A mapping default is a namespace, not a leaf.** `core.env.aliases` carries the
+  project-declared subkeys (`core.env.aliases.LEGACY_RUN_MODE: core.log.level`), and the key
+  validator reads the defaults table for mapping-valued chassis keys instead of
+  hard-coding one prefix, so those subkeys are valid chassis paths.
+- **A suggestion is scoped to the namespace the typo named.** Unknown-key hints compare
+  against the module's own keys when the key is module-scoped, and only against near
+  namespaces of the module it named when that module is not loaded. Naming an unrelated
+  loaded module is treated as noise, not as a hint.
+
 ## 4. Event bus
 
 One in-process bus per chassis, thread-safe, with dot-segmented patterns:
@@ -223,6 +232,17 @@ The contract is a `runtime_checkable` `Protocol` (`ModuleProtocol`) plus an opti
 handed `CoreContext`. Registration checks the protocol and records a failure instead
 of raising, so one bad module never costs the chassis the rest.
 
+The optional declarative hooks (`config_schema()`, `ipc_routes()`, `static_dirs()`, `diagnostics()`) are read at
+registration - before `init(context)` has run, because the chassis wants the routes, schemas,
+and commands a module declares before anything starts - and they are collected again once
+`init(context)` succeeded. A module that needs its configuration or paths to answer one of
+those hooks therefore returns an empty or baseline report on the first pass instead of
+raising, and its real declarations appear after initialization; `kdx doctor`, `kdx config check`,
+and the control plane read the post-initialization set, and `modules[].declarations_after_init`
+says which of the two the chassis is showing. Inspection commands ask `health()` and
+`diagnostics()` only after `ensure_initialized()`, so a command never queries a module that has only
+been discovered.
+
 ## 9. Public API and versioning
 
 The package root `__all__` is the frozen public surface (core API `v2`): the module
@@ -240,7 +260,9 @@ The freeze policy is mechanical:
 | Renamed or removed export, changed signature | breaking: the major version moves |
 | `korodexios_core.CORE_API_VERSION` | the string a module can assert against |
 
-The wheel ships a `py.typed` marker, so type information travels with the package.
+The wheel ships a `py.typed` marker, so type information travels with the package. A patch
+release on the `0.2` line (`0.2.1`) carries fixes and documented invariants under the same `v2`
+surface: no new export, no changed signature, no renamed configuration key.
 Core API v2 added, without breaking a single existing import: `InstanceLock` and
 `LockHolder`, `AsyncRuntime`, `WorkerSupervisor` and `WorkerRecord`, `DiagnosticCheck` and
 `DiagnosticSeverity`, `IpcRoute`, `IpcRequest`, `IpcResponse`, and `IpcStaticMount`,

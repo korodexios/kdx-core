@@ -85,7 +85,8 @@ def test_public_surface_is_unique_and_freeze_complete() -> None:
 
 def test_core_api_version_is_frozen_at_two() -> None:
     assert korodexios_core.CORE_API_VERSION == "2"
-    assert korodexios_core.__version__.startswith("0.2.0")
+    assert korodexios_core.__version__.startswith("0.2.")
+    # The frozen core API v2 lives on the 0.2 patch line; a patch release keeps it.
 
 
 def test_core_api_v2_names_are_exported() -> None:

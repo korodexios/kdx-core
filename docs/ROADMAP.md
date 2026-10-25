@@ -27,6 +27,8 @@ the short list of what ships next; the README keeps one sentence about it.
 
 | 16 | Core API `v2` primitives, additive throughout: arbitrary-depth `CliCommand` nesting with `CliArgument.required` and honest `default is not None` handling, custom control-plane content types (`IpcResponse`, `guess_content_type`) and `register_static_dir(route_prefix, directory_path)` static mounts with `ETag`, `HEAD`, and traversal guards, a named-lock registry (`Chassis.acquire_lock`, `context.paths.lock`, `NamedLockRegistry` in `var/locks/`) released as one unit at shutdown, `core.paths.durable_dir` as the project's durable storage role, and a periodic task scheduler (`context.schedule`, `TaskScheduler`) that runs on the chassis clock and stops inside `stop_timeout` | **delivered** |
 
+| 17 | `v0.2.1` maintenance patch on the `v2` line: mapping-valued chassis defaults are read as namespaces (`core.env.aliases.NAME` passes `kdx config check`), unknown-key suggestions are scoped to the module the typo named, the declarative hooks are collected again once `init(context)` ran so `kdx doctor` and `kdx modules show` never query a module too early, and a command handler's verdict exit code is documented and tested as part of the CLI contract | **delivered** |
+
 ## Next
 
 1. **Publish to an index.** PyPI through trusted publishing. The git bootstrap is
@@ -50,5 +52,7 @@ the short list of what ships next; the README keeps one sentence about it.
 A `v*` tag is the release trigger: the tag runs the full matrix, the package audit, and
 then the `release` job, which builds `uv build` artifacts and attaches the wheel and
 sdist to a GitHub Release. Moving a tag is allowed before `1.0`; after a tag is public,
-the next release is a new version, not a moved tag.
+the next release is a new version, not a moved tag. A patch on the `0.2` line ships under the
+same frozen `v2` surface: fixes and documented invariants, no new export, no changed
+signature, no renamed configuration key.
 

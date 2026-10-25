@@ -20,7 +20,7 @@ docs. `kdx --help` lists every command, including the ones modules contributed.
 | pip in a venv | `pip install korodexios-core` | from an index, once published |
 | uv | `uv pip install korodexios-core` | the same wheel |
 | pipx / uv tool | `pipx install korodexios-core` | the two console scripts land on PATH |
-| git bootstrap | `pip install "korodexios-core @ git+ssh://git@github.com/korodexios/kdx-core.git@v0.2.0"` | the documented path before an index publish |
+| git bootstrap | `pip install "korodexios-core @ git+ssh://git@github.com/korodexios/kdx-core.git@v0.2.1"` | the documented path before an index publish |
 | development | `pip install -e ".[dev]"` | the chassis repository itself |
 
 The wheel carries `py.typed` and every built-in module manifest
@@ -144,6 +144,12 @@ their own, so the run explains a stuck task and an abandoned lock without a modu
 mention either. A module in `failed` health or an `error` diagnostic exits the command `1`,
 so it works as a deployment gate.
 
+The report asks each module for `diagnostics()` and `health()`, so the command initializes the
+discovered modules first; `modules.modules[].declarations_after_init` says whether a module's
+routes, schemas, and checks were read with its context in hand. A module that only
+answers those hooks with its configuration therefore contributes real findings here rather
+than a `ModuleContractError` in the log.
+
 ## `kdx logs`
 
 ```bash
@@ -189,14 +195,19 @@ Sources: `built-in default`, `config file`, `local override file`, `environment`
 `CLI override`.
 
 `kdx config check` reports two high-confidence classes of typo: a `core.*` key with no
-built-in default, and a `modules.<name>.*` key whose module was never discovered. A
-foreign top-level key (`greeting`, `app.name`, `project.owner`) is the project's own
+built-in default and no mapping default above it, and a `modules.<name>.*` key whose module
+was never discovered. A mapping-valued default is a namespace, so the subkeys a project
+declares under it - `core.env.aliases.LEGACY_RUN_MODE` - are valid paths and never fail the
+run. Each suggestion stays inside the namespace the typo named: a sibling key of the
+module the typo named, and never an unrelated loaded module. A foreign top-level key
+(`greeting`, `app.name`, `project.owner`) is the project's own
 it is listed as information and never fails the command. The chassis logs the same
 findings once at boot, on stderr, and `kdx doctor --json` carries them under
 `config.unknown`. The command exits `3` (configuration error) when it finds a key
 nothing reads, so CI can gate on it. The second half of the report is declarative
-module schemas: `config_schema()` hooks are collected at discovery, validated against
-the module's scoped keys, and printed under "Module configuration schemas". A required
+module schemas: `config_schema()` hooks are read when a module registers and collected again
+after `init(context)` ran, validated against the module's scoped keys, and printed under
+"Module configuration schemas". A required
 key with no value, a value that will not coerce, or a value outside the declared
 `choices` is an error and exits `3`; the JSON payload carries them under `schemas.issues`.
 
@@ -215,7 +226,7 @@ The seed ships `kdx.yml`, `.env.example`, `Makefile`, `README.md`, `AGENTS.md`,
 smoke tests. It passes `make check` on arrival.
 
 The chassis dependency is pinned to the repository by default
-(`korodexios-core @ git+https://github.com/korodexios/kdx-core.git@v0.2.0`), so a fresh
+(`korodexios-core @ git+https://github.com/korodexios/kdx-core.git@v0.2.1`), so a fresh
 venv can `pip install -e .` the seeded project before any index publish. Pass
 `--chassis-source index` once the package is on an index; an unknown choice is refused
 with a hint.
@@ -302,6 +313,7 @@ local clients need no change; remote clients pass `--target`.
 | `1` | handled failure (chassis or CLI error with a hint) |
 | `2` | usage error (argparse) |
 | `3` | configuration error |
+| `4`-`125` | a command handler's own verdict code, passed through unchanged |
 | `130` | SIGINT |
 | `143` | SIGTERM |
 
@@ -313,6 +325,8 @@ local clients need no change; remote clients pass `--target`.
   commands.
 - `kdx reload` exits `0` even with no daemon running; `kdx rpc` and `kdx --remote` exit `1`
   when nothing answers, because the operator asked for work that did not happen.
+- A module command's exit code is the integer its handler returned, verdict codes
+  included, so `kdx` can gate a deployment on `kdx index check` exiting `4` and not only on `0`/`1`.
 - Diagnostics go to stderr, UI output to stdout: redirect stderr away and stdout stays
   parseable.
 - `--home PATH` makes any command runnable from anywhere; it beats `KDX_HOME`.

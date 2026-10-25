@@ -52,7 +52,8 @@ core:
     sighup: true                   # SIGHUP reloads configuration without exiting
   env:
     prefix: KDX
-    aliases: {}                    # LEGACY_VARIABLE: core.dotted.key
+    aliases: {}                    # a mapping default: its subkeys are chassis paths,
+                                   # each one LEGACY_VARIABLE: core.dotted.key
 
 # Per-module configuration. Each module receives a scoped view of "modules.<name>".
 modules:

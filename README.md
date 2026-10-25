@@ -9,7 +9,7 @@ clients that talk to the same core and never reimplement it.
 - **Console scripts:** `kdx` (primary short alias), `korodexios` (canonical)
 - **Python:** 3.11+ (developed on 3.13), `uv`-first, `venv` + `pip` compatible
 - **Dependencies:** `pyyaml` (config files), `rich` (the wizard layer)
-- **Release:** `v0.2.0`, core API frozen at `v2`
+- **Release:** `v0.2.1`, core API frozen at `v2`
 
 ---
 
@@ -144,7 +144,8 @@ from korodexios_core import CliArgument, CliCommand, ConfigField, IpcRoute, Modu
 ```
 
 Additive changes are allowed inside `v2`; anything that breaks an import or a signature
-moves the major version. Core API v2 added the instance lock, the async runtime, worker
+moves the major version. The `0.2` line is where `v2` ships: `0.2.1` is a maintenance patch on
+the `0.2.0` primitives, with no new export and no changed signature. Core API v2 added the instance lock, the async runtime, worker
 supervision, diagnostic checks, declarative IPC routes, and configuration schemas; then the
 chassis primitives - named locks (`NamedLock`, `NamedLockRegistry`), a periodic task
 scheduler (`TaskScheduler`, `context.schedule`), durable project storage

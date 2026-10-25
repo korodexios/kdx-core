@@ -5,7 +5,44 @@ history lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## [Unreleased]
 
-_Nothing pending: the working tree is the `v0.2.0` tag._
+_Nothing pending: the working tree is the `v0.2.1` tag._
+
+## [0.2.1] - 2026-10-25
+
+A maintenance patch on the core API `v2` line: two defects found during downstream production
+integration, and one exit-code invariant made explicit. Nothing in the frozen surface
+changed shape - no signature, no route, and no configuration key was renamed or removed.
+
+### Fixed
+
+- **Subkeys under a mapping default are valid paths**: `core.env.aliases` - and any
+  mapping-valued chassis key, derived from the defaults table rather than hard-coded - is
+  read as a namespace, so `core.env.aliases.LEGACY_RUN_MODE` no longer fails
+  `kdx config check` with exit `3`. A malformed subkey (`core.env.aliases.`) and a deeper path
+  stay unknown, so a real typo still surfaces.
+- **The `did you mean` answer is scoped to the key it names**: a typo inside a module
+  namespace is suggested against that module's own keys
+  (`modules.heartbeat.intervl` → `modules.heartbeat.interval`), an unloaded module suggests only a
+  near namespace (`modules.backup.root` → `modules.backup_engine`), and an unrelated loaded module
+  is never dragged in as the suggestion.
+- **Hook ordering in inspection commands**: `kdx doctor` and `kdx modules show` initialize the
+  discovered modules before asking `diagnostics()` or `health()`, so a module that reads its
+  configuration, paths, or logger in those hooks no longer answers `ModuleContractError`:
+  `used before init(context) ran`. The registry collects the declarative hooks
+  (`config_schema()`, `ipc_routes()`, `static_dirs()`, `diagnostics()`) again once `init(context)` succeeded, so
+  `kdx config check`, `kdx doctor`, and the control plane see the module's real declarations, and
+  the expected first pass is logged at debug level instead of as a boot error. A module
+  that needs its context answers those hooks with an empty or baseline report until then.
+
+### Added
+
+- **Verdict exit codes are part of the CLI contract**: `main()` returns the integer a command
+  handler produced, so `kdx <module> <command>` may exit `4` (or `42`, `77`) and a deployment script
+  branches on it; only the chassis' own failures map to `ExitCode`. Asserted end to end in
+  `tests/test_patch_v021.py` and documented in `docs/CLI_REFERENCE.md`.
+- Eleven regression tests cover the three fixes: alias subkeys through `kdx config check`,
+  suggestion scoping, pre-init hook resilience, the collected-again-after-init path, and
+  exit-code pass-through.
 
 ## [0.2.0] - 2026-10-22
 

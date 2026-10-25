@@ -542,7 +542,14 @@ def _delegate_remote(pre_args: argparse.Namespace, tokens: Sequence[str]) -> int
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the console client and return the process exit code."""
+    """Run the console client and return the process exit code.
+
+    A command handler's integer is returned verbatim, so a command may report a domain
+    verdict - 4, 42, 77 - and the shell that called `kdx` sees exactly that number. Only the
+    chassis' own failures are mapped to `ExitCode`: a chassis or CLI error is 1, a usage error
+    2, a configuration error 3, SIGINT 130, and SIGTERM 143. Nothing between the handler and
+    the process clamps the number, so `kdx` works as a gate in a deployment script.
+    """
     argv = list(sys.argv[1:] if argv is None else argv)
 
     bootstrap = build_bootstrap_parser()

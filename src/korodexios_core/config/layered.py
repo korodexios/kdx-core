@@ -462,9 +462,19 @@ class LayeredConfig:
             seen.update(layer.values.keys())
         return sorted(seen)
 
-    def unknown_keys(self, module_names: Iterable[str] = ()) -> list[tuple[str, str]]:
-        """Return (key, suggestion) pairs for keys nothing in the chassis reads."""
-        return key_rules.unknown_keys(self.keys(), module_names)
+    def unknown_keys(
+        self,
+        module_names: Iterable[str] = (),
+        known_keys: Iterable[str] | None = None,
+    ) -> list[tuple[str, str]]:
+        """Return (key, suggestion) pairs for keys nothing in the chassis reads.
+
+        Suggestions are scoped with *known_keys*, which defaults to the keys every layer
+        carries, so a typo inside a module namespace is answered with that module's own
+        key rather than with an unrelated loaded module.
+        """
+        present = self.keys()
+        return key_rules.unknown_keys(self.keys(), module_names, known_keys or present)
 
     def project_keys(self) -> tuple[str, ...]:
         """Return the project-owned keys among every layer."""
