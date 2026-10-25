@@ -124,6 +124,26 @@ def default_stamp(now: float | None = None) -> str:
     return datetime.fromtimestamp(now if now is not None else time.time()).strftime(STAMP_FORMAT)
 
 
+def _unique_target(dest: Path, label: str) -> Path:
+    """Return a destination folder under *dest* that no earlier backup has taken.
+
+    ``STAMP_FORMAT`` carries one second of resolution, so two runs inside the same
+    second - rapid CLI invocations, a sub-second schedule interval, a fast test -
+    would otherwise plan the identical folder and clobber it. When ``dest / label``
+    already exists, an incrementing suffix (``-1``, ``-2``, ...) is appended until a
+    free name is found, so every planned backup owns a distinct, isolated directory.
+    """
+    candidate = dest / label
+    if not candidate.exists():
+        return candidate
+    index = 1
+    while True:
+        candidate = dest / f"{label}-{index}"
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
 def build_plan(settings: BackupSettings, *, stamp: str | None = None) -> BackupPlan:
     """Walk the source tree and decide what a backup would copy."""
     source = Path(settings.source)
@@ -136,7 +156,7 @@ def build_plan(settings: BackupSettings, *, stamp: str | None = None) -> BackupP
         raise BackupError(f"backup source {source} is not a directory", hint="Backups copy trees.")
     label = stamp or settings.stamp or default_stamp()
     dest = Path(settings.dest)
-    target = dest / label
+    target = _unique_target(dest, label)
     plan = BackupPlan(settings=settings, target=target)
     patterns = list(settings.exclude)
     guard = _destination_guard(source, dest)

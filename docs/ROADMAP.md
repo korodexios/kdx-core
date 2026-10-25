@@ -68,6 +68,15 @@ from a `0600` sibling so a polling reader never finds it empty, a socket that cl
 shutdown is answered quietly instead of raising in the handler, and a scan of the locks
 directory ignores dot files, swap files, and names `lock_name()` refuses | **delivered** |
 
+| 22 | `v0.2.6` closes four edges a running daemon and a second copy of the CLI could find:
+  a same-second `backup_engine` run no longer plans the identical destination folder -
+  `build_plan()` appends an incrementing suffix whenever `dest / <stamp>` already exists;
+  a lock a killed process left behind is adopted instead of forcing a manual delete, with
+  the payload atomically rewritten once the dead PID is confirmed; the control plane defines
+  `MAX_IPC_PAYLOAD_BYTES` (10 MiB) and answers an oversized body with HTTP 413 without
+  buffering it; and a permission-refusal test skips on Windows, where directories ignore
+  POSIX mode bits | **delivered** |
+
 ## Next
 
 1. **Publish to an index.** PyPI through trusted publishing. The git bootstrap is

@@ -208,6 +208,13 @@ class InstanceLock:
                 hint="Remove the lock file only when no chassis daemon is running.",
             ) from exc
         self._descriptor = descriptor
+        stale = self._takeover_stale()
+        if stale is not None and self._logger is not None:
+            self._logger.info(
+                "taking over a stale instance lock from a dead process",
+                path=str(self._path),
+                old_pid=stale.pid,
+            )
         self._write_payload()
         if self._logger is not None:
             self._logger.debug("instance lock acquired", path=str(self._path), pid=os.getpid())
@@ -282,6 +289,36 @@ class InstanceLock:
     def _unlock_descriptor(self, descriptor: int) -> None:
         """Release the platform's exclusive lock."""
         unlock_descriptor(descriptor)
+
+    def _takeover_stale(self) -> LockHolder | None:
+        """Return the stale holder whose claim this process just adopted, if any.
+
+        A daemon that died by ``kill -9``, a power loss, or an OS crash leaves its
+        lock file behind with a dead PID inside, while the OS-level lock is already
+        free. ``flock`` (or ``msvcrt``) succeeds against that file, so the payload is
+        the only thing still claiming it: when the recorded owner is gone the claim
+        is stale, and this process adopts it by rewriting the payload with its own
+        details. A lock whose owner is still alive - or a file that is not a
+        readable payload at all - is left untouched, because its descriptor is the
+        one the other process actually holds.
+        """
+        descriptor = self._descriptor
+        if descriptor is None:
+            return None
+        try:
+            raw = os.read(descriptor, 65536).decode(ENCODING)
+        except (OSError, UnicodeDecodeError):
+            return None
+        try:
+            data = json.loads(raw) if raw.strip() else None
+        except ValueError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        holder = LockHolder.from_mapping(data)
+        if not holder.pid or holder.is_alive:
+            return None
+        return holder
 
     def _write_payload(self) -> None:
         """Write the owner payload into the locked file."""

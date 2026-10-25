@@ -24,7 +24,9 @@ from korodexios_core.kernel.ipc import (
     DISCOVERY_NAME,
     HEALTH_PATH,
     IS_LINUX,
+    MAX_IPC_PAYLOAD_BYTES,
     ROUTES,
+    RPC_PATH,
     SCHEMA_PATH,
     SHUTDOWN_PATH,
     STATUS_PATH,
@@ -176,6 +178,54 @@ def test_shutdown_post_asks_the_chassis_to_stop(tmp_path: Path) -> None:
         assert payload["accepted"] is True  # type: ignore[index]
         assert calls["shutdown"] == 1
         assert server.as_dict()["requests"] == 1
+    finally:
+        server.stop()
+
+
+def test_rpc_payload_over_the_limit_is_refused_with_413(tmp_path: Path) -> None:
+    """A request body over 10 MiB is rejected before a single byte is buffered."""
+    server, _ = make_server(tmp_path)
+    base = server.discovery.base_url()  # type: ignore[union-attr]
+    token = server.discovery_token
+    try:
+        oversized = MAX_IPC_PAYLOAD_BYTES + 1
+        body = b"\x00" * 16  # the declared length lies; the plane must not trust it
+        request = urllib.request.Request(
+            base + RPC_PATH,
+            data=body,
+            method="POST",
+            headers={TOKEN_HEADER: token, "Content-Length": str(oversized)},
+        )
+        with pytest.raises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(request, timeout=5)
+        assert int(caught.value.code) == 413
+        response = json.loads(caught.value.read().decode("utf-8"))
+        assert "too large" in response["error"]
+    finally:
+        server.stop()
+
+
+def test_rpc_payload_at_the_limit_is_accepted(tmp_path: Path) -> None:
+    """A body exactly at the limit is still buffered: the limit is inclusive."""
+    server, _ = make_server(tmp_path)
+    base = server.discovery.base_url()  # type: ignore[union-attr]
+    token = server.discovery_token
+    try:
+        body = b"x" * 8
+        request = urllib.request.Request(
+            base + RPC_PATH,
+            data=body,
+            method="POST",
+            headers={TOKEN_HEADER: token},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                code = int(response.status)
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            code = int(exc.code)
+            payload = json.loads(exc.read().decode("utf-8"))
+        assert code == 501, payload
     finally:
         server.stop()
 

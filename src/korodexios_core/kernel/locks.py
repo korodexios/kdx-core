@@ -173,6 +173,14 @@ class NamedLock:
                 time.sleep(min(self._poll, remaining))
         self._descriptor = descriptor
         self._acquired_at = time.monotonic()
+        stale = self._takeover_stale()
+        if stale is not None and self._logger is not None:
+            self._logger.info(
+                "taking over a stale named lock from a dead process",
+                name=self._name,
+                path=str(self._path),
+                old_pid=stale.pid,
+            )
         try:
             self._write_payload()
         except OSError:
@@ -259,6 +267,36 @@ class NamedLock:
             timeout=timeout,
             hint="wait for the owner, raise the timeout, or run 'kdx doctor' to see the holder",
         )
+
+    def _takeover_stale(self) -> LockHolder | None:
+        """Return the stale holder whose claim this process just adopted, if any.
+
+        A process that died by ``kill -9``, a power loss, or an OS crash leaves its
+        lock file behind with a dead PID inside, while the OS-level lock is already
+        free. ``flock`` (or ``msvcrt``) succeeds against that file, so the payload is
+        the only thing still claiming it: when the recorded owner is gone the claim
+        is stale, and this process adopts it by rewriting the payload with its own
+        details. A lock whose owner is still alive - or a file that is not a
+        readable payload at all - is left untouched, because its descriptor is the
+        one the other process actually holds.
+        """
+        descriptor = self._descriptor
+        if descriptor is None:
+            return None
+        try:
+            raw = os.read(descriptor, 65536).decode(ENCODING)
+        except (OSError, UnicodeDecodeError):
+            return None
+        try:
+            data = json.loads(raw) if raw.strip() else None
+        except ValueError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        holder = LockHolder.from_mapping(data)
+        if not holder.pid or holder.is_alive:
+            return None
+        return holder
 
     def _write_payload(self) -> None:
         """Write the owner payload into the locked file; raise on an I/O failure.

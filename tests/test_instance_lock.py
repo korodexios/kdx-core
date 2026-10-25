@@ -91,6 +91,31 @@ def test_stale_metadata_is_detected(tmp_path: Path) -> None:
     lock.release()
 
 
+def test_dead_pid_stale_lock_is_taken_over_cleanly(tmp_path: Path) -> None:
+    """A lock left behind by a killed daemon is adopted, not treated as a failure.
+
+    The file still carries the old daemon JSON, but its PID is gone and the OS
+    lock is free: acquire succeeds, the payload is rewritten to this process, and
+    the lock is reported as held and fresh.
+    """
+    path = tmp_path / "chassis.lock"
+    path.write_text(
+        json.dumps({"pid": 999_999_999, "label": "killed", "started_at": 1.0}),
+        encoding="utf-8",
+    )
+    lock = InstanceLock(path, metadata={"label": "fresh", "port": 8124})
+    assert lock.is_stale() is True, "the pre-acquire scan still sees the dead owner"
+    lock.acquire()
+    assert lock.held is True
+    holder = lock.holder()
+    assert holder is not None and holder.pid == os.getpid()
+    assert holder is not None and holder.label == "fresh"
+    assert holder is not None and holder.is_alive is True
+    assert lock.is_stale() is False, "the stale claim is gone once the payload is ours"
+    lock.release()
+    assert lock.held is False
+
+
 def test_garbage_metadata_is_survivable(tmp_path: Path) -> None:
     path = tmp_path / "chassis.lock"
     path.write_text("not json at all", encoding="utf-8")

@@ -145,6 +145,46 @@ def test_a_dead_owner_leaves_a_stale_name(tmp_path: Path) -> None:
     assert payload["directory"] == str(registry.directory)
 
 
+def test_dead_owner_lock_is_taken_over_cleanly(tmp_path: Path) -> None:
+    """A named lock whose recorded owner died is adopted without a manual delete.
+
+    The descriptor is free (the owner is gone), so the OS lock succeeds; the file
+    still names the dead PID. acquire must adopt the lock and rewrite the payload
+    instead of raising LockTimeoutError.
+    """
+    import json
+    import os
+
+    registry = make_registry(tmp_path)
+    registry.directory.mkdir(parents=True)
+    stale_file = registry.directory / "abandoned.lock"
+    stale_file.write_text(
+        json.dumps({"pid": 999_999_999, "label": "abandoned", "name": "abandoned"}),
+        encoding="utf-8",
+    )
+    assert registry.stale_names() == ("abandoned",), "the scan still reports the dead owner"
+    handle = registry.acquire("abandoned", timeout=0.0, blocking=False)
+    assert handle.held is True, "the stale lock is taken over, not refused"
+    holder = handle.holder()
+    assert holder is not None and holder.pid == os.getpid()
+    assert holder is not None and holder.is_alive is True
+    assert handle.is_stale() is False
+    registry.release("abandoned")
+    assert registry.held("abandoned") is False
+    assert registry.stale_names() == (), "the payload no longer names a dead owner"
+
+
+def test_a_live_owner_is_never_taken_over(tmp_path: Path) -> None:
+    """A lock whose owner is still alive is refused, not silently adopted."""
+    registry = make_registry(tmp_path)
+    held = registry.acquire("index")
+    rival = NamedLock(held.path)
+    with pytest.raises(LockTimeoutError):
+        rival.acquire(timeout=0.0)
+    assert held.held is True, "the live holder keeps its lock"
+    registry.release("index")
+
+
 def test_hold_is_a_context_manager_and_refuses_nesting(tmp_path: Path) -> None:
     registry = make_registry(tmp_path)
     with registry.hold("index") as handle:

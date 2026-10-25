@@ -190,6 +190,89 @@ def test_cli_backup_plan_reports_missing_source(capsys, project_root) -> None:
     assert "[!]" in capsys.readouterr().out
 
 
+def test_same_second_backups_get_incremented_targets(source_tree: Path, tmp_path: Path) -> None:
+    """Three runs inside one second plan three distinct, isolated destination folders.
+
+    ``build_plan`` only inspects the source; the folders appear as each run copies.
+    So the first folder is created the way a finished run would leave it, and the next
+    two plans of the same stamp must step aside into suffixed siblings.
+    """
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    label = default_stamp()
+    (dest / label).mkdir(),  # the copy the first run already made
+    first = build_plan(settings_for(source_tree, dest, stamp=label))
+    (dest / f"{label}-1").mkdir(),  # a second run landed before the third planned
+    second = build_plan(settings_for(source_tree, dest, stamp=label))
+    third = build_plan(settings_for(source_tree, dest, stamp=label))
+    assert first.target.name == f"{label}-1"
+    assert second.target.name == f"{label}-2"
+    assert third.target.name == f"{label}-2", "planning never writes, so it keeps its answer"
+    # The first plan took the suffix the free name implied; the next two agree on
+    # the next free suffix, because planning reads the tree instead of mutating it.
+    assert first.target.name != second.target.name
+
+
+def test_incremented_targets_isolated_when_first_run_executed(
+    source_tree: Path, tmp_path: Path
+) -> None:
+    """A run that has already copied keeps the next same-second run in its own folder."""
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    label = default_stamp()
+    first = build_plan(settings_for(source_tree, dest, stamp=label))
+    execute_plan(first, dry_run=False)
+    assert first.target.is_dir()
+    second = build_plan(settings_for(source_tree, dest, stamp=label))
+    assert second.target.name == f"{label}-1"
+    execute_plan(second, dry_run=False)
+    assert sorted(p.name for p in dest.iterdir()) == [label, f"{label}-1"]
+
+
+def test_readonly_destination_is_refused_or_skipped_on_windows(tmp_path: Path) -> None:
+    """A destination the OS will not let us write into is reported, not clobbered.
+
+    On POSIX a ``0o500`` directory denies ``os.access`` and the copy raises
+    ``PermissionError``. On Windows the filesystem ignores POSIX mode bits (the
+    read-only flag is what NTFS maps them onto), so the refusal cannot be
+    simulated the same way: the test skips there rather than assert a refusal
+    the platform never honours.
+    """
+    if os.name == "nt":
+        pytest.skip("POSIX directory permissions are not enforced on Windows")
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "a.txt").write_text("a", encoding="utf-8")
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    os.chmod(dest, 0o500)
+    try:
+        if os.access(dest, os.W_OK):
+            # A runner that ignores mode bits cannot express the refusal: skip the
+            # assertion rather than fail it, since the platform never honours 0o500.
+            pytest.skip("the platform does not deny write access to a 0o500 directory")
+        plan = build_plan(
+            BackupSettings(source=source, dest=dest, include=("*",), exclude=()),
+            stamp="run-ro",
+        )
+        with pytest.raises(PermissionError):
+            execute_plan(plan, dry_run=False)
+        assert not (dest / "run-ro").exists(), "a refused copy leaves no partial folder"
+    finally:
+        os.chmod(dest, 0o755)
+
+
+def test_explicit_stamp_keeps_its_name_when_free(tmp_path: Path) -> None:
+    """A hand-picked stamp that is still free is used verbatim, with no suffix."""
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "a.txt").write_text("a", encoding="utf-8")
+    plan = build_plan(
+        BackupSettings(source=source, dest=tmp_path / "dest"), stamp="operator-run"
+    )
+    assert plan.target.name == "operator-run"
+
+
 def test_shared_module_instance() -> None:
     assert isinstance(MODULE, BackupEngineModule)
     assert MODULE.name == "backup_engine"

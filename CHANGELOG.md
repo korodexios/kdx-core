@@ -5,7 +5,50 @@ history lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## [Unreleased]
 
-_Nothing pending: the working tree is the `v0.2.5` tag._
+_Nothing pending: the working tree is the `v0.2.6` tag._
+
+## [0.2.6] - 2026-10-25
+
+Maintenance patch: the four edges a running daemon and a second copy of the CLI
+could find are closed. A stamp that once meant "the same folder" now means a
+fresh one, a lock a killed process left behind is adopted instead of forcing a
+manual delete, the control plane stops buffering an unbounded body, and a
+test that leaned on POSIX mode bits now knows when the platform will not honour
+them. Nothing in the frozen surface changed shape - no new export, no changed
+signature, no renamed configuration key.
+
+### Fixed
+
+- **A same-second backup no longer clobbers its neighbour**: `STAMP_FORMAT`
+  carries one second of resolution, so two runs inside one second - rapid CLI
+  invocations, a sub-second schedule interval, a fast test run - planned the
+  identical `dest/<stamp>` folder and overwrote each other. `build_plan()` now
+  appends an incrementing suffix (`-1`, `-2`, ...) whenever `dest / <stamp>`
+  already exists, so every planned backup owns a distinct, isolated destination
+  directory.
+- **A dead PID no longer strands the lock file**: a daemon killed by `kill -9`,
+  a power loss, or an OS crash left its lock file in `var/` with the old JSON
+  payload inside, and `acquire()` raised `InstanceLockError` / `LockTimeoutError`
+  because the file still claimed the name, even though `holder.is_alive` was
+  `False`. Both `InstanceLock` and `NamedLock` now check, after the OS-level lock
+  succeeds, whether the recorded owner is gone; when it is, the lock is taken
+  over, the payload is atomically rewritten with the current process, and the
+  acquisition proceeds cleanly. A lock whose owner is still alive is still
+  refused, because its descriptor is the one the other process actually holds.
+- **An oversized IPC body is refused before it is buffered**: `_ControlHandler`
+  read whatever `Content-Length` announced straight into memory, so an untrusted
+  or malformed request could exhaust the daemon before any handler ran. The
+  control plane now defines `MAX_IPC_PAYLOAD_BYTES` (10 MiB) and answers a body
+  over the limit with HTTP `413 Payload Too Large` without reading a byte of it.
+- **A permission-refusal test no longer assumes POSIX**: a test that asserts a
+  write is denied by a `0o400` / `0o500` directory skips on Windows, where
+  directories ignore POSIX mode bits (NTFS maps them onto the read-only flag),
+  instead of failing on a platform that never honours the mode.
+
+### Changed
+
+- **The version moves to `0.2.6`** with the four fixes above; `docs/`,
+  `llms.txt`, and `docs/ROADMAP.md` are synchronized to the patch.
 
 ## [0.2.5] - 2026-10-26
 

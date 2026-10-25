@@ -241,12 +241,6 @@ unschedule its neighbour, or withdraw its own name (`v0.2.4`). `backup_engine` p
 primitives in shipped code (`v0.2.5`): a `schedule_interval` declares an `auto_sweep` task, and the
 copy that task starts takes the same named lock a manual run takes, so a sweep that arrives
 while a copy is running steps aside by decision of the lock, not by luck of timing.
-- The bus is lock-protected; handlers run outside the lock, so a handler may do
-  anything the bus API allows without deadlocking.
-- Logging is thread-safe by construction (one `LoggerFactory`, stdlib handlers).
-- A JSON log line keeps the types a module passed - numbers stay numbers, mappings stay
-  mappings - and shortens only what JSON cannot hold, so a shipper filters data rather than
-  parsing text (`v0.2.3`).
 
 ## 8. Discovery and module lifecycle
 
@@ -299,7 +293,7 @@ The freeze policy is mechanical:
 | `korodexios_core.CORE_API_VERSION` | the string a module can assert against |
 
 The wheel ships a `py.typed` marker, so type information travels with the package. A patch
-release on the `0.2` line (`0.2.1`, `0.2.2`, `0.2.3`, `0.2.4`, `0.2.5`) carries hardening and dogfooding under the same
+release on the `0.2` line (`0.2.1`, `0.2.2`, `0.2.3`, `0.2.4`, `0.2.5`, `0.2.6`) carries hardening and dogfooding under the same
 `v2` surface: no new export, no changed signature, no renamed configuration key.
 Core API v2 added, without breaking a single existing import: `InstanceLock` and
 `LockHolder`, `AsyncRuntime`, `WorkerSupervisor` and `WorkerRecord`, `DiagnosticCheck` and

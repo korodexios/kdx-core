@@ -43,6 +43,19 @@ LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 MAX_SEGMENT_LENGTH: Final[int] = 255
 """Longest single path segment a static mount will look at."""
 
+MAX_IPC_PAYLOAD_BYTES: Final[int] = 10 * 1024 * 1024
+"""Largest request body the control plane will buffer, in bytes (10 MiB).
+
+``_read_payload`` reads the ``Content-Length`` body straight into memory, so an
+untrusted or malformed request that announces a huge body would exhaust the
+daemon memory before the handler ever ran. A body over this limit is rejected
+with HTTP 413 before a single byte is buffered, so the control plane answers
+instead of dying.
+"""
+
+PAYLOAD_TOO_LARGE: Final[int] = 413
+"""The status the control plane answers when a request body exceeds the limit."""
+
 WINDOWS_DEVICE_NAMES: Final[frozenset[str]] = frozenset(
     {"con", "prn", "aux", "nul"}
     | {f"com{index}" for index in range(1, 10)}
@@ -72,6 +85,7 @@ ROUTES = (
 )
 RPC_METHODS = ("POST",)
 RELOAD_METHODS = ("POST",)
+
 CONTENT_JSON = "application/json"
 CONTENT_OCTET_STREAM = "application/octet-stream"
 CONTENT_PLAIN = "text/plain; charset=utf-8"
@@ -158,7 +172,7 @@ class IpcRoute:
     content_type: str = CONTENT_JSON
 
     def __post_init__(self) -> None:
-        clean = normalize_route_path(self.path)
+        clean = normalize_route_path(str(self.path))
         if clean in ROUTES:
             raise IpcError(
                 f"route {self.path!r} is reserved by the chassis control plane",
@@ -801,7 +815,11 @@ class _ControlHandler(BaseHTTPRequestHandler):
             if method != "POST":
                 self._reply(405, {"error": "rpc expects POST"})
                 return
-            self._reply(*ipc.handle_rpc(self._read_payload()))
+            payload = self._read_payload()
+            if payload is PAYLOAD_TOO_LARGE:
+                self._reply(PAYLOAD_TOO_LARGE, {"error": "request body too large"})
+                return
+            self._reply(*ipc.handle_rpc(payload))
             return
         if method != "POST":
             self._reply(405, {"error": "shutdown expects POST"})
@@ -933,13 +951,21 @@ class _ControlHandler(BaseHTTPRequestHandler):
         )
 
     def _read_payload(self) -> Any:
-        """Return the decoded JSON request body, or None when there is none."""
+        """Return the decoded JSON request body, or None when there is none.
+
+        A body whose ``Content-Length`` exceeds :data:`MAX_IPC_PAYLOAD_BYTES` is
+        refused with :data:`PAYLOAD_TOO_LARGE` before any of it is read, so an
+        oversized request cannot exhaust the daemon memory. The caller answers
+        with the status this returns; a body within the limit decodes as before.
+        """
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             length = 0
         if length <= 0:
             return None
+        if length > MAX_IPC_PAYLOAD_BYTES:
+            return PAYLOAD_TOO_LARGE
         raw = self.rfile.read(length)
         return _decode(raw)
 
