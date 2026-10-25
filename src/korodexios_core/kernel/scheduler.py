@@ -158,6 +158,8 @@ class TaskScheduler:
         self._thread: threading.Thread | None = None
         self._started = False
         self._started_at: float | None = None
+        self._active_task: str | None = None
+        self._active_since: float | None = None
 
     @property
     def enabled(self) -> bool:
@@ -174,6 +176,23 @@ class TaskScheduler:
         """Return True while the optional scheduler thread is serving."""
         thread = self._thread
         return bool(thread is not None and thread.is_alive())
+
+    @property
+    def active_task(self) -> str | None:
+        """Return the name of the callback running right now, None when idle.
+
+        A task name is the answer an operator wants at shutdown: the tick loop and
+        the scheduler thread are healthy, so the only thing that can hold a stop open
+        is the callback already on a worker and impossible to recall.
+        """
+        return self._active_task
+
+    def active_seconds(self) -> float:
+        """Return how long the active callback has been running, 0.0 when idle."""
+        started = self._active_since
+        if started is None:
+            return 0.0
+        return max(0.0, time.monotonic() - started)
 
     def schedule(
         self,
@@ -317,7 +336,10 @@ class TaskScheduler:
         and a table that changes size mid-sweep cannot skip a task. Callbacks run
         with the guard released: a task may schedule another one, unschedule its
         neighbour, or withdraw its own name - and this sweep honours that decision
-        instead of running a task that is already gone.
+        instead of running a task that is already gone. Shutdown is honoured the
+        same way: once stop() has set the flag, this sweep stops launching callbacks
+        and leaves the rest of the queue alone, so a stop is never answered by new
+        work the shutdown budget cannot wait for.
         """
         if not self._enabled:
             return []
@@ -331,6 +353,11 @@ class TaskScheduler:
                 # An earlier callback withdrew this task, or replaced it under the
                 # same name: the withdrawal is a decision, not a missed beat.
                 continue
+            if self._stop.is_set():
+                # Shutdown commenced while this task waited its turn: launching a
+                # fresh callback now would start work the stop() budget cannot wait
+                # for, so the sweep stops here with the queue still full.
+                break
             if self.run_task(task.name, now=moment):
                 ran.append(task.name)
         return ran
@@ -350,6 +377,8 @@ class TaskScheduler:
             return False
         moment = float(self._clock() if now is None else now)
         started = time.monotonic()
+        self._active_task = task.name
+        self._active_since = started
         try:
             task.callback()
         except Exception as exc:
@@ -364,6 +393,9 @@ class TaskScheduler:
             self._log_task_failure(task)
             self._publish(TASK_FAILED_EVENT, task)
             return False
+        finally:
+            self._active_task = None
+            self._active_since = None
         task.runs += 1
         task.last_run = moment
         task.last_error = ""
@@ -427,19 +459,34 @@ class TaskScheduler:
         """
         if not self._started:
             return
+        logger = self._logger
         thread = self._thread
         self._thread = None
         self._stop.set()
         self._started = False
         if thread is not None and thread.is_alive():
-            thread.join(timeout=max(0.0, float(timeout)) if timeout else self._poll)
-            if thread.is_alive() and self._logger is not None:
-                self._logger.warning(
-                    "scheduler thread outlived the stop timeout",
-                    name=thread.name,
-                    timeout=timeout,
-                )
-        logger = self._logger
+            budget = max(0.0, float(timeout)) if timeout else self._poll
+            thread.join(timeout=budget)
+            if thread.is_alive() and logger is not None:
+                # The thread is alive because a callback is. Naming that callback, and
+                # how long it has been running, is what turns "shutdown was slow" into
+                # a task an operator can read in 'kdx doctor' and act on.
+                active = self._active_task
+                if active is None:
+                    logger.warning(
+                        "scheduler thread outlived the stop timeout with no task running",
+                        name=thread.name,
+                        timeout=timeout,
+                        active_task=None,
+                    )
+                else:
+                    logger.warning(
+                        f"scheduler task {active!r} outlived the stop timeout",
+                        name=thread.name,
+                        task=active,
+                        running_seconds=round(self.active_seconds(), 3),
+                        timeout=timeout,
+                    )
         if logger is not None:
             logger.debug(
                 "scheduler stopped", runs=self.total_runs(), failures=self.total_failures()
@@ -452,6 +499,7 @@ class TaskScheduler:
             "running": self._started,
             "threaded": self.thread_alive,
             "scheduled": len(self._tasks),
+            "active_task": self._active_task,
             "runs": self.total_runs(),
             "failures": self.total_failures(),
             "uptime_seconds": round(max(0.0, time.monotonic() - self._started_at), 3)

@@ -20,7 +20,7 @@ docs. `kdx --help` lists every command, including the ones modules contributed.
 | pip in a venv | `pip install korodexios-core` | from an index, once published |
 | uv | `uv pip install korodexios-core` | the same wheel |
 | pipx / uv tool | `pipx install korodexios-core` | the two console scripts land on PATH |
-| git bootstrap | `pip install "korodexios-core @ git+ssh://git@github.com/korodexios/kdx-core.git@v0.2.6"` | the documented path before an index publish |
+| git bootstrap | `pip install "korodexios-core @ git+ssh://git@github.com/korodexios/kdx-core.git@v0.2.7"` | the documented path before an index publish |
 | development | `pip install -e ".[dev]"` | the chassis repository itself |
 
 The wheel carries `py.typed` and every built-in module manifest
@@ -158,8 +158,12 @@ parked by configuration, parked because the platform has no load average, or sto
 own - and a thread that stopped on its own is what worker supervision marks `failed`.
 Since `v0.2.5` the same rows carry the periodic sweep: `backup_engine` says whether `auto_sweep`
 is scheduled, how many copies it has landed, and how many stepped aside for a copy already
-running. The locks directory is read with the same care: an editor's swap file, a dot file,
-and a name no lock could answer to are never reported as a held or stale lock.
+running. Since `v0.2.7` they carry retention too: a `retention` row says whether `auto_prune`
+sweeps on the clock or is left to the copy, how many archives it aged out, how much space that
+took back, and when it last ran - and `kdx status` and `kdx doctor --json` name the task the
+scheduler is still waiting on (`active_task`) when a stop overruns `core.lifecycle.stop_timeout`.
+The locks directory is read with the same care: an editor's swap file, a dot file, and a name
+no lock could answer to are never reported as a held or stale lock.
 
 ## `kdx logs`
 
@@ -219,7 +223,7 @@ nothing reads, so CI can gate on it. The second half of the report is declarativ
 module schemas: `config_schema()` hooks are read when a module registers and collected again
 after `init(context)` ran, validated against the module's scoped keys, and printed under
 "Module configuration schemas" - the three built-in proof modules declare
-`backup_engine: 7 keys`, `heartbeat: 1 keys`, and `system_info: 2 keys` out of the box, so a
+`backup_engine: 10 keys`, `heartbeat: 1 keys`, and `system_info: 4 keys` out of the box, so a
 project is validated against a real schema before it owns one. A required
 key with no value, a value that will not coerce, or a value outside the declared
 `choices` is an error and exits `3`; the JSON payload carries them under `schemas.issues`.
@@ -239,7 +243,7 @@ The seed ships `kdx.yml`, `.env.example`, `Makefile`, `README.md`, `AGENTS.md`,
 smoke tests. It passes `make check` on arrival.
 
 The chassis dependency is pinned to the repository by default
-(`korodexios-core @ git+https://github.com/korodexios/kdx-core.git@v0.2.6`), so a fresh
+(`korodexios-core @ git+https://github.com/korodexios/kdx-core.git@v0.2.7`), so a fresh
 venv can `pip install -e .` the seeded project before any index publish. Pass
 `--chassis-source index` once the package is on an index; an unknown choice is refused
 with a hint.
@@ -297,6 +301,12 @@ kdx backup plan | run | configure         # dry-run, execute, or reconfigure
 
 Each is registered by its module through `register_cli`, so argparse and the wizard
 both know about them.
+
+`backup_engine` reads three clock knobs, each opt-in and each reported by `kdx doctor`:
+`modules.backup_engine.schedule_interval` copies on the chassis clock (task `auto_sweep`),
+`modules.backup_engine.auto_prune_days` decides how long a stamped copy survives (`0` keeps
+every copy), and `modules.backup_engine.prune_interval` (`v0.2.7`) gives retention its own beat
+(task `auto_prune`) so aging an archive never waits for the next copy to land.
 
 ## LAN and auth options
 

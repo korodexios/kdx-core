@@ -29,6 +29,7 @@ BACKUP_KEYS = (
     "follow_symlinks",
     "schedule_interval",
     "auto_prune_days",
+    "prune_interval",
 )
 
 VIOLATING_CONFIG = """
@@ -89,6 +90,11 @@ def test_backup_engine_declares_every_key_it_reads() -> None:
     # v0.2.5 added the periodic sweep: the clock interval and the retention window.
     assert kinds["schedule_interval"] is ConfigKind.FLOAT
     assert kinds["auto_prune_days"] is ConfigKind.INT
+    # v0.2.7 decoupled retention into its own maintenance interval.
+    assert kinds["prune_interval"] is ConfigKind.FLOAT
+    window = next(field for field in schema.fields if field.key == "prune_interval")
+    assert window.default == 0.0, "an independent sweep is opt-in, like every other interval"
+    assert window.description
 
 
 def test_heartbeat_and_system_info_declare_their_keys() -> None:

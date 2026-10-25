@@ -73,3 +73,8 @@ modules:
     max_size: 500MB           # polite [!] failure when the copy would exceed this
     dry_run: false
     follow_symlinks: false
+    # Three clock knobs, all opt-in, all reported by 'kdx doctor' and 'kdx status':
+    #   schedule_interval: 0.0   > 0 copies on the chassis clock (task 'auto_sweep')
+    #   auto_prune_days: 0       > 0 ages stamped copies out; 0 keeps every copy
+    #   prune_interval: 0.0      > 0 with auto_prune_days > 0 sweeps retention on its
+    #                            own beat (task 'auto_prune'), under the same lock

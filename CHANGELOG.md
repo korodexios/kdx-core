@@ -5,7 +5,69 @@ history lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## [Unreleased]
 
-_Nothing pending: the working tree is the `v0.2.6` tag._
+_Nothing pending: the working tree is the `v0.2.7` tag._
+
+## [0.2.7] - 2026-10-25
+
+Maintenance and hardening patch: retention stops being a side effect of a copy, a
+threaded scheduler says which task it could not stop, a malformed route declaration is
+refused before it ever reaches the socket, and the distribution artifacts are audited by
+the suite. Nothing in the frozen surface changed shape - no new package-root export, no
+changed signature, no renamed configuration key.
+
+### Added
+
+- **`backup_engine` retention sweeps on its own clock**: `modules.backup_engine.prune_interval`
+  (float, default `0.0`, disabled) declares an independent `auto_prune` maintenance task through
+  `context.schedule()` whenever it is above `0` and `auto_prune_days` is above `0`, so archives
+  age out on the retention interval even when copies are weekly, manual, or never happen at all.
+  The sweep takes the same `backup_engine` named lock a copy takes, so an archive is never
+  deleted beside a copy that is still landing; a sweep that finds the lock busy steps aside,
+  counts the refusal, and says so in `kdx doctor` rather than reporting a failing task. The old
+  inline behaviour is untouched at `0.0`. `health()` carries `prune_interval_seconds`,
+  `prune_scheduled`, `prune_sweeps`, `prune_sweeps_refused`, `prune_first_due_seconds`,
+  `prune_last_run_seconds_ago`, `prune_last_removed`, `prune_reclaimed_bytes`, and
+  `prune_reclaimed`; `diagnostics()` answers with a `retention` row for each honest state - left
+  to the copy, armed with no window to age out, no clock to run on, task withdrawn, alive and
+  reporting what it took back. `backup.pruned` now carries `reclaimed_bytes` beside `days` and
+  `removed`, because a retention window an operator cannot measure is a guess.
+- **The scheduler reports the callback it is running**: `TaskScheduler.active_task` and
+  `active_seconds()` name the task a worker is inside and how long it has been there, and
+  `scheduler.stats()` gained `active_task`, so `kdx status` and `kdx doctor --json` can say who
+  is holding a stop open instead of leaving the operator with a thread name.
+- **The distribution audit is declared, not remembered**: `pyproject.toml` names what must never
+  ship for the wheel and the sdist (`var/`, `*.log`, `*.tmp`, byte code, the dev caches,
+  `.coverage`, `dist/`, environments) instead of relying on `.gitignore`, which a container that
+  builds from a tarball has no way to read.
+
+### Fixed
+
+- **A threaded shutdown names the task it could not stop**: with `core.scheduler.threaded: true`,
+  `stop(timeout)` used to report only that the `kdx-scheduler` thread was still alive. It now
+  reports the callback that is still running - its name in the message, with `task` and
+  `running_seconds` on the log record - and says so plainly when a live thread has no task in it,
+  so a stop that overran its budget points at work instead of at a thread.
+- **A stop is never answered with new work**: `run_due()` checks the stop flag again immediately
+  before it launches each callback, so a task queued behind a slow one is skipped rather than
+  started past the shutdown budget. Skipping is not losing: the queued task keeps its schedule
+  and runs the next time the clock is open.
+- **An `IpcRoute` can no longer smuggle a header**: `IpcRoute.__post_init__` refuses a path
+  carrying whitespace, a CR, an LF, NUL, or DEL, and refuses a `methods` entry that trims to
+  nothing or sits outside `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `HEAD`, `OPTIONS` - each with
+  an `IpcError` and a hint at declaration time, so the refusal lands at registration and a
+  malformed route never enters the server table.
+
+### Changed
+
+- **`IpcRoute` methods are normalised rather than guessed**: entries are trimmed and upper-cased,
+  duplicates collapse, and an empty tuple keeps the documented `GET` default
+  (`DEFAULT_ROUTE_METHODS`). What used to be a silent default - a blank entry vanishing into
+  `GET` - is now a refusal, which is what the tuple said it meant.
+- **The suite audits what ships**: `tests/test_packaging.py` builds the wheel and the sdist and
+  refuses any `var/`, `.log`, `.tmp`, byte-code, or dev-cache entry, while requiring `py.typed`,
+  the module manifests, `docs/`, `llms.txt`, `LICENSE`, and `Makefile` inside them.
+- **The version moves to `0.2.7`** with the above; `docs/`, `llms.txt`, and `docs/ROADMAP.md` are
+  synchronized to the patch, and `modules.backup_engine` declares 10 configuration keys.
 
 ## [0.2.6] - 2026-10-25
 

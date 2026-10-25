@@ -57,15 +57,34 @@ Issues = "https://github.com/korodexios/kdx-core/issues"
 path = "src/korodexios_core/version.py"
 pattern = '^__version__(?::\s*Final\[str\])?\s*=\s*"(?P<version>[^"]*)"'
 
+# Distribution audit: what ships is the package, its manifests, and the docs that
+# explain it. Runtime state (var/), scratch (.tmp), logs, and dev caches never ride
+# along, so a publish never strands a daemon's archives or a half-written log file on
+# an index. The exclusions are explicit rather than inherited from .gitignore: a
+# release built from a tarball in a container has no VCS to ask.
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/korodexios_core"]
 artifacts = ["src/korodexios_core/modules/*/kdx_module.toml"]
+exclude = [
+  "**/__pycache__",
+  "**/*.py[cd]",
+  "**/*.log",
+  "**/*.tmp",
+  "**/.tmp",
+  "**/.pytest_cache",
+  "**/.mypy_cache",
+  "**/.ruff_cache",
+  "**/var",
+  "/dist",
+]
 
 [tool.hatch.build.targets.sdist]
 include = [
   "src/korodexios_core",
   "tests",
   "README.md",
+  "CHANGELOG.md",
   "AGENTS.md",
   "llms.txt",
   "docs",
@@ -74,6 +93,27 @@ include = [
   "kdx.yml",
   ".env.example",
   "Makefile",
+]
+exclude = [
+  "/var",
+  "/dist",
+  "/build",
+  "/htmlcov",
+  "/.venv",
+  "/venv",
+  "/.tmp",
+  "/.pytest_cache",
+  "/.mypy_cache",
+  "/.ruff_cache",
+  "/.coverage",
+  "**/var",
+  "**/*.log",
+  "**/*.tmp",
+  "**/__pycache__",
+  "**/.pytest_cache",
+  "**/.mypy_cache",
+  "**/.ruff_cache",
+  "**/.coverage",
 ]
 
 [tool.coverage.report]

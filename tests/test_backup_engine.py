@@ -24,6 +24,7 @@ from korodexios_core.modules.backup_engine import (
     execute_plan,
 )
 from korodexios_core.modules.backup_engine.engine import STAMP_FORMAT, default_stamp
+from korodexios_core.modules.backup_engine.module import PRUNE_TASK, PRUNED_EVENT
 from korodexios_core.paths import AppPaths
 from tests.test_chassis import build_chassis
 
@@ -496,5 +497,226 @@ def test_zero_retention_keeps_every_copy(tmp_path: Path) -> None:
         assert chassis.run_forever(duration=0.2) == int(ExitCode.SUCCESS)
         assert old.is_dir(), "no retention means no removal"
         assert module.health()["pruned"] == 0
+    finally:
+        chassis.shutdown()
+
+
+def test_a_retention_window_declares_its_own_task(tmp_path: Path) -> None:
+    """Retention is maintenance work of its own, not a side effect of a copy landing."""
+    chassis = sweep_chassis(
+        tmp_path,
+        **{
+            "modules.backup_engine.schedule_interval": 0.0,
+            "modules.backup_engine.prune_interval": 0.05,
+        },
+    )
+    try:
+        module = chassis.registry.require("backup_engine").module
+        assert chassis.scheduler.task("auto_sweep") is None, "no copy is scheduled here"
+        task = chassis.scheduler.task(PRUNE_TASK)
+        assert task is not None, "a retention interval with a window declares its own task"
+        assert task.module == "backup_engine", "the task belongs to the module that declared it"
+        health = module.health()
+        assert health["prune_interval_seconds"] == 0.05
+        assert health["prune_scheduled"] is True
+        assert health["prune_sweeps"] == 0, "the clock has not run it yet"
+        assert "prune_interval" in {field.key for field in module.config_schema().fields}
+        window = next(
+            field for field in module.config_schema().fields if field.key == "prune_interval"
+        )
+        assert window.default == 0.0, "an independent sweep is opt-in, like every other interval"
+        assert window.description
+    finally:
+        chassis.shutdown()
+    assert chassis.scheduler.task(PRUNE_TASK) is None, "a stopped module leaves no task behind"
+
+
+def test_the_retention_sweep_ages_archives_out_without_a_copy(tmp_path: Path) -> None:
+    """The sweep thins the destination on its own beat and reports the space it took back."""
+    chassis = sweep_chassis(
+        tmp_path,
+        **{
+            "modules.backup_engine.schedule_interval": 0.0,
+            "modules.backup_engine.prune_interval": 0.05,
+        },
+    )
+    try:
+        module = chassis.registry.require("backup_engine").module
+        dest = Path(module.settings().dest)
+        old = backdated(dest, default_stamp(time.time() - 3 * 86_400.0), 3)
+        (old / "payload.bin").write_bytes(b"0123456789abcde")
+        hand = dest / "hand-made"
+        hand.mkdir()
+        assert chassis.run_forever(duration=0.2) == int(ExitCode.SUCCESS)
+        assert not old.exists(), "the clock aged the archive out with no copy in sight"
+        assert hand.is_dir(), "a folder the operator made is never treated as a backup"
+        assert stamped_copies(dest) == [], "retention copied nothing"
+        health = module.health()
+        assert health["prune_sweeps"] >= 1, "the clock ran the sweep"
+        assert health["prune_last_removed"] == 0, "the last beat found nothing left to age out"
+        assert health["pruned"] == 1, "the archive the first beat took is counted"
+        assert health["prune_reclaimed_bytes"] == 15
+        assert health["prune_reclaimed"] == "15 bytes"
+        assert health["prune_last_run_seconds_ago"] is not None
+        pruned = [event for event in chassis.bus.history() if event.name == PRUNED_EVENT]
+        assert pruned, "the sweep published what it removed"
+        assert pruned[-1].payload["reclaimed_bytes"] == 15
+        rows = {check.name: check for check in module.diagnostics()}
+        assert rows["retention"].severity is DiagnosticSeverity.INFO
+        assert "auto_prune" in rows["retention"].message
+        assert chassis.locks.names() == (), "a finished sweep releases the name it took"
+    finally:
+        chassis.shutdown()
+
+
+def test_the_retention_sweep_steps_aside_for_a_copy_holding_the_lock(tmp_path: Path) -> None:
+    """Pruning shares the copy's named lock, so an archive is never deleted beside a copy."""
+    chassis = sweep_chassis(
+        tmp_path,
+        **{
+            "modules.backup_engine.schedule_interval": 0.0,
+            "modules.backup_engine.prune_interval": 0.05,
+        },
+    )
+    try:
+        module = chassis.registry.require("backup_engine").module
+        dest = Path(module.settings().dest)
+        old = backdated(dest, default_stamp(time.time() - 3 * 86_400.0), 3)
+        (old / "payload.bin").write_bytes(b"0123456789abcde")
+        with chassis.lock("backup_engine", timeout=0.0):
+            module._prune_sweep()
+        assert old.is_dir(), "a prune never runs beside a copy that is still landing"
+        health = module.health()
+        assert health["prune_sweeps"] == 0
+        assert health["prune_sweeps_refused"] == 1, "a refusal is counted, never fatal"
+        module._prune_sweep()
+        assert not old.exists(), "the next sweep ages the archive once the name is free"
+        assert module.health()["prune_sweeps"] == 1
+        rows = {check.name: check for check in module.diagnostics()}
+        assert rows["retention"].severity is DiagnosticSeverity.INFO
+    finally:
+        chassis.shutdown()
+
+
+def test_a_retention_interval_without_a_window_is_reported(tmp_path: Path) -> None:
+    """An interval with no retention window has nothing to age out, and says so."""
+    chassis = sweep_chassis(
+        tmp_path,
+        **{
+            "modules.backup_engine.schedule_interval": 0.0,
+            "modules.backup_engine.auto_prune_days": 0,
+            "modules.backup_engine.prune_interval": 60.0,
+        },
+    )
+    try:
+        module = chassis.registry.require("backup_engine").module
+        assert chassis.scheduler.task(PRUNE_TASK) is None, "a sweep with no window stays home"
+        assert module.health()["prune_interval_seconds"] == 60.0
+        rows = {check.name: check for check in module.diagnostics()}
+        assert rows["retention"].severity is DiagnosticSeverity.WARNING
+        assert "no window to age out" in rows["retention"].message
+    finally:
+        chassis.shutdown()
+
+
+def test_retention_left_at_zero_is_left_to_the_copy(tmp_path: Path) -> None:
+    """At the default 'prune_interval: 0' a copy still prunes inline, exactly as before."""
+    chassis = sweep_chassis(tmp_path, **{"modules.backup_engine.prune_interval": 0.0})
+    try:
+        module = chassis.registry.require("backup_engine").module
+        dest = Path(module.settings().dest)
+        old = backdated(dest, default_stamp(time.time() - 3 * 86_400.0), 3)
+        (old / "payload.bin").write_bytes(b"0123456789abcde")
+        assert chassis.scheduler.task(PRUNE_TASK) is None, "no extra task is declared"
+        assert module.health()["prune_scheduled"] is False
+        rows = {check.name: check for check in module.diagnostics()}
+        assert rows["retention"].severity is DiagnosticSeverity.INFO
+        assert "only as a copy lands" in rows["retention"].message
+        assert chassis.run_forever(duration=0.2) == int(ExitCode.SUCCESS)
+        assert not old.exists(), "the copy that landed pruned the expired archive inline"
+        assert stamped_copies(dest), "the sweep still lands a fresh copy"
+    finally:
+        chassis.shutdown()
+
+
+def test_a_copy_prunes_inline_and_reports_the_space_it_took_back(tmp_path: Path) -> None:
+    """Space accounting covers an inline prune too: 'kdx doctor' can check it either way."""
+    chassis = sweep_chassis(tmp_path, **{"modules.backup_engine.prune_interval": 0.0})
+    try:
+        module = chassis.registry.require("backup_engine").module
+        dest = Path(module.settings().dest)
+        old = backdated(dest, default_stamp(time.time() - 4 * 86_400.0), 4)
+        (old / "payload.bin").write_bytes(b"0123456789abcde")
+        assert chassis.run_forever(duration=0.2) == int(ExitCode.SUCCESS)
+        health = module.health()
+        assert health["prune_sweeps"] == 0, "an inline prune is not a scheduled sweep"
+        assert health["pruned"] >= 1, "the removed copy is still counted"
+        assert health["prune_reclaimed_bytes"] == 15
+        assert health["prune_reclaimed"] == "15 bytes"
+    finally:
+        chassis.shutdown()
+
+
+def test_an_initialized_module_reports_a_task_it_never_declared(tmp_path: Path) -> None:
+    """'kdx doctor' initializes the modules it inspects and never starts them.
+
+    The clock is there and the task is not, so the honest row says the sweep is waiting
+    for the chassis to start - not that the chassis has no clock, which is a warning an
+    operator cannot act on while the module is merely inspected.
+    """
+    root = tmp_path / "project"
+    root.mkdir()
+    paths = AppPaths.discover(root=str(root), environ={})
+    chassis = Chassis.create(
+        ChassisOptions(
+            home=paths.root,
+            environ={},
+            install_signals=False,
+            cli_overrides={
+                "core.log.file_enabled": False,
+                "core.ipc.enabled": False,
+                "modules.backup_engine.auto_prune_days": 1,
+                "modules.backup_engine.prune_interval": 60.0,
+            },
+        )
+    )
+    chassis.initialize()
+    try:
+        module = chassis.registry.require("backup_engine").module
+        assert chassis.scheduler is not None and chassis.scheduler.running is False
+        assert module.health()["prune_scheduled"] is False
+        assert module.health()["prune_interval_seconds"] == 60.0
+        rows = {check.name: check for check in module.diagnostics()}
+        assert rows["retention"].severity is DiagnosticSeverity.INFO
+        assert "waits for the chassis to start" in rows["retention"].message
+    finally:
+        chassis.shutdown()
+
+
+def test_a_withdrawn_retention_task_is_reported_as_gone(tmp_path: Path) -> None:
+    """A task withdrawn behind the module's back is a warning, not a quiet report."""
+    chassis = sweep_chassis(
+        tmp_path,
+        **{
+            "modules.backup_engine.schedule_interval": 0.0,
+            "modules.backup_engine.prune_interval": 0.05,
+        },
+    )
+    try:
+        module = chassis.registry.require("backup_engine").module
+        assert chassis.scheduler.task(PRUNE_TASK) is not None
+        assert module.health()["prune_scheduled"] is True
+        module._stop_prune()
+        assert module.health()["prune_scheduled"] is False
+        rows = {check.name: check for check in module.diagnostics()}
+        assert rows["retention"].severity is DiagnosticSeverity.WARNING
+        assert "declared no task" in rows["retention"].message
+        module._start_prune()
+        assert chassis.scheduler.task(PRUNE_TASK) is not None, "the module re-declares it"
+        chassis.scheduler.unschedule(PRUNE_TASK)
+        rows = {check.name: check for check in module.diagnostics()}
+        assert rows["retention"].severity is DiagnosticSeverity.WARNING
+        assert "is gone" in rows["retention"].message
+        assert module.health()["prune_scheduled"] is True, "the module still believes it scheduled"
     finally:
         chassis.shutdown()

@@ -21,8 +21,10 @@ from korodexios_core.constants import IPC_SCHEMA_VERSION, ExitCode
 from korodexios_core.kernel import ipc as ipc_module
 from korodexios_core.kernel.chassis import Chassis, ChassisOptions, ChassisState
 from korodexios_core.kernel.ipc import (
+    DEFAULT_ROUTE_METHODS,
     DISCOVERY_NAME,
     HEALTH_PATH,
+    HTTP_METHODS,
     IS_LINUX,
     MAX_IPC_PAYLOAD_BYTES,
     ROUTES,
@@ -32,7 +34,9 @@ from korodexios_core.kernel.ipc import (
     STATUS_PATH,
     TOKEN_HEADER,
     IpcDiscovery,
+    IpcError,
     IpcOptions,
+    IpcRequest,
     IpcRoute,
     IpcServer,
     IpcStaticMount,
@@ -685,3 +689,70 @@ def test_a_real_fault_is_not_swept_under_a_closed_socket(
     assert "ValueError" in captured.err, "socketserver reports the fault the handler raised"
     assert not [line for line in server.logger.lines if "socket closed" in line[1]]
     server.stop()
+
+
+def test_a_malformed_route_is_refused_before_it_reaches_the_socket() -> None:
+    """A CR welded onto a path is a header waiting to be smuggled; refuse the declaration."""
+
+    def handler(request: IpcRequest) -> dict[str, str]:
+        del request
+        return {"ok": "yes"}
+
+    for path in ("/api/v1/probe\r\nX-Evil: 1", " ", "\tx", "/api/v1/\x00", "/api/v1/\x7f"):
+        with pytest.raises(IpcError, match="illegal character"):
+            IpcRoute(path=path, handler=handler)
+    for verb in ("FETCH", "POST;", "get post", "GET\r\nX-Evil: 1"):
+        with pytest.raises(IpcError, match="HTTP method"):
+            IpcRoute(path="/api/v1/probe", handler=handler, methods=(verb,))
+
+
+def test_a_route_declaration_is_normalized_not_rejected() -> None:
+    """A declaration is cleaned up on the way in, so the server dispatches one verb set."""
+
+    def handler(request: IpcRequest) -> dict[str, str]:
+        del request
+        return {"ok": "yes"}
+
+    assert IpcRoute(path="api/v1/probe", handler=handler).path == "/api/v1/probe"
+    assert IpcRoute(path="/api/v1/probe", handler=handler, methods=()).methods == (
+        DEFAULT_ROUTE_METHODS
+    )
+    assert IpcRoute(path="/api/v1/probe", handler=handler, methods=(" GET ",)).methods == ("GET",)
+    doubled = IpcRoute(path="/api/v1/probe", handler=handler, methods=("post", "POST", "Put"))
+    assert doubled.methods == ("POST", "PUT"), "a duplicate verb is declared once"
+    assert set(HTTP_METHODS) == {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
+
+
+def test_an_empty_method_entry_is_a_declaration_error() -> None:
+    """A blank entry is a typo; an empty tuple is the documented GET default."""
+
+    def handler(request: IpcRequest) -> dict[str, str]:
+        del request
+        return {"ok": "yes"}
+
+    for entry in ("", "   "):
+        with pytest.raises(IpcError, match="empty HTTP method"):
+            IpcRoute(path="/api/v1/probe", handler=handler, methods=(entry,))
+
+
+def test_a_validated_route_lands_on_the_server_lookup(tmp_path: Path) -> None:
+    """A route the constructor accepted is a route the control plane can answer."""
+
+    def handler(request: IpcRequest) -> dict[str, str]:
+        del request
+        return {"ok": "yes"}
+
+    route = IpcRoute(path="/api/v1/probe", handler=handler, methods=("GET", "POST"), module="probe")
+    server = IpcServer(
+        status_fn=lambda: {"app": {"state": "running"}, "modules": {"total": 1}},
+        shutdown_fn=lambda: None,
+        state_fn=lambda: "running",
+        options=IpcOptions(
+            host="127.0.0.1", port=0, discovery_path=tmp_path / "chassis.ipc", token="sekret"
+        ),
+        routes=(route,),
+    )
+    assert server.lookup_route("/api/v1/probe") is route
+    assert [item.path for item in server.module_routes()] == ["/api/v1/probe"]
+    assert server.remove_route("/api/v1/probe") is True
+    assert server.lookup_route("/api/v1/probe") is None

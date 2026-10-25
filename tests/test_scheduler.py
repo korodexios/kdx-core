@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -308,3 +308,160 @@ def test_a_callback_may_schedule_work_the_current_sweep_misses() -> None:
     assert seen == ["parent"], "the task scheduled mid-sweep waits for the next beat"
     assert scheduler.run_due(now=time.monotonic() + 20.0) == ["parent", "child"]
     assert seen == ["parent", "parent", "child"]
+
+
+class RecordingLogger:
+    """A logger double that keeps every record the scheduler made, message and kwargs."""
+
+    def __init__(self) -> None:
+        self.records: list[tuple[str, str, dict[str, Any]]] = []
+
+    def _record(self, level: str, message: str, **kwargs: Any) -> None:
+        self.records.append((level, str(message), kwargs))
+
+    def debug(self, message: str, **kwargs: Any) -> None:
+        self._record("debug", message, **kwargs)
+
+    def info(self, message: str, **kwargs: Any) -> None:
+        self._record("info", message, **kwargs)
+
+    def warning(self, message: str, **kwargs: Any) -> None:
+        self._record("warning", message, **kwargs)
+
+    def error(self, message: str, **kwargs: Any) -> None:
+        self._record("error", message, **kwargs)
+
+    def at(self, level: str) -> list[tuple[str, dict[str, Any]]]:
+        """Return the (message, kwargs) pairs recorded at *level*, in order."""
+        return [
+            (message, kwargs) for recorded, message, kwargs in self.records if recorded == level
+        ]
+
+
+class StubThread:
+    """A thread the scheduler believes is still alive after its join timed out."""
+
+    def __init__(self, name: str = "kdx-scheduler") -> None:
+        self.name = name
+        self.joins: list[float | None] = []
+
+    def is_alive(self) -> bool:
+        return True
+
+    def join(self, timeout: float | None = None) -> None:
+        self.joins.append(timeout)
+
+
+def test_the_scheduler_names_the_callback_that_is_running() -> None:
+    """The scheduler knows which callback is on a worker, and forgets it when it returns."""
+    scheduler = TaskScheduler()
+    seen: list[str] = []
+
+    def index() -> None:
+        assert scheduler.active_task == "index", "the running task names itself"
+        assert scheduler.stats()["active_task"] == "index"
+        assert scheduler.active_seconds() >= 0.0
+        seen.append("index")
+
+    scheduler.schedule(0.01, index, name="index")
+    assert scheduler.active_task is None
+    assert scheduler.run_task("index") is True
+    assert seen == ["index"]
+    assert scheduler.active_task is None
+    assert scheduler.active_seconds() == 0.0
+    assert scheduler.stats()["active_task"] is None
+
+
+def test_a_failing_callback_clears_the_active_marker() -> None:
+    """A callback that raises leaves no phantom task behind to blame at shutdown."""
+    scheduler = TaskScheduler()
+
+    def boom() -> None:
+        assert scheduler.active_task == "boom"
+        raise RuntimeError("nope")
+
+    scheduler.schedule(1.0, boom, name="boom")
+    assert scheduler.run_task("boom") is False
+    assert scheduler.active_task is None
+    assert scheduler.stats()["active_task"] is None
+
+
+def test_a_stop_leaves_the_queued_tasks_alone() -> None:
+    """Shutdown commences: the sweep stops launching callbacks with the queue still full.
+
+    A stop is answered by finishing what is running, never by starting something new -
+    the shutdown budget cannot wait for work it has already decided to close on.
+    """
+    scheduler = TaskScheduler()
+    seen: list[str] = []
+
+    def first() -> None:
+        seen.append("first")
+        scheduler.stop()  # shutdown commences from inside the running callback
+
+    scheduler.schedule(0.01, first, name="first")
+    scheduler.schedule(0.01, lambda: seen.append("second"), name="second")
+    scheduler.start()
+    assert scheduler.run_due(now=time.monotonic() + 10.0) == ["first"]
+    assert seen == ["first"], "a queued task never starts once stop is set"
+    second = scheduler.task("second")
+    assert second is not None and second.runs == 0, "queued work is skipped, not lost"
+
+
+def test_a_stuck_task_is_named_when_the_stop_budget_expires() -> None:
+    """A stop that times out says which task it is waiting for and for how long."""
+    logger = RecordingLogger()
+    scheduler = TaskScheduler(logger=logger)
+    scheduler.start()
+    scheduler._thread = cast(threading.Thread, StubThread())
+    scheduler._active_task = "index"
+    scheduler._active_since = time.monotonic() - 3.0
+    scheduler.stop(timeout=0.01)
+    warnings = logger.at("warning")
+    named = [(message, kwargs) for message, kwargs in warnings if "index" in message]
+    assert named, f"the stuck task is named in the log: {warnings}"
+    message, kwargs = named[0]
+    assert "outlived" in message
+    assert kwargs["task"] == "index"
+    assert kwargs["running_seconds"] >= 3.0
+    assert kwargs["timeout"] == 0.01
+    assert scheduler.running is False
+
+
+def test_a_thread_alive_with_no_task_running_is_reported_too() -> None:
+    """The idle variant stays honest: a live thread with no callback says so."""
+    logger = RecordingLogger()
+    scheduler = TaskScheduler(logger=logger)
+    scheduler.start()
+    scheduler._thread = cast(threading.Thread, StubThread())
+    scheduler.stop(timeout=0.01)
+    warnings = logger.at("warning")
+    assert warnings, "a thread that outlived its join is reported, idle or not"
+    assert any("no task running" in message for message, _ in warnings), warnings
+    assert scheduler.active_task is None
+
+
+def test_threaded_mode_names_the_task_it_cannot_stop_in_time() -> None:
+    """A real callback holding the scheduler thread past its budget is the one named."""
+    release = threading.Event()
+    logger = RecordingLogger()
+    scheduler = TaskScheduler(logger=logger, poll_interval=0.02)
+    scheduler.schedule(0.02, lambda: release.wait(0.5), name="hold")
+    scheduler.start(threaded=True)
+    thread = scheduler._thread
+    assert thread is not None
+    deadline = time.monotonic() + 1.0
+    while scheduler.active_task != "hold" and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert scheduler.active_task == "hold", "the scheduler knows which callback is running"
+    scheduler.stop(timeout=0.02)
+    assert scheduler.thread_alive is False, "stop hands the thread over to the caller"
+    assert scheduler.running is False
+    named = [kwargs for message, kwargs in logger.at("warning") if "hold" in message]
+    assert named, f"the task still running when the budget expired is named: {logger.records}"
+    assert named[0]["task"] == "hold"
+    assert named[0]["running_seconds"] >= 0.0
+    release.set()
+    thread.join(1.0)
+    assert not thread.is_alive(), "the callback returned and the scheduler thread ended"
+    assert scheduler.active_task is None

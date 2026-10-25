@@ -117,8 +117,8 @@ def test_config_check_reports_module_schemas(capsys, project_root) -> None:
     # v0.2.2: the built-in proof modules declare their own scoped schemas
     assert payload["schemas"]["modules"] == 3
     assert payload["schemas"]["issues"] == []
-    # v0.2.4 added the load watcher keys; v0.2.5 the periodic sweep keys.
-    for declared in ("backup_engine: 9 keys", "heartbeat: 1 keys", "system_info: 4 keys"):
+    # v0.2.4 added the load watcher keys, v0.2.5 the sweep keys, v0.2.7 the retention keys.
+    for declared in ("backup_engine: 10 keys", "heartbeat: 1 keys", "system_info: 4 keys"):
         assert declared in captured.out, declared
 
 

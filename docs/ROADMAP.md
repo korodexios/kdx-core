@@ -77,6 +77,18 @@ directory ignores dot files, swap files, and names `lock_name()` refuses | **del
   buffering it; and a permission-refusal test skips on Windows, where directories ignore
   POSIX mode bits | **delivered** |
 
+| 23 | `v0.2.7` decouples one lifecycle and hardens three edges a threaded daemon and a
+  packaging run could find: `backup_engine` retention becomes its own maintenance sweep -
+  `modules.backup_engine.prune_interval` declares an `auto_prune` task that ages stamped copies
+  out on the chassis clock under the same named lock a copy takes, and reports last run and
+  reclaimed space to `health()`, `kdx status`, and a `retention` diagnostic row; a threaded
+  scheduler stop that overruns `core.lifecycle.stop_timeout` names the stuck task and its
+  running duration and stops launching callbacks once `stop()` is set, so queued work is
+  skipped rather than started late; `IpcRoute` refuses a path carrying whitespace, a CR, an LF,
+  NUL, or DEL and a method outside `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `HEAD`, `OPTIONS`;
+  and the wheel and sdist exclusions are declared in `pyproject.toml` and audited by the suite,
+  so `var/`, `*.log`, `*.tmp`, byte code, and dev caches can never ride into a publish | **delivered** |
+
 ## Next
 
 1. **Publish to an index.** PyPI through trusted publishing. The git bootstrap is
@@ -84,10 +96,12 @@ directory ignores dot files, swap files, and names `lock_name()` refuses | **del
    freshly seeded project installs today without waiting for an index.
 2. **A Textual/TUI front end** over the same declarative `CliCommand` tree the wizard
    already reads - no module knows a second surface exists.
-3. **Retention with a clock of its own**: `v0.2.5` paired the scheduler with the named lock, and
-   `auto_prune_days` ages stamped copies out of the destination after a copy lands. The next
-   honest step is a sweep that prunes on its own schedule, even when no copy is due, so
-   retention becomes a decision the chassis clock makes for its own reasons.
+3. **Retention an operator can read**: `v0.2.7` gave retention a clock of its own - an
+   `auto_prune` task that ages stamped copies out on its own interval, under the named lock a
+   copy takes, reporting last run and reclaimed space to `health()`, `kdx status`, and a
+   `retention` diagnostic row. The next honest step is putting that window in front of a person:
+   a `kdx backup retention` report (window, sweep interval, archives standing, last sweep, space
+   taken back) so an operator can ask what the policy did without reading JSON.
 4. **Windows in CI** waits for one more run. The red was ours, not mypy's: the runner
    starts bash with `-e`, so the failing mypy call ended the step before any diagnostic
    ran, and the POSIX-only `os.sysconf` / `os.getrusage` reads failed the Windows

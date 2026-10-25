@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Final, cast
@@ -25,6 +25,7 @@ from ...kernel.diagnostics import DiagnosticCheck, DiagnosticSeverity
 from ...kernel.ipc import IpcRequest, IpcRoute
 from ...kernel.locks import LockTimeoutError, NamedLock
 from ...kernel.scheduler import ScheduledTask
+from ...units import format_bytes
 from ...validate import parse_size
 from .engine import (
     STAMP_FORMAT,
@@ -44,7 +45,22 @@ CONFIGURED_EVENT = "backup.configured"
 COMPLETED_EVENT = "backup.completed"
 PRUNED_EVENT = "backup.pruned"
 SWEEP_TASK: Final[str] = "auto_sweep"
+PRUNE_TASK: Final[str] = "auto_prune"
 SECONDS_PER_DAY: Final[float] = 86_400.0
+
+
+@dataclass(slots=True)
+class PruneReport:
+    """What one retention pass removed, how many copies it looked at, and what it freed.
+
+    Reclaimed bytes are the sizes of the files the pass deleted, measured before the
+    folder is gone: a retention sweep is space accounting an operator can check with
+    'kdx doctor' against the destination it just thinned.
+    """
+
+    removed: int = 0
+    scanned: int = 0
+    reclaimed_bytes: int = 0
 
 
 class BackupEngineModule(Module):
@@ -72,10 +88,18 @@ class BackupEngineModule(Module):
         self._last_refusal: str = ""
         self._schedule_interval = 0.0
         self._auto_prune_days = 0
+        self._prune_interval = 0.0
         self._sweep_task: ScheduledTask | None = None
+        self._prune_task: ScheduledTask | None = None
         self._sweeps = 0
         self._sweeps_refused = 0
         self._pruned = 0
+        self._prune_sweeps = 0
+        self._prune_refusals = 0
+        self._last_prune_refusal = ""
+        self._prune_last_run: float | None = None
+        self._prune_last_removed = 0
+        self._prune_reclaimed_bytes = 0
 
     def init(self, context: CoreContext) -> None:
         """Resolve scoped settings; paths fall back to chassis data directories.
@@ -92,6 +116,12 @@ class BackupEngineModule(Module):
         self._sweeps = 0
         self._sweeps_refused = 0
         self._pruned = 0
+        self._prune_sweeps = 0
+        self._prune_refusals = 0
+        self._last_prune_refusal = ""
+        self._prune_last_run = None
+        self._prune_last_removed = 0
+        self._prune_reclaimed_bytes = 0
         default_source = str(context.paths.root)
         default_dest = str(context.paths.data_dir / "backups")
         self._source = Path(str(self.config.get_str("source", default_source)))
@@ -106,6 +136,7 @@ class BackupEngineModule(Module):
         self._follow_symlinks = bool(self.config.get_bool("follow_symlinks", False))
         self._schedule_interval = max(0.0, float(self.config.get_float("schedule_interval", 0.0)))
         self._auto_prune_days = max(0, int(self.config.get_int("auto_prune_days", 0)))
+        self._prune_interval = max(0.0, float(self.config.get_float("prune_interval", 0.0)))
         self.logger.debug(
             "backup_engine configured",
             source=str(self._source),
@@ -114,6 +145,7 @@ class BackupEngineModule(Module):
             dry_run=self._dry_run,
             schedule_interval=round(self._schedule_interval, 3),
             auto_prune_days=self._auto_prune_days,
+            prune_interval=round(self._prune_interval, 3),
         )
 
     def config_schema(self) -> ConfigSchema:
@@ -177,6 +209,15 @@ class BackupEngineModule(Module):
                     default=0,
                     description="Keep stamped copies for this many days; 0 keeps every copy.",
                 ),
+                ConfigField(
+                    "prune_interval",
+                    kind=ConfigKind.FLOAT,
+                    default=0.0,
+                    description=(
+                        "Seconds between independent retention sweeps; 0 ages copies only "
+                        "after a copy lands, and needs auto_prune_days above 0 to sweep at all."
+                    ),
+                ),
             ),
         )
 
@@ -219,6 +260,7 @@ class BackupEngineModule(Module):
             )
         checks.append(self._destination_check(settings.dest))
         checks.append(self._sweep_check())
+        checks.append(self._prune_check())
         if self._refusals:
             checks.append(self._refusal_check())
         return tuple(checks)
@@ -353,16 +395,27 @@ class BackupEngineModule(Module):
                 interval_seconds=round(self._schedule_interval, 3),
                 auto_prune_days=self._auto_prune_days,
             )
+        prune = self._start_prune()
+        if prune is not None:
+            self.logger.info(
+                f"{TAG_OK} backup retention sweep scheduled",
+                task=PRUNE_TASK,
+                interval_seconds=round(self._prune_interval, 3),
+                auto_prune_days=self._auto_prune_days,
+            )
 
     def stop(self) -> None:
-        """Withdraw the sweep and report the counters; nothing stays open between runs."""
+        """Withdraw both tasks and report the counters; nothing stays open between runs."""
         self._stop_sweep()
+        self._stop_prune()
         super().stop()
         self.logger.info(
             f"{TAG_NOTE} backup engine stopped",
             runs=self._runs,
             sweeps=self._sweeps,
+            prune_sweeps=self._prune_sweeps,
             pruned=self._pruned,
+            reclaimed_bytes=self._prune_reclaimed_bytes,
             last_files=self._last.copied if self._last else 0,
         )
 
@@ -399,7 +452,9 @@ class BackupEngineModule(Module):
         self._runs += 1
         self._last = result
         if not result.dry_run:
-            self._pruned += self._prune_old_copies(plan.settings.dest, keep=plan.target)
+            report = self._prune_dest(plan.settings.dest, keep=plan.target)
+            self._pruned += report.removed
+            self._prune_reclaimed_bytes += report.reclaimed_bytes
         self.bus.publish(
             COMPLETED_EVENT,
             {"target": str(plan.target), "copied": result.copied, "dry_run": result.dry_run},
@@ -465,6 +520,23 @@ class BackupEngineModule(Module):
                 ),
                 "auto_prune_days": self._auto_prune_days,
                 "pruned": self._pruned,
+                "prune_interval_seconds": round(self._prune_interval, 3),
+                "prune_scheduled": self._prune_task is not None,
+                "prune_sweeps": self._prune_sweeps,
+                "prune_sweeps_refused": self._prune_refusals,
+                "prune_first_due_seconds": (
+                    None
+                    if self._prune_task is None
+                    else round(max(0.0, self._prune_task.next_due - time.monotonic()), 3)
+                ),
+                "prune_last_run_seconds_ago": (
+                    None
+                    if self._prune_last_run is None
+                    else round(max(0.0, time.time() - self._prune_last_run), 3)
+                ),
+                "prune_last_removed": self._prune_last_removed,
+                "prune_reclaimed_bytes": self._prune_reclaimed_bytes,
+                "prune_reclaimed": format_bytes(self._prune_reclaimed_bytes),
             }
         )
         return base
@@ -497,6 +569,90 @@ class BackupEngineModule(Module):
         scheduler = self.scheduler if self.context is not None else None
         if task is not None and scheduler is not None:
             scheduler.unschedule(task.name)
+
+    def _start_prune(self) -> ScheduledTask | None:
+        """Hand the retention sweep to the chassis clock, when one is configured.
+
+        Retention is a maintenance task in its own right, not a side effect of a copy:
+        a project that copies weekly can still shed archives daily, and a manual 'kdx
+        backup run' never has to prune what an older run left behind. It is declared
+        only when there is a window to age out - a sweep with nothing to remove is a
+        task spending the clock's attention on nothing.
+        """
+        context = self.context
+        if context is None or self._prune_interval <= 0.0 or self._auto_prune_days <= 0:
+            return None
+        task = context.schedule(
+            interval_seconds=self._prune_interval,
+            callback=self._prune_sweep,
+            name=PRUNE_TASK,
+            module=self.name,
+        )
+        self._prune_task = task
+        return task
+
+    def _stop_prune(self) -> None:
+        """Withdraw the retention sweep: a stopped module leaves no task on the clock."""
+        task = self._prune_task
+        self._prune_task = None
+        scheduler = self.scheduler if self.context is not None else None
+        if task is not None and scheduler is not None:
+            scheduler.unschedule(task.name)
+
+    def _acquire_prune_lock(self) -> NamedLock | None:
+        """Take the maintenance lock; None when there is no chassis to coordinate with.
+
+        Pruning shares the copy lock instead of inventing a second one: an archive is
+        never deleted beside a copy that is still landing, and 'kdx doctor' reports one
+        busy name whoever is holding it.
+        """
+        context = self.context
+        if context is None:
+            return None
+        return context.paths.lock(
+            self.LOCK_NAME,
+            timeout=0.0,
+            metadata={"module": self.name, "job": "backup prune"},
+            logger=self.logger,
+        )
+
+    def _prune_sweep(self) -> None:
+        """Age expired copies out on the clock, under the run lock.
+
+        The sweep belongs to no backup: it runs on its own interval, so infrequent and
+        manual copies cannot strand archives in the destination. A lock that is busy is
+        a decision it honours - counted and logged rather than reported as a failing
+        task - because the copy holding the lock is close to finishing and the next beat
+        is only an interval away.
+        """
+        try:
+            handle = self._acquire_prune_lock()
+        except LockTimeoutError as exc:
+            self._prune_refusals += 1
+            self._last_prune_refusal = str(exc)
+            self.logger.info(
+                f"{TAG_NOTE} backup retention stepped aside",
+                reason=str(exc),
+                interval_seconds=round(self._prune_interval, 3),
+            )
+            return
+        try:
+            report = self._prune_dest(self._dest)
+        finally:
+            self._release_run_lock(handle)
+        self._prune_sweeps += 1
+        self._prune_last_run = time.time()
+        self._prune_last_removed = report.removed
+        self._pruned += report.removed
+        self._prune_reclaimed_bytes += report.reclaimed_bytes
+        self.logger.info(
+            f"{TAG_OK} backup retention swept",
+            dest=str(self._dest),
+            scanned=report.scanned,
+            removed=report.removed,
+            reclaimed=format_bytes(report.reclaimed_bytes),
+            auto_prune_days=self._auto_prune_days,
+        )
 
     def _sweep_backup(self) -> None:
         """Copy the tree on the clock, stepping aside for a copy already running.
@@ -538,24 +694,28 @@ class BackupEngineModule(Module):
             return None
         return parsed.timestamp()
 
-    def _prune_old_copies(self, dest: Path, *, keep: Path | None = None) -> int:
-        """Remove stamped copies older than 'auto_prune_days'; 0 keeps every copy.
+    def _prune_dest(self, dest: Path, *, keep: Path | None = None) -> PruneReport:
+        """Remove stamped copies older than 'auto_prune_days' under *dest* and report it.
 
         Only a directory directly inside the destination whose own name is a backup stamp is
         a candidate, so a folder the operator put there by hand is never deleted, and the
-        copy this run just made is always kept.
+        copy a run just made is kept by naming it in *keep*. A copy that would not delete
+        (a permissions problem, a file still open) is reported and stays; the sweep moves
+        on rather than failing a maintenance pass over one folder.
         """
+        report = PruneReport()
         days = self._auto_prune_days
         if days <= 0 or not dest.is_dir():
-            return 0
+            return report
         cutoff = time.time() - days * SECONDS_PER_DAY
-        removed = 0
         for child in sorted(dest.iterdir()):
             if not child.is_dir() or child == keep:
                 continue
             stamp = self._stamp_time(child.name)
             if stamp is None or stamp >= cutoff:
                 continue
+            report.scanned += 1
+            freed = _tree_bytes(child)
             try:
                 shutil.rmtree(child)
             except OSError as exc:
@@ -563,10 +723,104 @@ class BackupEngineModule(Module):
                     f"{TAG_NOTE} backup copy stayed", copy=str(child), reason=str(exc)
                 )
                 continue
-            removed += 1
-        if removed:
-            self.bus.publish(PRUNED_EVENT, {"days": days, "removed": removed}, source=self.name)
-        return removed
+            report.removed += 1
+            report.reclaimed_bytes += freed
+        if report.removed:
+            self.bus.publish(
+                PRUNED_EVENT,
+                {
+                    "days": days,
+                    "removed": report.removed,
+                    "reclaimed_bytes": report.reclaimed_bytes,
+                },
+                source=self.name,
+            )
+        return report
+
+    def _prune_old_copies(self, dest: Path, *, keep: Path | None = None) -> int:
+        """Remove expired copies under *dest* and return how many went; 0 keeps every copy."""
+        return self._prune_dest(dest, keep=keep).removed
+
+    def _prune_check(self) -> DiagnosticCheck:
+        """Report the independent retention sweep, its last beat, and what it reclaimed.
+
+        The honest states are the ones an operator can act on: retention left to the copy,
+        a sweep with no window to age out, no clock to run on, a task that was withdrawn,
+        and a sweep that is alive and saying how much space it took back.
+        """
+        every = round(self._prune_interval, 3)
+        if self._prune_interval <= 0.0:
+            return DiagnosticCheck(
+                name="retention",
+                message="retention ages copies out only as a copy lands",
+                hint="set modules.backup_engine.prune_interval to sweep retention on the clock",
+                module=self.name,
+            )
+        if self._auto_prune_days <= 0:
+            return DiagnosticCheck(
+                name="retention",
+                message=f"retention sweep every {every} s has no window to age out",
+                severity=DiagnosticSeverity.WARNING,
+                hint="set modules.backup_engine.auto_prune_days above 0, or prune_interval at 0",
+                module=self.name,
+            )
+        task = self._prune_task
+        if task is None:
+            scheduler = self.context.scheduler if self.context is not None else None
+            if scheduler is None:
+                return DiagnosticCheck(
+                    name="retention",
+                    message=f"retention sweep every {every} s has no clock to run on",
+                    severity=DiagnosticSeverity.WARNING,
+                    hint="set core.scheduler.enabled to true, or leave prune_interval at 0",
+                    module=self.name,
+                )
+            if not scheduler.running:
+                # 'kdx doctor' initializes the modules it inspects and never starts them:
+                # the clock exists, the task simply was never declared, and blaming the
+                # chassis for that would be a warning an operator cannot act on.
+                return DiagnosticCheck(
+                    name="retention",
+                    message=f"retention sweep every {every} s waits for the chassis to start",
+                    hint="the module declares its maintenance task in start(); boot it to run",
+                    module=self.name,
+                )
+            return DiagnosticCheck(
+                name="retention",
+                message=f"retention sweep every {every} s declared no task on a running clock",
+                severity=DiagnosticSeverity.WARNING,
+                hint="restart the module to declare the sweep again",
+                module=self.name,
+            )
+        scheduler = self.context.scheduler if self.context is not None else None
+        live = scheduler is not None and scheduler.task(task.name) is task
+        if not live:
+            return DiagnosticCheck(
+                name="retention",
+                message=f"retention task {task.name} is gone",
+                severity=DiagnosticSeverity.WARNING,
+                hint="a scheduled task was withdrawn; restart the module to declare it again",
+                module=self.name,
+            )
+        last = (
+            "never run"
+            if self._prune_last_run is None
+            else f"last run {round(max(0.0, time.time() - self._prune_last_run), 1)} s ago"
+        )
+        reclaimed = format_bytes(self._prune_reclaimed_bytes)
+        summary = (
+            f"auto_prune ages copies every {every} s ({self._prune_sweeps} swept, "
+            f"{self._pruned} removed, {reclaimed} reclaimed, {last})"
+        )
+        if self._prune_refusals and not self._prune_sweeps:
+            return DiagnosticCheck(
+                name="retention",
+                message=f"{summary}, {self._prune_refusals} stepped aside",
+                severity=DiagnosticSeverity.WARNING,
+                hint=self._last_prune_refusal or "a copy is holding the maintenance lock",
+                module=self.name,
+            )
+        return DiagnosticCheck(name="retention", message=summary, module=self.name)
 
     def _sweep_check(self) -> DiagnosticCheck:
         """Report the periodic sweep the chassis clock runs, and whether it is still there."""
@@ -609,6 +863,23 @@ class BackupEngineModule(Module):
             f"{self._sweeps_refused} stepped aside)",
             module=self.name,
         )
+
+
+def _tree_bytes(directory: Path) -> int:
+    """Return the bytes held under *directory*, best effort, measured before it is removed.
+
+    A retention sweep claims the sizes of the files it deleted as reclaimed space: that is
+    what the operator can check against the folder that thinned, not the filesystem's free
+    space, which any other process can move underneath the measurement.
+    """
+    total = 0
+    for root, _dirs, names in os.walk(directory):
+        for name in names:
+            try:
+                total += (Path(root) / name).stat().st_size
+            except OSError:
+                continue
+    return total
 
 
 def _plan_arguments() -> tuple[CliArgument, ...]:

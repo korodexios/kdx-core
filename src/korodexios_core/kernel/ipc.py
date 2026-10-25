@@ -16,6 +16,7 @@ import hmac
 import json
 import mimetypes
 import os
+import re
 import secrets
 import sys
 import threading
@@ -85,6 +86,25 @@ ROUTES = (
 )
 RPC_METHODS = ("POST",)
 RELOAD_METHODS = ("POST",)
+
+HTTP_METHODS: Final[frozenset[str]] = frozenset(
+    {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
+)
+"""The verbs a declarative route may answer.
+
+One server dispatches this vocabulary and nothing else, and the chassis' own CLI
+client only ever speaks it. A route that declares 'FETCH', a blank entry, or a 'GET'
+with a CR and LF welded on the end smuggles something the request line cannot carry,
+so the chassis refuses the declaration at registration instead of answering an
+ambiguous request later."""
+
+DEFAULT_ROUTE_METHODS: Final[tuple[str, ...]] = ("GET",)
+"""The verb a route answers when it declares no methods tuple of its own."""
+
+ROUTE_PATH_UNSAFE: Final[re.Pattern[str]] = re.compile(r"[\s\x00-\x20\x7f]")
+"""Characters a route path may never carry: whitespace, NUL, the other C0 controls,
+and DEL. A CR or LF inside a path is a header-splitting hazard on the way out, and a
+space makes the request line ambiguous for anything sitting in front of the daemon."""
 
 CONTENT_JSON = "application/json"
 CONTENT_OCTET_STREAM = "application/octet-stream"
@@ -161,6 +181,11 @@ class IpcRoute:
     The chassis owns the listener; a module declares a path, a handler, and
     whether the shared token is required. Handlers return either a JSON-friendly
     payload (served with 200) or a (status, payload) pair.
+
+    The declaration is checked here, at registration time: a path carrying
+    whitespace, a CR, an LF, or any other control character is refused, as is a verb
+    outside the standard set, so a malformed route never reaches the socket to make
+    the daemon answer a request line it cannot phrase back cleanly.
     """
 
     path: str
@@ -172,19 +197,36 @@ class IpcRoute:
     content_type: str = CONTENT_JSON
 
     def __post_init__(self) -> None:
-        clean = normalize_route_path(str(self.path))
+        raw = str(self.path)
+        illegal = ROUTE_PATH_UNSAFE.search(raw)
+        if illegal is not None:
+            raise IpcError(
+                f"route path {raw!r} carries an illegal character {illegal.group(0)!r}",
+                hint="A route path is a URL path: no whitespace, CR, LF, NUL, or DEL.",
+            )
+        clean = normalize_route_path(raw)
         if clean in ROUTES:
             raise IpcError(
                 f"route {self.path!r} is reserved by the chassis control plane",
                 hint="Pick a path under your module name, for example '/api/v1/metrics'.",
             )
         object.__setattr__(self, "path", clean)
-        object.__setattr__(
-            self,
-            "methods",
-            tuple(str(method).upper() for method in self.methods if str(method).strip())
-            or ("GET",),
-        )
+        verbs: list[str] = []
+        for method in self.methods:
+            token = str(method).strip().upper()
+            if not token:
+                raise IpcError(
+                    f"route {clean} declares an empty HTTP method",
+                    hint="Declare methods like ('GET', 'POST'), or () for GET alone.",
+                )
+            if token not in HTTP_METHODS:
+                raise IpcError(
+                    f"route {clean} declares HTTP method {token!r}, which one server cannot answer",
+                    hint="Recognized methods: GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS.",
+                )
+            if token not in verbs:
+                verbs.append(token)
+        object.__setattr__(self, "methods", tuple(verbs) or DEFAULT_ROUTE_METHODS)
 
     def allows(self, method: str) -> bool:
         """Return True when this route answers *method*."""

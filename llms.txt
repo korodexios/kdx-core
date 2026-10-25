@@ -13,7 +13,7 @@ section is a contract, not a suggestion. Human-oriented narrative lives in
 | Distribution | `korodexios-core` |
 | Import root | `korodexios_core` |
 | Console scripts | `kdx` (primary short alias), `korodexios` (canonical) |
-| Version | `0.2.6` (production), core API frozen at `v2` (additive changes only inside v2) |
+| Version | `0.2.7` (production), core API frozen at `v2` (additive changes only inside v2) |
 | Runtime | CPython 3.11+, stdlib first (PyYAML for config, rich for the CLI surface) |
 | Config file | `kdx.yml` / `kdx.yaml` / `kdx.json` (then `korodexios.*`) |
 | Env prefix | `KDX_` primary; `KORODEXIOS_` is the canonical long prefix |
@@ -23,7 +23,7 @@ section is a contract, not a suggestion. Human-oriented narrative lives in
 | Instance lock | `var/chassis.lock` in the state dir; a second daemon on the same root exits `1` |
 | Named locks | `var/locks/<name>.lock` via `Chassis.acquire_lock(name)` or `context.paths.lock(name)`; released as one unit at shutdown |
 | Durable dir | `data/` (`core.paths.durable_dir`): project state that outlives a moved `state_dir` |
-| Periodic tasks | `context.schedule(interval_seconds, callback)`: the chassis clock runs them and stops them inside `stop_timeout` |
+| Periodic tasks | `context.schedule(interval_seconds, callback)`: the chassis clock runs them and stops them inside `stop_timeout`; a stop that overruns names the task it is still waiting for |
 | Hook ordering | the declarative hooks are read at registration and collected again after `init(context)`; inspection commands initialize discovered modules first |
 | Public surface | the package root `__all__`; anything deeper is importable but internal |
 
@@ -545,7 +545,13 @@ dependency order -> lifecycle loop -> `stop()` in reverse -> close logging.
 - `IpcRoute(path, handler, methods, auth, module)` is how a module joins the control
   plane, declared from `ipc_routes()` or registered live with
   `chassis.register_ipc_route(route)`. Core paths are reserved: a module that asks for
-  `/health` is told so at registration, not at request time.
+  `/health` is told so at registration, not at request time. The declaration is validated in
+  `__post_init__` (`v0.2.7`): a path carrying whitespace, a CR, an LF, NUL, or DEL is refused,
+  as is a `methods` entry that trims to nothing or is not one of `GET`, `POST`, `PUT`,
+  `DELETE`, `PATCH`, `HEAD`, `OPTIONS` (`HTTP_METHODS`). A CR welded onto a path is a
+  header-splitting hazard and a verb no server can answer; both arrive as `IpcError` with a
+  hint instead of as an ambiguous request line. An empty `methods` tuple keeps the documented
+  `DEFAULT_ROUTE_METHODS` default of `GET`; entries are trimmed, upper-cased, and deduplicated.
 - A route answers JSON unless the handler says otherwise. It may return `bytes` (labelled
   from the route's `content_type`, else guessed from the route path's extension), a `str`
   with a declared non-JSON type, or an `IpcResponse` that owns its body, media type, status,
@@ -720,6 +726,14 @@ tick, so nothing runs on its own thread and `make check` needs no sleeps. Set
 loop of its own; the thread is named `kdx-scheduler` and is joined inside
 `core.lifecycle.stop_timeout`. `core.scheduler.enabled: false` parks every task.
 
+Shutdown is cooperative in both modes (`v0.2.7`). Once `stop()` has set its flag, `run_due()`
+checks it again immediately before it launches each callback, so a task queued behind a slow
+one is skipped rather than started past the shutdown budget - and skipped, not lost: it keeps
+its schedule and runs the next time the clock is open. The scheduler also knows which callback
+is on a worker: `active_task` and `active_seconds()` name it and time it, `scheduler.stats()`
+carries `active_task`, and a `stop(timeout)` whose join times out reports the stuck task by
+name with `task` and `running_seconds`, or says plainly that a live thread holds no task.
+
 A callback takes no arguments and its exceptions are contained: a task that raises is
 counted (`failures`, `last_error`), logged to stderr once per failure, published as
 `core.task.failed`, and stays scheduled - `kdx doctor` shows a `warning` per failing task.
@@ -740,6 +754,16 @@ released: self-cancellation is a decision, not a missed beat (`v0.2.4`).
 positive the module declares an `auto_sweep` task, and the copy that task starts takes the same
 named lock a manual `kdx backup run` takes, so a sweep that arrives mid-copy steps aside, counts
 the refusal, and says so in `kdx doctor` instead of reporting a failing task.
+
+`backup_engine` pairs the same two primitives for retention (`v0.2.7`):
+`modules.backup_engine.prune_interval` above `0` with `auto_prune_days` above `0` declares an
+independent `auto_prune` maintenance task that ages stamped copies out of the destination on its
+own beat, under the same named lock a copy takes, so an archive is never deleted beside a copy
+that is still landing and a refusal is counted rather than raised. Retention is then a decision
+the chassis clock makes for its own reasons - weekly copies, manual copies, and copies that never
+happen at all still shed archives - and what the sweep took back is reported by `health()`
+(`prune_reclaimed_bytes`, `prune_reclaimed`) and by the `retention` diagnostic row. At the
+default `0.0` there is no extra task and a copy prunes inline, exactly as before.
 
 ### 16.4 Configuration and public surface
 
