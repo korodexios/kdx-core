@@ -36,7 +36,8 @@ def test_a_second_hold_on_a_held_name_fails_without_waiting(tmp_path: Path) -> N
         started = time.monotonic()
         with pytest.raises(LockTimeoutError) as captured:
             registry.hold("index", timeout=None)
-        assert time.monotonic() - started < 0.05
+        waited = time.monotonic() - started
+    assert waited < 0.5, "a same-name claim fails at once, never after a wait"
     assert captured.value.name == "index"
     assert "already held by this process" in str(captured.value)
 

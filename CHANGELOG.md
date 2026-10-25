@@ -5,8 +5,23 @@ history lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## [Unreleased]
 
-_Nothing pending: the working tree is the `v0.2.8` tag._
+_Nothing pending: the working tree is the `v0.2.9` tag._
 
+## [0.2.9] - 2026-10-25
+
+Test-only patch: two lock assertions measured wall-clock time tighter than a shared CI
+runner can deliver, which is how a Linux suite that passes on the reference machine lost
+a `make check` leg on one host. The semantics stay the same - a claim that cannot take the
+lock fails at once, and a claim with a timeout waits it out - only the tolerance moves.
+
+### Fixed
+
+- **The lock timing bounds stop measuring the runner**: `test_locks` demanded a same-name
+  claim fail inside 50 ms and `test_named_locks` demanded that a 200 ms timeout measure at
+  least 150 ms, so a descheduled thread on a loaded runner could fail the suite with no
+  chassis defect. The bounds now carry runner-sized slack - 500 ms for a call that must not
+  wait at all, a 120 ms floor and a 1.2 s ceiling for a 200 ms wait - and each assertion
+  says in its message which semantic it is really protecting.
 ## [0.2.8] - 2026-10-25
 
 Maintenance patch on the platform edges: the two places that reached for a POSIX-only

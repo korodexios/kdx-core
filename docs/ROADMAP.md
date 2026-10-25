@@ -97,6 +97,12 @@ directory ignores dot files, swap files, and names `lock_name()` refuses | **del
   CI matrix marks a macOS or Windows failure `continue-on-error`, so a tag publishes its
   wheel and sdist on the Linux bar while the portability hosts keep reporting | **delivered** |
 
+| 25 | `v0.2.9` takes the timing brittleness out of the two lock tests a loaded shared
+  runner can lose: a same-name claim that must fail at once is bounded at 500 ms rather
+  than 50 ms, and a 200 ms named-lock timeout is bounded at a 120 ms floor and a 1.2 s
+  ceiling rather than 150 ms and 1.0 s, with each bound naming the semantic it protects - so
+  `make check` stops measuring how busy the runner is and keeps measuring the chassis
+  | **delivered** |
 ## Next
 
 1. **Publish to an index.** PyPI through trusted publishing. The git bootstrap is

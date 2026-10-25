@@ -311,7 +311,7 @@ The freeze policy is mechanical:
 | `korodexios_core.CORE_API_VERSION` | the string a module can assert against |
 
 The wheel ships a `py.typed` marker, so type information travels with the package. A patch
-release on the `0.2` line (`0.2.1`, `0.2.2`, `0.2.3`, `0.2.4`, `0.2.5`, `0.2.6`, `0.2.7`, `0.2.8`) carries hardening and dogfooding under the same
+release on the `0.2` line (`0.2.1`, `0.2.2`, `0.2.3`, `0.2.4`, `0.2.5`, `0.2.6`, `0.2.7`, `0.2.8`, `0.2.9`) carries hardening and dogfooding under the same
 `v2` surface: no new export, no changed signature, no renamed configuration key.
 Core API v2 added, without breaking a single existing import: `InstanceLock` and
 `LockHolder`, `AsyncRuntime`, `WorkerSupervisor` and `WorkerRecord`, `DiagnosticCheck` and
