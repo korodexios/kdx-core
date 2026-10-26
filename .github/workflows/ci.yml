@@ -127,8 +127,24 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          set -euo pipefail
-          uv run pytest -q --tb=short
+          set -uo pipefail
+          mkdir -p build
+          set +e
+          uv run pytest -q --tb=short > build/win-pytest-raw.txt 2>&1
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo "::error::[win pytest] $(grep -m 8 -E 'FAILED|ERROR' build/win-pytest-raw.txt | tr -d '\r' | tr '\n' ' ')"
+          fi
+          head -200 build/win-pytest-raw.txt
+          git config --global --add safe.directory "$PWD" || true
+          git config user.name korodexios-ci
+          git config user.email ci@korodexios.dev
+          { printf 'windows pytest exit %s for %s\n\n' "$status" "$GITHUB_SHA"; cat build/win-pytest-raw.txt; } > build/windows-pytest.txt
+          git add -f build/windows-pytest.txt
+          git commit -qm "windows pytest diagnostics for $GITHUB_SHA" || true
+          git push -f origin "HEAD:refs/heads/ci/windows-pytest" || echo "::warning::[win pytest] diagnostics push failed"
+          exit "$status"
 
       - name: Boot the chassis
         shell: bash
