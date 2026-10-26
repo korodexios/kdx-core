@@ -209,10 +209,24 @@ class NamedLock:
         if self._logger is not None:
             self._logger.debug("named lock released", name=self._name, path=str(self._path))
 
+    def _read_payload_text(self) -> str:
+        """Return the lock file's bytes as text.
+
+        When this process holds the lock it reads through its own descriptor, which
+        sidesteps the Windows sharing violation a fresh handle would hit on the
+        byte-range-locked range. Otherwise it opens the path normally.
+        """
+        if self._descriptor is not None:
+            os.lseek(self._descriptor, 0, os.SEEK_SET)
+            raw = os.read(self._descriptor, 65536)
+            os.lseek(self._descriptor, 0, os.SEEK_SET)
+            return raw.decode(ENCODING)
+        return self._path.read_text(encoding=ENCODING)
+
     def holder(self) -> LockHolder | None:
         """Return the payload the lock file carries, or None when unreadable."""
         try:
-            raw = self._path.read_text(encoding=ENCODING)
+            raw = self._read_payload_text()
         except (OSError, UnicodeDecodeError):
             return None
         try:
@@ -317,11 +331,17 @@ class NamedLock:
             "port": int(self._metadata.get("port", 0) or 0),
         }
         text = json.dumps(payload, sort_keys=True) + "\n"
+        data = text.encode(ENCODING)
         try:
             os.ftruncate(descriptor, 0)
+            # Write straight to the already-open descriptor. Re-opening a duplicate in
+            # text mode takes a second handle, which Windows refuses while the byte-range
+            # lock is held, so the payload was silently lost and holder() read an empty file.
             os.lseek(descriptor, 0, os.SEEK_SET)
-            with os.fdopen(os.dup(descriptor), "w", encoding=ENCODING) as handle:
-                handle.write(text)
+            view = memoryview(data)
+            while view:
+                written = os.write(descriptor, view)
+                view = view[written:]
         except OSError as exc:
             if self._logger is not None:
                 self._logger.warning(

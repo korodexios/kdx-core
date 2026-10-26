@@ -392,6 +392,7 @@ class InstanceLock:
         text = json.dumps(payload, sort_keys=True) + "\n"
         data = text.encode(ENCODING)
         try:
+            os.ftruncate(descriptor, 0)
             # Write the bytes straight to the already-open descriptor: re-opening a
             # duplicate in text mode takes a second handle, which Windows refuses while
             # the byte-range lock is held. Seek past the start so a shorter rewrite
