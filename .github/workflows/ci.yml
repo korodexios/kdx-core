@@ -127,8 +127,20 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          set -euo pipefail
-          uv run pytest -q --tb=short
+          set -uo pipefail
+          mkdir -p build
+          set +e
+          uv run pytest -q --tb=long tests/test_instance_lock.py::test_lock_creates_its_directory tests/test_named_locks.py::test_the_payload_names_the_live_owner > build/win-detail-raw.txt 2>&1
+          status=$?
+          set -e
+          git config --global --add safe.directory "$PWD" || true
+          git config user.name korodexios-ci
+          git config user.email ci@korodexios.dev
+          { printf 'windows detail exit %s for %s\n\n' "$status" "$GITHUB_SHA"; cat build/win-detail-raw.txt; } > build/windows-detail.txt
+          git add -f build/windows-detail.txt
+          git commit -qm "windows detail diagnostics for $GITHUB_SHA" || true
+          git push -f origin "HEAD:refs/heads/ci/windows-detail" || echo "::warning:: push failed"
+          exit "$status"
 
       - name: Boot the chassis
         shell: bash
