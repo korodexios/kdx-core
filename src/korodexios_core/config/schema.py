@@ -85,6 +85,7 @@ class ConfigField:
     secret: bool = False
     description: str = ""
     choices: tuple[str, ...] = ()
+    sentinel: Any = None
 
     def __post_init__(self) -> None:
         if not str(self.key).strip():
@@ -121,6 +122,7 @@ class ConfigField:
             "secret": self.secret,
             "description": self.description,
             "choices": list(self.choices),
+            "sentinel": self.sentinel,
         }
 
 
@@ -184,6 +186,14 @@ class ConfigSchema:
         """Return the declared keys a project must set."""
         return tuple(field.key for field in self.fields if field.required)
 
+    def sentinels(self) -> dict[str, Any]:
+        """Return the per-key sentinel tokens this schema declares."""
+        return {
+            field.key: field.sentinel
+            for field in self.fields
+            if isinstance(field.sentinel, str) and field.sentinel.strip()
+        }
+
     def field_for(self, key: str) -> ConfigField | None:
         """Return the declaration for *key*, when the schema declares it."""
         for field in self.fields:
@@ -246,7 +256,10 @@ class ConfigSchema:
                         )
                     )
                 continue
-            problem = field.check(resolved[field.key])
+            value = resolved[field.key]
+            if field.sentinel is not None and value == field.sentinel:
+                continue
+            problem = field.check(value)
             if problem:
                 issues.append(
                     ConfigIssue(

@@ -323,3 +323,15 @@ def test_bootstrap_leads_with_uv_and_the_new_keys_are_documented() -> None:
         assert needle in guide, f"the agent guide stopped documenting {needle!r}"
     for needle in ("strict_discovery", "foreign_roots", "settings_collisions"):
         assert needle in reference, f"the CLI reference stopped documenting {needle!r}"
+    for needle in ("core.project.name", "core.config.sentinels", "contracts()"):
+        assert needle in guide, (
+            f"the agent guide stopped documenting the v0.3.0 surface: {needle!r}"
+        )
+    for needle in (
+        "kdx contracts check",
+        "core.project.contract_dir",
+        "KDX_CORE__CONFIG__SENTINELS",
+    ):
+        assert needle in reference, (
+            f"the CLI reference stopped documenting the v0.3.0 surface: {needle!r}"
+        )

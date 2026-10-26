@@ -119,6 +119,16 @@ directory ignores dot files, swap files, and names `lock_name()` refuses | **del
   agent guide's verification loop and `kdx init`'s next step lead with uv (Astral), the tool
   that owns the virtualenv | **delivered** |
 
+| 27 | `v0.3.0` a project names itself and guards its files on the `v2` line:
+  `core.project.name`/`.version`/`.contract_dir` derive one identity triple from keys the
+  chassis already reads, reported identically by `kdx doctor`, `kdx status --json`, and
+  `kdx contracts check`; `core.config.sentinels` and a module's `ConfigField(sentinel=...)` let
+  a layer that says *no opinion* fall through to the layer below, with provenance reading
+  `inherit sentinel` and `kdx config show` printing `(unset)`; and the optional `contracts()`
+  hook plus `ChassisOptions.project_contracts` give the project a verified file set that
+  `kdx contracts check` hashes and reports at exit `3` on drift, the chassis verifying and
+  never rewriting a declared file | **delivered** |
+
 ## Next
 
 1. **Publish to an index.** PyPI through trusted publishing. The git bootstrap is

@@ -7,6 +7,23 @@ history lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 _Nothing pending: the working tree is the `v0.2.10` tag._
 
+## [0.3.0] - 2026-10-26
+
+A consumer minor on the frozen `v2` line, additive in every direction: a project can state
+one identity and hear it back the same way - `core.project.name`, `.version`, `.contract_dir`,
+answered from `core.name`, the version of `core.distribution`, and the home when the project
+stays silent, and printed identically by `kdx doctor`, `kdx status --json`, and `kdx contracts
+check`; a value can now mean *no opinion here* - `core.config.sentinels` and a module's
+`ConfigField(sentinel=...)` let a layer fall through to the layer below, whose provenance reads
+`inherit sentinel`, while `kdx config show` prints `(unset)` instead of presenting the token as
+a set value and schema validation stops calling the token an invalid value; and a project or
+its modules can declare a verified file set through the optional `contracts()` hook or
+`ChassisOptions.project_contracts`, which `kdx contracts check` hashes, reporting drift or a
+missing file at exit `3` and rewriting nothing - the classification and merge-policy words stay
+the project's own. New exports: `ProjectIdentity`, `project_identity`, `ContractRow`,
+`ContractDrift`, `ContractReport`, `contract_rows`, `verify_contracts`. No import moved, no
+signature changed, no configuration key renamed.
+
 ## [0.2.10] - 2026-10-25
 
 A consumer patch on the frozen `v2` line: the two shapes of `core.env.aliases` both work,

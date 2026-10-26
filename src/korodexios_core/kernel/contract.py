@@ -136,11 +136,11 @@ class Module:
 
     The chassis drives a module in one order: discovered, registered, `init(context)`,
     `register_cli(surface)`, `start()`, `stop()`. The optional declarative hooks -
-    `config_schema()`, `ipc_routes()`, `static_dirs()`, `diagnostics()` - are read at
-    registration, before `init(context)` has run, and collected again once it has. A module
-    that needs its configuration, paths, or logger to answer one of those hooks returns an
-    empty or baseline report on the first pass and never raises: an inspection command such
-    as `kdx doctor` may ask at any point in that sequence.
+    `config_schema()`, `ipc_routes()`, `static_dirs()`, `diagnostics()`, `contracts()`
+    are read at registration, before `init(context)` has run, and collected again once
+    it has. A module that needs its configuration, paths, or logger to answer one of
+    those hooks returns an empty or baseline report on the first pass and never raises:
+    an inspection command such as `kdx doctor` may ask at any point in that sequence.
     """
 
     name: str = ""
@@ -276,6 +276,17 @@ class Module:
         """
         return ()
 
+    def contracts(self) -> tuple[Any, ...]:
+        """Declare the verified file set this module owns.
+
+        Return ContractRow objects, or mappings carrying the keys path, sha256,
+        classification, and merge_policy; 'kdx contracts check' hashes each file and
+        reports drift without rewriting a single byte. The classification and merge
+        policy words belong to the project - the chassis carries them and never reads
+        them - and a module that owns no files returns ().
+        """
+        return ()
+
     @property
     def scheduler(self) -> Any:
         """Return the chassis periodic task scheduler; declare tasks in start().
@@ -388,5 +399,5 @@ def contract_help() -> str:
     return (
         "contract: name, description, version, init(context), "
         "register_cli(surface), start(), stop(); optional: dependencies, "
-        "load_order, config_schema, ipc_routes, static_dirs, diagnostics, workers"
+        "load_order, config_schema, ipc_routes, static_dirs, diagnostics, workers, contracts"
     )

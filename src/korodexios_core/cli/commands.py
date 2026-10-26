@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from ..constants import TAG_ERROR, TAG_NOTE, TAG_OK, ExitCode
+from ..exceptions import ConfigurationError
 from ..kernel.cli_contract import CliArgument, CliCommand, CliRequest
+from ..kernel.contracts import CONTRACT_NAMED_ROWS
 from ..kernel.ipc import (
     DEFAULT_PORT,
     DISCOVERY_NAME,
@@ -435,6 +437,27 @@ def core_commands(chassis: Chassis) -> list[CliCommand]:
             handler=_run_command,
             group="core",
         ),
+        CliCommand(
+            name="contracts",
+            help="Verify the project's declared file set without rewriting it.",
+            group="core",
+            subcommands=(
+                CliCommand(
+                    name="check",
+                    help="Hash every declared file and report drift; exit 3 on drift.",
+                    args=(
+                        CliArgument(
+                            ("--json",),
+                            dest="as_json",
+                            action="store_true",
+                            help="Emit the report as JSON.",
+                        ),
+                    ),
+                    handler=_contracts_check_command,
+                    module_name="core",
+                ),
+            ),
+        ),
     ]
 
 
@@ -471,6 +494,36 @@ def _doctor_command(request: CliRequest) -> int:
             ("uptime", f"{report['app']['uptime_seconds']:.3f} s"),
         ]
     )
+    project = dict(report.get("project") or {})
+    contracts = dict(report.get("contracts") or {})
+    print_section("Project identity")
+    print_key_values(
+        [
+            ("name", project.get("name", "(unknown)")),
+            ("version", project.get("version", "unknown")),
+            ("contract directory", project.get("contract_dir", "-")),
+        ]
+    )
+    if contracts.get("declared"):
+        drifted = [dict(item) for item in (contracts.get("drifted") or [])]
+        missing = [str(item) for item in (contracts.get("missing") or [])]
+        print_section("Contracts")
+        print_key_values(
+            [
+                ("contract directory", project.get("contract_dir", "-")),
+                ("declared", contracts.get("declared", 0)),
+                ("match", len(list(contracts.get("verified") or []))),
+                ("drifted", len(drifted)),
+                ("missing", len(missing)),
+            ]
+        )
+        if drifted or missing:
+            print_table(
+                [["drift", str(row.get("path", ""))] for row in drifted[:8]]
+                + [["missing", path] for path in missing[:8]],
+                headers=("state", "path"),
+            )
+
     print_section("Runtime")
     print_key_values(
         [
@@ -1053,6 +1106,82 @@ def _modules_show_command(request: CliRequest) -> int:
     return int(ExitCode.SUCCESS)
 
 
+def _contracts_check_command(request: CliRequest) -> int:
+    """Verify the declared file set; the chassis reads those files and rewrites none."""
+    chassis = _chassis(request)
+    chassis.ensure_initialized()
+    report = chassis.contract_report()
+    owners: dict[str, list[dict[str, str]]] = {}
+    for name, row in chassis.declared_contracts():
+        owners.setdefault(name, []).append({"path": row.path, "sha256": row.sha256})
+    if request.flag("as_json"):
+        dump_json(
+            {
+                "project": chassis.project.as_dict() if chassis.project is not None else {},
+                "declared_by": owners,
+                **report.as_dict(),
+            }
+        )
+    else:
+        identity = chassis.project
+        print_section("Project identity")
+        print_key_values(
+            [
+                ("name", identity.name if identity else "(unknown)"),
+                ("version", identity.version if identity else "unknown"),
+                ("contract directory", identity.contract_dir if identity else "-"),
+            ]
+        )
+        if not report.rows:
+            write_status("no project or module declared a contract file set", tag=TAG_NOTE)
+            return int(ExitCode.SUCCESS)
+        drifted = [dict(item) for item in report.as_dict()["drifted"]]
+        missing = [str(item) for item in report.missing]
+        print_section("Contracts")
+        print_key_values(
+            [
+                ("declared", len(report.rows)),
+                ("match", len(report.verified)),
+                ("drifted", len(drifted)),
+                ("missing", len(missing)),
+            ]
+        )
+        named = drifted[:CONTRACT_NAMED_ROWS]
+        rest = missing[:CONTRACT_NAMED_ROWS]
+        if named or rest:
+            print_table(
+                [["drift", str(entry.get("path", ""))] for entry in named]
+                + [["missing", path] for path in rest],
+                headers=("state", "path"),
+            )
+        for entry in named:
+            write_line(
+                f"{TAG_ERROR} {entry.get('path')}: declared "
+                f"{str(entry.get('declared', ''))[:12]}..., "
+                f"read {str(entry.get('actual', ''))[:12]}..."
+            )
+        for path in rest:
+            write_line(f"{TAG_ERROR} {path}: declared but not found")
+        hidden = (len(drifted) + len(missing)) - CONTRACT_NAMED_ROWS * 2
+        if hidden > 0:
+            write_line(f"{TAG_NOTE} +{hidden} more findings; pass --json for all of them")
+        write_status(f"contracts: {report.summary()}", tag=TAG_OK if report.ok else TAG_ERROR)
+        write_line(f"{TAG_NOTE} the chassis reads these files and never rewrites one")
+    if not report.ok:
+        if report.drifted:
+            first = report.drifted[0]
+            detail = (
+                f"{first.path} declares {first.declared[:12]}..., the file hashes to "
+                f"{first.actual[:12]}..."
+            )
+        else:
+            detail = f"{report.missing[0]} is declared and missing"
+        raise ConfigurationError(
+            f"contracts drifted: {report.summary()}",
+            hint=detail + " - fix the file or the declaration; the chassis never rewrites one",
+        )
+    return int(ExitCode.SUCCESS)
+
 def _config_show_command(request: CliRequest) -> int:
     """Print resolved configuration keys with provenance, secrets masked."""
     chassis = _chassis(request)
@@ -1075,6 +1204,12 @@ def _config_show_command(request: CliRequest) -> int:
     if not reveal:
         write_line(
             f"{TAG_NOTE} sensitive values are masked; pass --reveal to print them in clear"
+        )
+    sentinels = chassis.config.sentinel_tokens()
+    if sentinels:
+        write_line(
+            f"{TAG_NOTE} sentinel values fall through to the layer below: "
+            + ", ".join(sentinels)
         )
     return int(ExitCode.SUCCESS)
 

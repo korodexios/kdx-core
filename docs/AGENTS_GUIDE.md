@@ -13,7 +13,7 @@ section is a contract, not a suggestion. Human-oriented narrative lives in
 | Distribution | `korodexios-core` |
 | Import root | `korodexios_core` |
 | Console scripts | `kdx` (primary short alias), `korodexios` (canonical) |
-| Version | `0.2.10` (production), core API frozen at `v2` (additive changes only inside v2) |
+| Version | `0.3.0` (production), core API frozen at `v2` (additive changes only inside v2) |
 | Runtime | CPython 3.11+, stdlib first (PyYAML for config, rich for the CLI surface) |
 | Config file | `kdx.yml` / `kdx.yaml` / `kdx.json` (then `korodexios.*`) |
 | Env prefix | `KDX_` primary; `KORODEXIOS_` is the canonical long prefix |
@@ -21,7 +21,10 @@ section is a contract, not a suggestion. Human-oriented narrative lives in
 | Env aliases | both shapes are read at load: the mapping `core.env.aliases.NAME` a project writes in `kdx.yml` and the `NAME=key` list an operator exports as `<PREFIX>_CORE__ENV__ALIASES`; `kdx doctor` prints the effective map |
 | Discovery gate | `core.modules.strict_discovery` (default `false`): with `true`, one discovery failure refuses the boot with exit `3` and `kdx doctor` reports it as an error |
 | Foreign roots | `core.modules.foreign_roots: []` names the import roots a project ships as an installed distribution (`llmwiki_ext`), so a missing import under one stays an installation hint |
-| Module settings | `modules.<name>.enabled` and `.priority` belong to the chassis: a module that declares `enabled` in its own schema is warned about, not silently skipped |
+
+| Project identity | `core.project.name`, `core.project.version`, `core.project.contract_dir` (default `contracts` under the home): one triple, answered from keys the chassis already reads when a project stays silent, and printed identically by `kdx doctor`, `kdx status --json`, and `kdx contracts check` |
+| Sentinels | `core.config.sentinels` (default `[]`) and a module's `ConfigField(key=..., sentinel=...)`: a layer carrying a declared token has no opinion, so the value falls through to the layer below and its source reads `inherit sentinel`; `kdx config show` prints `(unset)`, never the token as a value |
+| Contracts | the optional `contracts()` hook and `ChassisOptions.project_contracts` declare `path`/`sha256`/`classification`/`merge_policy` rows; `kdx contracts check` hashes them and exits `3` on drift or a missing file, and the chassis rewrites nothing |
 | Bootstrap | uv (Astral) first: `uv venv`, `uv sync --extra dev`, `uv run kdx ...`, `uv tool install korodexios-core`; `python3 -m venv` + `pip` is the documented fallback |
 | Layout | `kernel/` infrastructure, `modules/` pure discovery root, `cli/` thin clients |
 | State dir | `var/` (logs, `chassis.ipc`, `chassis.lock`); never committed |
@@ -99,8 +102,11 @@ opportunities, never requirements - the chassis `getattr`s them and moves on:
 | `diagnostics()` | `DiagnosticCheck` sequence | `kdx doctor` prints them and exits `1` when one is an error |
 | `workers()` | name -> `Thread` mapping or pairs | supervision watches them; a dead worker marks the module `failed` |
 | `on_config_reload(config)` | nothing | runs with the module's scoped config after `kdx reload` or SIGHUP |
-| `static_dirs()` | `IpcStaticMount` sequence | the control plane serves those directories on its own port, labelling each file by its own media type |
 
+| `contracts()` | `ContractRow` sequence, or mappings of `path`/`sha256`/`classification`/`merge_policy` | `kdx contracts check` hashes each declared file; drift exits `3`, and the chassis never rewrites one |
+
+- `contracts()` answers with rows the chassis can only read: a module that owns no files
+  returns `()`, and a row that declares no hash states only that the file must exist.
 - A hook that raises is logged and skipped: a broken `diagnostics()` never stops a boot,
   a doctor run, or a reload.
 - The chassis reads the declarative hooks when a module registers, which is before
@@ -114,9 +120,10 @@ opportunities, never requirements - the chassis `getattr`s them and moves on:
   been discovered. `kdx modules show` still records a hook failure as `health_error` rather than
   letting it end the report.
 - `kdx doctor` also reports the chassis' own checks (log file, state dirs, stale lock,
-  control-plane errors, failing scheduled tasks, abandoned named locks, and a module whose
-  own schema declares `enabled` or `priority` - keys the chassis owns per module), so a module
-  only contributes what the core cannot know.
+  control-plane errors, failing scheduled tasks, abandoned named locks, a declared contract
+  file that drifted or went missing, and a module whose own schema declares `enabled` or
+  `priority` - keys the chassis owns per module), so a module only contributes what the core
+  cannot know.
 - Since `v0.2.4` the built-ins report their runtime habits as well as their declarations:
   `system_info` starts a load sampler thread when `modules.system_info.watch_load` is on - the
   default wherever the platform can answer a load average - and hands that thread to
@@ -480,6 +487,26 @@ environment (`.env` then process env) -> CLI overrides**.
   project ships as installed packages, so a missing import under `llmwiki_ext.plugins.x`
   stays an optional-dependency hint instead of a hard discovery failure. A root is only
   foreign when the project says so: the chassis' own roots stay hard failures.
+- Project identity: `core.project.name`, `core.project.version`, and
+  `core.project.contract_dir` (default `contracts` under the home) let a project state the
+  one triple the chassis reports. A silent project is answered from keys the chassis already
+  reads - `core.name`, the version of `core.distribution` (the chassis reads its own number
+  from the chassis, never from stale metadata), and the home - so `kdx doctor`, `kdx status
+  --json`, and `kdx contracts check` print the same identity.
+- Sentinels: `core.config.sentinels` (default `[]`) declares the tokens that mean
+  *no opinion here*, and a module schema states its own per key with
+  `ConfigField(key=..., sentinel=...)`. A layer whose value equals a declared token is
+  skipped on the way down, the answer comes from the layer below, and provenance reads
+  `inherit sentinel 'inherit' from kdx.local.yml falls through to kdx.yml`; `kdx config show`
+  prints `(unset)` rather than presenting the token as a set value. The vocabulary belongs to
+  the project - the chassis invents no token of its own - and validation never calls a
+  declared sentinel a bad value.
+- Contracts: the optional `contracts()` hook and `ChassisOptions.project_contracts` give the
+  project a verified file set - rows of `path`, `sha256`, `classification`, `merge_policy`,
+  where the last two words are the project's own and the chassis carries them unread.
+  `kdx contracts check` hashes each declared file under `core.project.contract_dir`, exits
+  `3` when one drifted or was never installed, and rewrites nothing: the chassis verifies,
+  the project decides what to do about it.
 - `core.paths.state_dir` and `core.paths.data_dir` move the writable roles off `var/`;
   `Chassis.create()` creates both before any module starts, so a module never `mkdir`s
   its own home.

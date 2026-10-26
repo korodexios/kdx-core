@@ -15,6 +15,13 @@ from .contract import (
     check_contract,
     contract_help,
 )
+from .contracts import (
+    ContractDrift,
+    ContractReport,
+    ContractRow,
+    contract_rows,
+    verify_contracts,
+)
 from .diagnostics import (
     DiagnosticCheck,
     DiagnosticSeverity,
@@ -37,6 +44,7 @@ from .ipc import (
     guess_content_type,
 )
 from .locks import LockTimeoutError, NamedLock, NamedLockRegistry
+from .project import ProjectIdentity, project_identity
 from .registry import ModuleRegistry, RegisteredModule, call_with_timeout
 from .scheduler import ScheduledTask, TaskScheduler
 from .signals import SignalCoordinator, signal_name
@@ -51,6 +59,9 @@ __all__ = [
     "CliCommand",
     "CliRequest",
     "CliSurface",
+    "ContractDrift",
+    "ContractReport",
+    "ContractRow",
     "CoreContext",
     "DiagnosticCheck",
     "DiagnosticSeverity",
@@ -73,6 +84,7 @@ __all__ = [
     "ModuleState",
     "NamedLock",
     "NamedLockRegistry",
+    "ProjectIdentity",
     "RegisteredModule",
     "ScheduledTask",
     "SignalCoordinator",
@@ -85,8 +97,11 @@ __all__ = [
     "check_contract",
     "command_path",
     "contract_help",
+    "contract_rows",
     "diagnostic_check",
     "guess_content_type",
     "pid_alive",
+    "project_identity",
     "signal_name",
+    "verify_contracts",
 ]

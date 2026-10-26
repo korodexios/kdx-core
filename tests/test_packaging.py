@@ -77,7 +77,7 @@ def test_hatch_version_pattern_matches_the_declared_version() -> None:
 
 def test_version_string_is_well_formed_and_accepted_by_modules() -> None:
     info = parse_version(__version__)
-    assert (info.major, info.minor, info.patch) == (0, 2, 10), __version__
+    assert (info.major, info.minor, info.patch) == (0, 3, 0), __version__
     expected = f"korodexios-core {__version__} (core api v{CORE_API_VERSION}, python chassis)"
     assert format_version() == expected
     assert version_satisfies(__version__, ">=0.1,<1.0") is True

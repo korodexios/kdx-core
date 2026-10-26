@@ -54,6 +54,13 @@ from .kernel.contract import (
     as_module,
     check_contract,
 )
+from .kernel.contracts import (
+    ContractDrift,
+    ContractReport,
+    ContractRow,
+    contract_rows,
+    verify_contracts,
+)
 from .kernel.diagnostics import DiagnosticCheck, DiagnosticSeverity
 from .kernel.instance_lock import InstanceLock, LockHolder
 from .kernel.ipc import (
@@ -68,6 +75,7 @@ from .kernel.ipc import (
     guess_content_type,
 )
 from .kernel.locks import NamedLock, NamedLockRegistry
+from .kernel.project import ProjectIdentity, project_identity
 from .kernel.registry import ModuleRegistry
 from .kernel.scheduler import ScheduledTask, TaskScheduler
 from .kernel.supervision import WorkerRecord, WorkerSupervisor
@@ -102,6 +110,9 @@ __all__ = [
     "ConfigSource",
     "ConfigValueError",
     "ConfigurationError",
+    "ContractDrift",
+    "ContractReport",
+    "ContractRow",
     "CoreContext",
     "DiagnosticCheck",
     "DiagnosticSeverity",
@@ -135,6 +146,7 @@ __all__ = [
     "NamedLock",
     "NamedLockRegistry",
     "PathDiscoveryError",
+    "ProjectIdentity",
     "ScheduledTask",
     "ScopedConfig",
     "Subscription",
@@ -146,8 +158,11 @@ __all__ = [
     "build_logger",
     "check_contract",
     "command_path",
+    "contract_rows",
     "guess_content_type",
     "is_secret_key",
+    "project_identity",
     "redact_value",
     "stdin_is_tty",
+    "verify_contracts",
 ]

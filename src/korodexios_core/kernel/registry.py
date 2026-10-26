@@ -17,6 +17,7 @@ from ..exceptions import ModuleContractError
 from .cli_contract import CliCommand, CliSurface
 from .context import CoreContext
 from .contract import ModuleSpec, ModuleState, check_contract
+from .contracts import ContractRow, contract_rows
 from .diagnostics import DiagnosticCheck
 from .discovery import DiscoveryReport
 from .ipc import IpcRoute, IpcStaticMount
@@ -85,6 +86,8 @@ class RegisteredModule:
     """True once the declarative hooks were read with the module context in hand."""
     settings_collisions: tuple[str, ...] = ()
     """Keys the module declared for itself that the chassis also owns per module."""
+    contracts: tuple[ContractRow, ...] = ()
+    """The verified file set this module declared, carried without interpretation."""
 
     def declared_keys(self) -> tuple[str, ...]:
         """Return the configuration keys this module declared."""
@@ -125,6 +128,7 @@ class RegisteredModule:
             "diagnostics": [check.as_dict() for check in self.checks],
             "declarations_after_init": self.declarations_after_init,
             "settings_collisions": list(self.settings_collisions),
+            "contracts": [row.as_dict() for row in self.contracts],
         }
 
 
@@ -375,6 +379,24 @@ def _settings_collisions(
     return collisions
 
 
+def collect_contracts(module: Any, name: str, logger: Any) -> tuple[ContractRow, ...]:
+    """Normalize whatever contracts() returns into rows, keeping the project's own words.
+
+    A row that declares no hash is not a mistake: it states only that the file must
+    exist, which is what a project says about a file it expects the operator to fill in.
+    """
+    declared = _call_hook(module, "contracts", logger)
+    if declared is None:
+        return ()
+    rows = contract_rows(declared)
+    for row in rows:
+        if not str(row.sha256).strip():
+            logger.debug(
+                f"module declares {row.path} without a hash: only its existence is checked",
+                module=name,
+            )
+    return rows
+
 def collect_workers(module: Any) -> tuple[tuple[str, Any], ...]:
     """Return (name, thread) pairs a module hands to supervision."""
     declared = getattr(module, "workers", None)
@@ -432,6 +454,7 @@ class ModuleRegistry:
             record.routes = collect_ipc_routes(module, spec.name, self._logger)
             record.statics = collect_static_dirs(module, spec.name, self._logger)
             record.checks = collect_diagnostics(module, spec.name, self._logger)
+            record.contracts = collect_contracts(module, spec.name, self._logger)
             record.settings_collisions = _settings_collisions(
                 record.declared_keys(), spec.name, self._logger
             )
@@ -524,6 +547,7 @@ class ModuleRegistry:
         record.routes = collect_ipc_routes(record.module, label, self._logger)
         record.statics = collect_static_dirs(record.module, label, self._logger)
         record.checks = collect_diagnostics(record.module, label, self._logger)
+        record.contracts = collect_contracts(record.module, label, self._logger)
         record.settings_collisions = _settings_collisions(
             record.declared_keys(), label, self._logger
         )
@@ -638,6 +662,32 @@ class ModuleRegistry:
         for record in self.ordered():
             checks.extend(record.checks)
         return checks
+
+    def contracts_by_module(self) -> dict[str, tuple[ContractRow, ...]]:
+        """Return the verified file set of each module that declared one."""
+        with self._lock:
+            return {
+                record.spec.name: record.contracts
+                for record in self._records.values()
+                if record.contracts
+            }
+
+    def schema_sentinels(self) -> dict[str, Any]:
+        """Return the sentinel tokens modules declared, keyed scoped and bare.
+
+        A module schema states its keys bare; the chassis reads them scoped, so both
+        spellings are recorded and the first declaration of a bare key wins.
+        """
+        with self._lock:
+            found: dict[str, Any] = {}
+            for record in self._records.values():
+                if record.schema is None:
+                    continue
+                root = f"modules.{record.spec.name}"
+                for key, token in record.schema.sentinels().items():
+                    found[f"{root}.{key}"] = token
+                    found.setdefault(key, token)
+            return found
 
     def declared_workers(self) -> dict[str, tuple[tuple[str, Any], ...]]:
         """Return the workers each module reports for supervision."""

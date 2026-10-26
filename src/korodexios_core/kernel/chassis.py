@@ -36,6 +36,13 @@ from ..version import CORE_API_VERSION, __version__, format_version
 from .async_runtime import AsyncRuntime
 from .cli_contract import CliCommand, CliRequest, CliSurface, add_command_arguments
 from .context import CoreContext
+from .contracts import (
+    ContractReport,
+    ContractRow,
+    contract_rows,
+    dedupe_rows,
+    verify_contracts,
+)
 from .diagnostics import (
     DiagnosticCheck,
     DiagnosticSeverity,
@@ -56,6 +63,7 @@ from .ipc import (
     process_memory,
 )
 from .locks import NamedLock, NamedLockRegistry
+from .project import ProjectIdentity, project_identity
 from .registry import ModuleRegistry
 from .scheduler import TaskScheduler
 from .signals import SignalCoordinator, signal_name
@@ -112,6 +120,7 @@ class ChassisOptions:
     asyncio_enabled: bool | None = None
     supervision: bool | None = None
     scheduler: bool | None = None
+    project_contracts: Sequence[ContractRow] = ()
 
 
 @dataclass(slots=True)
@@ -140,6 +149,10 @@ class Chassis:
     instance_lock_enabled: bool | None = None
     reloads: int = 0
     last_reload: dict[str, Any] | None = None
+    project: ProjectIdentity | None = None
+    """The one triple the chassis reports for the project it hosts."""
+    project_contracts: tuple[ContractRow, ...] = ()
+    """Rows the embedding project declared, beside its modules' own."""
 
     @classmethod
     def create(cls, options: ChassisOptions | None = None) -> Chassis:
@@ -264,6 +277,9 @@ class Chassis:
             if unlisted > 0:
                 named += f", +{unlisted} more"
             log.info(f"{TAG_NOTE} modules skipped: {named}")
+        config.declare_sentinels(registry.schema_sentinels())
+        identity = project_identity(config, home=paths.root)
+        project_rows = dedupe_rows(contract_rows(options.project_contracts))
         chassis = cls(
             context=context,
             registry=registry,
@@ -280,6 +296,8 @@ class Chassis:
             scheduler=scheduler,
             cli_overrides=dict(options.cli_overrides),
             instance_lock_enabled=options.instance_lock,
+            project=identity,
+            project_contracts=project_rows,
         )
         context.chassis = chassis
         return chassis
@@ -862,6 +880,29 @@ class Chassis:
             setattr(namespace, str(key), value)
         return namespace
 
+    def declared_contracts(self) -> tuple[tuple[str, ContractRow], ...]:
+        """Return every declared file with the project or module that declared it."""
+        rows: list[tuple[str, ContractRow]] = [
+            ("project", row) for row in self.project_contracts
+        ]
+        for name, declared in self.registry.contracts_by_module().items():
+            rows.extend((name, row) for row in declared)
+        return tuple(rows)
+
+    def register_contracts(self, rows: Any) -> tuple[ContractRow, ...]:
+        """Add project-level rows to verify; return everything declared so far.
+
+        An embedding project owns rows the same way a module does: it states them once,
+        and the chassis reads them back through 'kdx doctor' and 'kdx contracts check'.
+        """
+        self.project_contracts = dedupe_rows(self.project_contracts + contract_rows(rows))
+        return self.project_contracts
+
+    def contract_report(self) -> ContractReport:
+        """Hash the declared files under the project's contract directory, never write one."""
+        root = Path(self.project.contract_dir) if self.project is not None else None
+        return verify_contracts([row for _, row in self.declared_contracts()], root)
+
     def _chassis_diagnostics(self) -> list[DiagnosticCheck]:
         """Contribute the chassis' own checks to the unified diagnostics report."""
         checks: list[DiagnosticCheck] = []
@@ -872,6 +913,22 @@ class Chassis:
                     message=f"{key}{_advice(hint)}",
                     severity=DiagnosticSeverity.WARNING,
                     hint="remove the key or spell it the way the chassis reads it",
+                    module="chassis",
+                )
+            )
+        contracts = self.contract_report()
+        if contracts.rows:
+            checks.append(
+                diagnostic_check(
+                    name="contracts",
+                    message=f"contracts: {contracts.summary()}",
+                    severity=(
+                        DiagnosticSeverity.INFO
+                        if contracts.ok
+                        else DiagnosticSeverity.WARNING
+                    ),
+                    hint="run 'kdx contracts check' for the named files; the chassis "
+                    "never rewrites them",
                     module="chassis",
                 )
             )
@@ -1058,6 +1115,8 @@ class Chassis:
             "logging": self.context.logs.stats(),
             "modules": self.registry.health(),
             "discovery": self.discovery.as_dict(),
+            "project": self.project.as_dict() if self.project is not None else None,
+            "contracts": self.contract_report().as_dict(),
             "signals": self.signals.as_dict(),
             "bus": self.bus.stats(),
             "memory": process_memory(),

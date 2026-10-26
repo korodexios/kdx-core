@@ -19,8 +19,8 @@ docs. `kdx --help` lists every command, including the ones modules contributed.
 | --- | --- | --- |
 | uv, in the chassis repository | `uv venv --python 3.13 && uv sync --extra dev && uv run kdx doctor` | uv (Astral) owns the environment; `make` resolves to `uv run` when uv is on `PATH` |
 | uv tool | `uv tool install korodexios-core` | a global `kdx` on PATH, no project involved |
-| git pin, the consumer path | `uv pip install "korodexios-core @ git+https://github.com/korodexios/kdx-core.git@v0.2.10"` | the documented pin before an index publish; needs network |
-| git bootstrap, ssh form | `pip install "korodexios-core @ git+ssh://git@github.com/korodexios/kdx-core.git@v0.2.10"` | what `kdx init --chassis-source git` writes into the seed |
+| git pin, the consumer path | `uv pip install "korodexios-core @ git+https://github.com/korodexios/kdx-core.git@v0.3.0"` | the documented pin before an index publish; needs network |
+| git bootstrap, ssh form | `pip install "korodexios-core @ git+ssh://git@github.com/korodexios/kdx-core.git@v0.3.0"` | what `kdx init --chassis-source git` writes into the seed |
 | pipx, or venv + pip | `pipx install korodexios-core`; `python3 -m venv .venv && pip install -e ".[dev]"` | the fallback when uv is absent - and it fails as written on a PEP 668 `EXTERNALLY-MANAGED` interpreter with no `pip` and no `ensurepip` |
 | from an index | `uv pip install korodexios-core`, or `pip install korodexios-core` | once published; a consumer pins it with `uv lock` |
 
@@ -97,6 +97,8 @@ kdx status --host 127.0.0.1 --port 8123                        # explicit local 
 Reports endpoint, auth policy, shutdown policy, the source of the endpoint, chassis
 state, uptime, ticks, and every module's health. A 401 prints a hint to pass `--token`
 or set `KDX_CORE__IPC__TOKEN`.
+Since `v0.3.0` the JSON payload carries the project's identity triple - name, version,
+contract directory - under `project`: the same one `kdx doctor` prints.
 
 ## `kdx reload`
 
@@ -177,6 +179,11 @@ a `requires_core` mismatch instead of `0`, while `kdx doctor` still runs and rep
 module whose own schema declares `enabled` or `priority` contributes a `module-setting`
 warning, and `modules.modules[].settings_collisions` names the keys per module. The effective
 environment aliases are reported under `config.aliases` whatever shape they were declared in.
+Since `v0.3.0` the report prints the project's identity - `name`, `version`, `contract_dir` -
+as a section of its own and carries it under `project`, so one triple is reported by doctor,
+`kdx status --json`, and `kdx contracts check` alike. A declared contract file that drifted
+or went missing contributes a `contracts` check at `warning`: the chassis verifies the set
+and never rewrites a byte, leaving the finding for the project to settle.
 
 ## `kdx logs`
 
@@ -250,6 +257,30 @@ project is validated against a real schema before it owns one. A required
 key with no value, a value that will not coerce, or a value outside the declared
 `choices` is an error and exits `3`; the JSON payload carries them under `schemas.issues`.
 
+## `kdx contracts`
+
+```bash
+kdx contracts check             # hash every declared file, report drift
+kdx contracts check --json      # the same report, every finding included
+```
+
+A declaration is a row of `path`, `sha256`, `classification`, and `merge_policy`, contributed
+by a module's `contracts()` hook or by the embedding app through
+`ChassisOptions.project_contracts` / `Chassis.register_contracts(rows)`. A relative path
+resolves under `core.project.contract_dir` (default `contracts` under the home); a row that
+declares no hash states only that the file must exist.
+
+| Situation | Result |
+| --- | --- |
+| every declared file hashes as declared | exit `0`, one summary line |
+| a file changed, or was never installed | exit `3`, the named files, `--json` carries every finding |
+| nothing declared a file set | exit `0` with a note: contracts never fail a boot |
+
+The chassis verifies and never rewrites: regenerating a file is the project's decision. The
+classification and merge-policy words are the project's own vocabulary - the chassis stores
+them, prints them, and never reads them. `kdx doctor` carries the same report as a `contracts`
+check at `warning` severity while anything drifted.
+
 ## `kdx init`
 
 ```bash
@@ -265,7 +296,7 @@ The seed ships `kdx.yml`, `.env.example`, `Makefile`, `README.md`, `AGENTS.md`,
 smoke tests. It passes `make check` on arrival.
 
 The chassis dependency is pinned to the repository by default
-(`korodexios-core @ git+https://github.com/korodexios/kdx-core.git@v0.2.10`), so a fresh
+(`korodexios-core @ git+https://github.com/korodexios/kdx-core.git@v0.3.0`), so a fresh
 venv can `pip install -e .` the seeded project before any index publish. Pass
 `--chassis-source index` once the package is on an index; an unknown choice is refused
 with a hint. A git pin needs network and uv at install time - `uv venv`,
@@ -311,6 +342,10 @@ The chassis primitives, and the keys that configure them:
 | Serve module static mounts | `core.ipc.static` | `KDX_CORE__IPC__STATIC` | `true` |
 | Refuse a boot on any discovery failure | `core.modules.strict_discovery` | `KDX_CORE__MODULES__STRICT_DISCOVERY` | `false` |
 | Plugin roots shipped as an installed distribution | `core.modules.foreign_roots` | `KDX_CORE__MODULES__FOREIGN_ROOTS` | `[]` |
+| State the project's own name | `core.project.name` | `KDX_CORE__PROJECT__NAME` | `core.name`, then the home directory name |
+| State the project's own version | `core.project.version` | `KDX_CORE__PROJECT__VERSION` | installed version of `core.distribution`, then the chassis version |
+| Point at the verified file set | `core.project.contract_dir` | `KDX_CORE__PROJECT__CONTRACT_DIR` | `contracts` under the home |
+| Declare *no opinion* tokens | `core.config.sentinels` | `KDX_CORE__CONFIG__SENTINELS` | `[]` |
 
 Named locks live in `&lt;state_dir&gt;/locks/&lt;name&gt;.lock`: `kdx doctor` lists them, and shutdown
 releases every name the chassis took. Files that must outlive a moved `var/` belong under
@@ -361,7 +396,7 @@ local clients need no change; remote clients pass `--target`.
 | `0` | success, or an operator-requested stop |
 | `1` | handled failure (chassis or CLI error with a hint) |
 | `2` | usage error (argparse) |
-| `3` | configuration error (an unknown key from `kdx config check`, or a refused boot when `core.modules.strict_discovery` is on) |
+| `3` | configuration error (an unknown key from `kdx config check`, a refused boot when `core.modules.strict_discovery` is on, or a drifted or missing file from `kdx contracts check`) |
 | `4`-`125` | a command handler's own verdict code, passed through unchanged |
 | `130` | SIGINT; Windows `SIGBREAK` joins the same gate |
 | `143` | SIGTERM |

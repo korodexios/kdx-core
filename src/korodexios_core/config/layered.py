@@ -49,6 +49,9 @@ class ConfigSource(IntEnum):
     ENV = 3
     CLI = 4
 
+    #: Not a layer: the marker for a value that fell through a declared sentinel.
+    INHERIT = 5
+
     def label(self) -> str:
         """Return the human label used by 'kdx config show'."""
         return _SOURCE_LABELS[self]
@@ -60,6 +63,7 @@ _SOURCE_LABELS: dict[ConfigSource, str] = {
     ConfigSource.LOCAL: "local override file",
     ConfigSource.ENV: "environment",
     ConfigSource.CLI: "CLI argument",
+    ConfigSource.INHERIT: "inherit sentinel",
 }
 
 
@@ -276,6 +280,8 @@ class LayeredConfig:
         self._env_origins = {
             str(key): str(value) for key, value in (env_origins or {}).items()
         }
+        self._key_sentinels: dict[str, Any] = {}
+        self._sentinel_cache: tuple[str, ...] | None = None
 
     @classmethod
     def load(
@@ -404,13 +410,92 @@ class LayeredConfig:
         dotted = KEY_SEPARATOR.join(part for part in str(key).split(KEY_SEPARATOR) if part)
         if not dotted:
             return False, None
+        sentinel: ConfigEntry | None = None
         for layer in reversed(self._layers):
-            if dotted in layer.values:
-                origin = layer.origin
-                if layer.source is ConfigSource.ENV:
-                    origin = self._env_origins.get(dotted, layer.origin)
-                return True, ConfigEntry(dotted, layer.values[dotted], layer.source, origin)
+            if dotted not in layer.values:
+                continue
+            value = layer.values[dotted]
+            origin = layer.origin
+            if layer.source is ConfigSource.ENV:
+                origin = self._env_origins.get(dotted, layer.origin)
+            if sentinel is None and self._sentinel_match(dotted, value) is not None:
+                sentinel = ConfigEntry(dotted, value, layer.source, origin)
+                continue
+            if sentinel is None:
+                return True, ConfigEntry(dotted, value, layer.source, origin)
+            return True, self._inherited(dotted, value, origin, sentinel)
+        if sentinel is not None:
+            return True, ConfigEntry(
+                dotted, None, ConfigSource.INHERIT,
+                f"{ConfigSource.INHERIT.label()} {sentinel.value!r} from {sentinel.origin}",
+            )
         return False, None
+
+    @staticmethod
+    def _inherited(
+        dotted: str, value: Any, origin: str, sentinel: ConfigEntry
+    ) -> ConfigEntry:
+        """Return the entry a sentinel defers to, naming both layers in the origin."""
+        return ConfigEntry(
+            dotted, value, ConfigSource.INHERIT,
+            f"{ConfigSource.INHERIT.label()} {sentinel.value!r} from "
+            f"{sentinel.origin} falls through to {origin}",
+        )
+
+    def _sentinel_match(self, key: str, value: Any) -> str | None:
+        """Return the token that *value* answers to, when it is a declared sentinel."""
+        if not isinstance(value, str):
+            return None
+        stripped = value.strip()
+        if not stripped:
+            return None
+        return stripped if stripped in self.sentinel_tokens(key) else None
+
+    def sentinel_tokens(self, key: str | None = None) -> tuple[str, ...]:
+        """Return the sentinel tokens in force, project-wide and for *key*.
+
+        A sentinel is a value one layer writes to say it has no opinion: the chassis
+        skips that layer and answers with the layer below, and source_of reports
+        'inherit sentinel' instead of the layer that carried the token. A project
+        declares its own words for it in core.config.sentinels - the chassis owns no
+        token of its own - and a module narrows it per key with the sentinel field of
+        its own schema.
+        """
+        declared = list(self._global_sentinels())
+        if key is not None:
+            token = self._key_sentinels.get(str(key))
+            if isinstance(token, str) and token.strip() and token.strip() not in declared:
+                declared.append(token.strip())
+        return tuple(declared)
+
+    def declare_sentinels(self, sentinels: Mapping[str, Any]) -> None:
+        """Record per-key sentinel tokens, as a module schema declares them."""
+        for key, token in dict(sentinels).items():
+            if isinstance(token, str) and token.strip():
+                self._key_sentinels[str(key)] = token.strip()
+
+    def key_sentinels(self) -> dict[str, str]:
+        """Return the per-key sentinel tokens recorded so far."""
+        return dict(self._key_sentinels)
+
+    def _global_sentinels(self) -> tuple[str, ...]:
+        cached = self._sentinel_cache
+        if cached is None:
+            values: Any = None
+            for layer in reversed(self._layers):
+                if "core.config.sentinels" in layer.values:
+                    values = layer.values['core.config.sentinels']
+                    break
+            items: list[Any] = []
+            if isinstance(values, str):
+                items = list(split_list_value(values))
+            elif isinstance(values, (list, tuple, set, frozenset)):
+                items = list(values)
+            cached = tuple(
+                sorted({str(item).strip() for item in items if str(item).strip()})
+            )
+            self._sentinel_cache = cached
+        return cached
 
     def resolve(self, key: str) -> ConfigEntry:
         """Resolve *key* to an entry, raising when no layer supplies it."""
