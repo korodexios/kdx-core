@@ -1,0 +1,21 @@
+windows detail exit 1 for 719c1c7170321a13829779cc6c2b7a96cd549db1
+
+.F                                                                       [100%]
+================================== FAILURES ===================================
+____________________ test_the_payload_names_the_live_owner ____________________
+
+tmp_path = WindowsPath('C:/Users/runneradmin/AppData/Local/Temp/pytest-of-runneradmin/pytest-0/test_the_payload_names_the_liv0')
+
+    def test_the_payload_names_the_live_owner(tmp_path: Path) -> None:
+        registry = make_registry(tmp_path)
+        import os
+    
+        handle = registry.acquire("index", metadata={"label": "reindex"})
+        holder = handle.holder()
+>       assert holder is not None
+E       assert None is not None
+
+tests\test_named_locks.py:126: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_named_locks.py::test_the_payload_names_the_live_owner - assert None is not None
+1 failed, 1 passed in 0.52s
