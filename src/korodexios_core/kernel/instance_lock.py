@@ -375,11 +375,18 @@ class InstanceLock:
             "port": self._metadata.get("port", 0),
         }
         text = json.dumps(payload, sort_keys=True) + "\n"
+        data = text.encode(ENCODING)
         try:
             os.ftruncate(descriptor, 0)
             os.lseek(descriptor, 0, os.SEEK_SET)
-            with os.fdopen(os.dup(descriptor), "w", encoding=ENCODING) as handle:
-                handle.write(text)
+            # Write the bytes straight to the already-open descriptor. Re-opening a
+            # duplicate in text mode (the old way) takes a second handle on the file,
+            # which Windows refuses while the byte-range lock is held, so the payload
+            # was silently lost and holder() read an empty file.
+            view = memoryview(data)
+            while view:
+                written = os.write(descriptor, view)
+                view = view[written:]
         except OSError as exc:
             if self._logger is not None:
                 self._logger.warning(
