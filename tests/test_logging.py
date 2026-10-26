@@ -57,14 +57,16 @@ def test_nested_structures_stay_structures() -> None:
 
 def test_values_json_cannot_hold_are_shortened_to_text() -> None:
     """A path or an exception is data too, but JSON has no native form for them."""
+    dest = Path("/var/lib/backups/2026-10-26")
     fields = payload(
         {
-            "dest": Path("/var/lib/backups/2026-10-26"),
+            "dest": dest,
             "error": RuntimeError("disk full"),
             "note": None,
         }
     )["fields"]
-    assert fields["dest"] == "/var/lib/backups/2026-10-26"
+    # A Path is serialised to its host string form; the separator is platform detail.
+    assert fields["dest"] == str(dest)
     assert "disk full" in str(fields["error"]), fields["error"]
     assert fields["note"] is None
 
@@ -80,6 +82,8 @@ def test_the_envelope_is_unchanged() -> None:
 
 def test_the_human_formatter_still_shortens_fields() -> None:
     """One formatter keeps types, the other keeps lines readable; neither grows."""
-    text = TextFormatter(color=False).format(record({"copied": 12, "dest": Path("/tmp/x")}))
+    dest = Path("/tmp/x")
+    text = TextFormatter(color=False).format(record({"copied": 12, "dest": dest}))
     assert "copied" in text and "12" in text
-    assert "/tmp/x" in text
+    # A Path is rendered to its host string form; the separator is platform detail.
+    assert str(dest) in text

@@ -126,6 +126,10 @@ def _pid_alive_windows(pid: int) -> bool:  # pragma: no cover - Windows only
     if windll is None:  # pragma: no cover - defensive; the win32 branch is never here
         return False
     kernel32 = windll.kernel32
+    # A process handle is 64-bit; without an explicit restype ctypes truncates it to a
+    # 32-bit int and a live process's handle can read back as zero, marking it dead.
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
     handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not handle:
         return False

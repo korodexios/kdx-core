@@ -64,6 +64,7 @@ def test_memory_snapshot_reports_total_bytes() -> None:
         assert memory["total"] != "-"
 
 
+@pytest.mark.posix
 def test_sysconf_helpers_fall_back_without_posix(monkeypatch: pytest.MonkeyPatch) -> None:
     assert sysconf_value("SC_PAGE_SIZE") is not None
     assert page_size() == sysconf_value("SC_PAGE_SIZE")
@@ -72,6 +73,7 @@ def test_sysconf_helpers_fall_back_without_posix(monkeypatch: pytest.MonkeyPatch
     assert page_size() == DEFAULT_PAGE_SIZE
 
 
+@pytest.mark.posix
 def test_memory_snapshot_without_meminfo_uses_sysconf(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(collector, "_meminfo_values", lambda: {})
     memory = memory_snapshot()

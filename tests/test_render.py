@@ -9,8 +9,13 @@ from korodexios_core.constants import TAG_ALIASES, TAG_OK, tags_for
 
 
 def latin_stream() -> io.TextIOWrapper:
-    """Return an in-memory stream that behaves like a legacy Windows console."""
-    return io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+    """Return an in-memory stream that behaves like a legacy Windows console.
+
+    newline is set to an empty string so the wrapper does not translate newlines
+    to the platform line ending, keeping the byte-exact assertion below stable
+    on every host.
+    """
+    return io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict", newline="")
 
 
 def test_tags_for_only_aliases_when_needed() -> None:

@@ -41,6 +41,7 @@ def test_platforms_without_sigbreak_keep_their_own_numbers() -> None:
     assert _canonical_signal(int(signal.SIGTERM)) == int(signal.SIGTERM)
 
 
+@pytest.mark.posix
 def test_sigbreak_is_canonical_to_sigint(monkeypatch: pytest.MonkeyPatch) -> None:
     """The gate shares one exit rule, so Ctrl+Break behaves like Ctrl+C."""
     monkeypatch.setattr(signals_module, "_SIGBREAK_NUMBER", int(signal.SIGUSR1))
@@ -49,6 +50,7 @@ def test_sigbreak_is_canonical_to_sigint(monkeypatch: pytest.MonkeyPatch) -> Non
     assert _canonical_signal(int(signal.SIGTERM)) == int(signal.SIGTERM)
 
 
+@pytest.mark.posix
 def test_the_coordinator_records_the_gate_number(monkeypatch: pytest.MonkeyPatch) -> None:
     """A recorded SIGBREAK leaves the SIGINT number, so 128 plus signum stays 130."""
     monkeypatch.setattr(signals_module, "_SIGBREAK_NUMBER", int(signal.SIGUSR1))

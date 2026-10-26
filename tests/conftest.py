@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,22 @@ import pytest
 from korodexios_core.config.layered import LayeredConfig
 from korodexios_core.kernel.cli_contract import CliCommand
 from korodexios_core.paths import AppPaths
+
+_IS_POSIX = os.name != "nt"
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Skip the ``posix``-marked tests on non-POSIX hosts.
+
+    The marker alone is inert; this hook is what actually keeps POSIX-only
+    behaviour (mode bits, ``os.replace`` over a live file, ``SIGUSR1``, ``/proc``)
+    from running on Windows, where it would fail for reasons unrelated to the
+    code under test.
+    """
+    skip_posix = pytest.mark.skip(reason="POSIX-only behaviour")
+    for item in items:
+        if "posix" in item.keywords and not _IS_POSIX:
+            item.add_marker(skip_posix)
 
 PROJECT_CONFIG = """
 core:

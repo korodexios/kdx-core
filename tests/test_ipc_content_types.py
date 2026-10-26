@@ -89,7 +89,9 @@ def write_ui(root: Path) -> Path:
     (root / "app.css").write_text("body { margin: 0 }", encoding="utf-8")
     (root / "app.js").write_text("console.log('kdx')", encoding="utf-8")
     (root / "deep").mkdir(exist_ok=True)
-    (root / "deep" / "report.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    # write_bytes keeps the CSV byte-exact: write_text would translate the
+    # trailing newlines to CRLF on Windows and the served-bytes assertion would drift.
+    (root / "deep" / "report.csv").write_bytes(b"a,b\n1,2\n")
     (root / "pixel.png").write_bytes(bytes.fromhex("89504e470d0a1a0a"))
     return root
 

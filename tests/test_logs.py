@@ -80,6 +80,7 @@ def test_rotate_log_archives_prunes_and_keeps_size_backups(tmp_path: Path) -> No
         rotate_log(tmp_path / "absent.log")
 
 
+@pytest.mark.posix
 def test_reopening_handler_notices_an_external_rotation(tmp_path: Path) -> None:
     target = tmp_path / "kdx.log"
     handler = ReopeningRotatingFileHandler(
@@ -169,6 +170,7 @@ def test_logs_clear_truncates_with_assent(capsys, tmp_path: Path) -> None:
     assert len(tail_lines(log_path, 500)) <= 3
 
 
+@pytest.mark.posix
 def test_logs_rotate_archives_the_file(capsys, tmp_path: Path) -> None:
     assert main([*base_args(tmp_path), "run", "--once"]) == int(ExitCode.SUCCESS)
     log_path = tmp_path / "var" / "log" / "kdx.log"
