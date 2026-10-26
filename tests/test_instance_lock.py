@@ -61,6 +61,7 @@ def test_holder_shape_and_liveness() -> None:
     assert LockHolder(pid=0).uptime() == 0.0
 
 
+@pytest.mark.posix
 def test_acquire_release_cycle(tmp_path: Path) -> None:
     path = tmp_path / "chassis.lock"
     lock = InstanceLock(path, metadata={"label": "kdx", "port": 8123})
@@ -86,6 +87,7 @@ def test_acquire_release_cycle(tmp_path: Path) -> None:
     lock.release()
 
 
+@pytest.mark.posix
 def test_second_holder_is_rejected_by_name(tmp_path: Path) -> None:
     path = tmp_path / "chassis.lock"
     first = InstanceLock(path, metadata={"label": "first"})
@@ -100,6 +102,7 @@ def test_second_holder_is_rejected_by_name(tmp_path: Path) -> None:
     first.release()
 
 
+@pytest.mark.posix
 def test_stale_metadata_is_detected(tmp_path: Path) -> None:
     path = tmp_path / "chassis.lock"
     path.write_text(
@@ -116,6 +119,7 @@ def test_stale_metadata_is_detected(tmp_path: Path) -> None:
     lock.release()
 
 
+@pytest.mark.posix
 def test_dead_pid_stale_lock_is_taken_over_cleanly(tmp_path: Path) -> None:
     """A lock left behind by a killed daemon is adopted, not treated as a failure.
 
@@ -160,6 +164,7 @@ def test_context_manager_releases_the_lock(tmp_path: Path) -> None:
     assert path.exists()
 
 
+@pytest.mark.posix
 def test_lock_survives_a_second_process(tmp_path: Path) -> None:
     """A real second process cannot take the lock while the first holds it."""
     script = (
@@ -192,6 +197,7 @@ def test_lock_survives_a_second_process(tmp_path: Path) -> None:
     assert free.stdout.strip() == "acquired"
 
 
+@pytest.mark.posix
 def test_lock_creates_its_directory(tmp_path: Path) -> None:
     path = tmp_path / "nested" / "state" / "chassis.lock"
     with InstanceLock(path) as lock:

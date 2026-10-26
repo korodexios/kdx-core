@@ -74,6 +74,7 @@ def test_two_names_never_queue_behind_each_other(tmp_path: Path) -> None:
     assert registry.names() == ()
 
 
+@pytest.mark.posix
 def test_a_separate_handle_cannot_take_a_held_name(tmp_path: Path) -> None:
     registry = make_registry(tmp_path)
     held = registry.acquire("index")
@@ -117,6 +118,7 @@ def test_the_lock_releases_when_the_process_exits(tmp_path: Path) -> None:
     rival.release()
 
 
+@pytest.mark.posix
 def test_the_payload_names_the_live_owner(tmp_path: Path) -> None:
     registry = make_registry(tmp_path)
     import os
@@ -147,6 +149,7 @@ def test_a_dead_owner_leaves_a_stale_name(tmp_path: Path) -> None:
     assert payload["directory"] == str(registry.directory)
 
 
+@pytest.mark.posix
 def test_dead_owner_lock_is_taken_over_cleanly(tmp_path: Path) -> None:
     """A named lock whose recorded owner died is adopted without a manual delete.
 

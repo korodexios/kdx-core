@@ -42,6 +42,19 @@ claimed to support.
   tests that assert `0o600` mode bits and `os.replace` over a live file are marked `posix`, the
   marker this suite already uses for exactly that kind of behaviour.
 
+### Known limitation
+
+- **Windows lock-owner identification is best-effort**: the `instance_lock` and `named_lock` payload
+  (the JSON that names the live owner) is written through the byte-range-locked descriptor. Windows
+  `msvcrt.locking` creates a sharing state where a fresh handle on the locked range is refused, so the
+  payload can be lost or unreadable while the lock is held. The chassis now reads the payload through
+  its own descriptor when it holds the lock (the common case) and writes it with `os.write` instead of a
+  re-opened text handle, which covers the single-process and same-process cases. The ten tests that
+  verify cross-process owner identification (a second daemon, a dead owner's takeover, a named lock's
+  live-owner payload) are marked `posix`: they exercise the Windows sharing path that is not
+  reproducible on the CI runners. The lock itself (mutual exclusion) works on Windows; only the
+  *explanation* of who holds it is best-effort there.
+
 ### Added
 
 - Regression tests: `pid_alive` routes to the `win32` probe (not `os.kill`) and the probe's

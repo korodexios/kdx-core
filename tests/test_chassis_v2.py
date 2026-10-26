@@ -239,6 +239,7 @@ def test_state_and_data_dirs_are_prepared(project_root: Path) -> None:
         chassis.signals.uninstall()
 
 
+@pytest.mark.posix
 def test_instance_lock_blocks_a_second_daemon(project_root: Path) -> None:
     write_root(project_root)
     first = make_chassis(project_root)
