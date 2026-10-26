@@ -1,0 +1,101 @@
+windows pytest exit 1 for b3b4dc1ae959eea9c39bbc7825961b5a1a28c28e
+
+....................s...s.........................................F..... [ 13%]
+........................................................................ [ 26%]
+........................................................................ [ 39%]
+......FFFF..FF........................ss................................ [ 53%]
+............................s......s.......F...F.F...................... [ 66%]
+........................................................................ [ 79%]
+.........................ss....ss..........s..s......................... [ 92%]
+......................................                                   [100%]
+================================== FAILURES ===================================
+__________________ test_instance_lock_blocks_a_second_daemon __________________
+tests\test_chassis_v2.py:252: in test_instance_lock_blocks_a_second_daemon
+    assert "chassis.lock" not in captured.value.message
+E   AssertionError: assert 'chassis.lock' not in 'the instanc...not identify'
+E     
+E     'chassis.lock' is contained here:
+E     ?           ^
+E       a_se0\var\chassis.lock is held by a process this chassis cannot identify
+E     ?           ^^^^^  ++++++++
+---------------------------- Captured stderr call -----------------------------
+2026-10-26 17:57:57.348 [INFO   ] kdx.chassis.discovery: module auto-discovery disabled\n2026-10-26 17:57:57.348 [INFO   ] kdx.chassis: [\u2713] chassis prepared  modules=0 ready=0 failed=0 config_file=C:\\Users\\runneradmin\\AppData\\Local\\Temp\\pytest-of-runneradmin\\pytest-0\\test_instance_lock_blocks_a_se0\\kdx.yml\n2026-10-26 17:57:57.348 [INFO   ] kdx.chassis: [i] modules skipped: * (core.modules.autodiscover is false)\n2026-10-26 17:57:57.351 [INFO   ] kdx.chassis.discovery: module auto-discovery disabled\n2026-10-26 17:57:57.351 [INFO   ] kdx.chassis: [\u2713] chassis prepared  modules=0 ready=0 failed=0 config_file=C:\\Users\\runneradmin\\AppData\\Local\\Temp\\pytest-of-runneradmin\\pytest-0\\test_instance_lock_blocks_a_se0\\kdx.yml\n2026-10-26 17:57:57.351 [INFO   ] kdx.chassis: [i] modules skipped: * (core.modules.autodiscover is false)
+_________________________ test_acquire_release_cycle __________________________
+tests\test_instance_lock.py:72: in test_acquire_release_cycle
+    assert holder is not None and holder.pid == os.getpid()
+E   assert (None is not None)
+___________________ test_second_holder_is_rejected_by_name ____________________
+tests\test_instance_lock.py:98: in test_second_holder_is_rejected_by_name
+    assert "first" in message
+E   AssertionError: assert 'first' in 'the instance lock at C:\\Users\\runneradmin\\AppData\\Local\\Temp\\pytest-of-runneradmin\\pytest-0\\test_second_holder_is_rejected0\\chassis.lock is held by a process this chassis cannot identify'
+_______________________ test_stale_metadata_is_detected _______________________
+tests\test_instance_lock.py:115: in test_stale_metadata_is_detected
+    assert lock.holder() is not None and lock.holder().pid == os.getpid()
+E   AssertionError: assert (None is not None)
+E    +  where None = holder()
+E    +    where holder = InstanceLock(path='C:\\Users\\runneradmin\\AppData\\Local\\Temp\\pytest-of-runneradmin\\pytest-0\\test_stale_metadata_is_detecte0\\chassis.lock', held=True).holder
+_______________ test_dead_pid_stale_lock_is_taken_over_cleanly ________________
+tests\test_instance_lock.py:136: in test_dead_pid_stale_lock_is_taken_over_cleanly
+    assert holder is not None and holder.pid == os.getpid()
+E   assert (None is not None)
+_____________________ test_lock_survives_a_second_process _____________________
+tests\test_instance_lock.py:183: in test_lock_survives_a_second_process
+    assert "first" in blocked.stderr
+E   assert 'first' in 'Traceback (most recent call last):\n  File "D:\\a\\kdx-core\\kdx-core\\src\\korodexios_core\\kernel\\instance_lock.py...nneradmin\\pytest-0\\test_lock_survives_a_second_pr0\\chassis.lock is held by a process this chassis cannot identify\n'
+E    +  where 'Traceback (most recent call last):\n  File "D:\\a\\kdx-core\\kdx-core\\src\\korodexios_core\\kernel\\instance_lock.py...nneradmin\\pytest-0\\test_lock_survives_a_second_pr0\\chassis.lock is held by a process this chassis cannot identify\n' = CompletedProcess(args=['D:\\a\\kdx-core\\kdx-core\\.venv\\Scripts\\python.exe', '-c', "import sys;from korodexios_core...neradmin\\pytest-0\\test_lock_survives_a_second_pr0\\chassis.lock is held by a process this chassis cannot identify\n').stderr
+_______________________ test_lock_creates_its_directory _______________________
+tests\test_instance_lock.py:199: in test_lock_creates_its_directory
+    assert lock.holder() is not None
+E   AssertionError: assert None is not None
+E    +  where None = holder()
+E    +    where holder = InstanceLock(path='C:\\Users\\runneradmin\\AppData\\Local\\Temp\\pytest-of-runneradmin\\pytest-0\\test_lock_creates_its_director0\\nested\\state\\chassis.lock', held=True).holder
+_______________ test_a_separate_handle_cannot_take_a_held_name ________________
+tests\test_named_locks.py:84: in test_a_separate_handle_cannot_take_a_held_name
+    assert "held by" in captured.value.message
+E   assert 'held by' in "named lock 'index' is busy"
+E    +  where "named lock 'index' is busy" = LockTimeoutError("named lock 'index' is busy").message
+E    +    where LockTimeoutError("named lock 'index' is busy") = <ExceptionInfo LockTimeoutError("named lock 'index' is busy") tblen=2>.value
+____________________ test_the_payload_names_the_live_owner ____________________
+tests\test_named_locks.py:126: in test_the_payload_names_the_live_owner
+    assert holder is not None
+E   assert None is not None
+_________________ test_dead_owner_lock_is_taken_over_cleanly __________________
+tests\test_named_locks.py:171: in test_dead_owner_lock_is_taken_over_cleanly
+    assert holder is not None and holder.pid == os.getpid()
+E   assert (None is not None)
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_backup_engine.py:245: POSIX directory permissions are not enforced on Windows
+SKIPPED [1] tests\test_backup_engine.py:300: creating directory symlinks needs privileges on Windows
+SKIPPED [1] tests\test_ipc.py:592: POSIX-only behaviour
+SKIPPED [1] tests\test_ipc.py:635: POSIX-only behaviour
+SKIPPED [1] tests\test_logs.py:83: POSIX-only behaviour
+SKIPPED [1] tests\test_logs.py:173: POSIX-only behaviour
+SKIPPED [1] tests\test_signals.py:44: POSIX-only behaviour
+SKIPPED [1] tests\test_signals.py:53: POSIX-only behaviour
+SKIPPED [1] tests\test_system_info.py:67: POSIX-only behaviour
+SKIPPED [1] tests\test_system_info.py:76: POSIX-only behaviour
+SKIPPED [1] tests\test_system_info.py:210: this platform has no load average to watch
+SKIPPED [1] tests\test_system_info.py:277: this platform has no load average to watch
+FAILED tests/test_chassis_v2.py::test_instance_lock_blocks_a_second_daemon - AssertionError: assert 'chassis.lock' not in 'the instanc...not identify'
+  
+  'chassis.lock' is contained here:
+  ?           ^
+    a_se0\var\chassis.lock is held by a process this chassis cannot identify
+  ?           ^^^^^  ++++++++
+FAILED tests/test_instance_lock.py::test_acquire_release_cycle - assert (None is not None)
+FAILED tests/test_instance_lock.py::test_second_holder_is_rejected_by_name - AssertionError: assert 'first' in 'the instance lock at C:\\Users\\runneradmin\\AppData\\Local\\Temp\\pytest-of-runneradmin\\pytest-0\\test_second_holder_is_rejected0\\chassis.lock is held by a process this chassis cannot identify'
+FAILED tests/test_instance_lock.py::test_stale_metadata_is_detected - AssertionError: assert (None is not None)
+ +  where None = holder()
+ +    where holder = InstanceLock(path='C:\\Users\\runneradmin\\AppData\\Local\\Temp\\pytest-of-runneradmin\\pytest-0\\test_stale_metadata_is_detecte0\\chassis.lock', held=True).holder
+FAILED tests/test_instance_lock.py::test_dead_pid_stale_lock_is_taken_over_cleanly - assert (None is not None)
+FAILED tests/test_instance_lock.py::test_lock_survives_a_second_process - assert 'first' in 'Traceback (most recent call last):\n  File "D:\\a\\kdx-core\\kdx-core\\src\\korodexios_core\\kernel\\instance_lock.py...nneradmin\\pytest-0\\test_lock_survives_a_second_pr0\\chassis.lock is held by a process this chassis cannot identify\n'
+ +  where 'Traceback (most recent call last):\n  File "D:\\a\\kdx-core\\kdx-core\\src\\korodexios_core\\kernel\\instance_lock.py...nneradmin\\pytest-0\\test_lock_survives_a_second_pr0\\chassis.lock is held by a process this chassis cannot identify\n' = CompletedProcess(args=['D:\\a\\kdx-core\\kdx-core\\.venv\\Scripts\\python.exe', '-c', "import sys;from korodexios_core...neradmin\\pytest-0\\test_lock_survives_a_second_pr0\\chassis.lock is held by a process this chassis cannot identify\n').stderr
+FAILED tests/test_instance_lock.py::test_lock_creates_its_directory - AssertionError: assert None is not None
+ +  where None = holder()
+ +    where holder = InstanceLock(path='C:\\Users\\runneradmin\\AppData\\Local\\Temp\\pytest-of-runneradmin\\pytest-0\\test_lock_creates_its_director0\\nested\\state\\chassis.lock', held=True).holder
+FAILED tests/test_named_locks.py::test_a_separate_handle_cannot_take_a_held_name - assert 'held by' in "named lock 'index' is busy"
+ +  where "named lock 'index' is busy" = LockTimeoutError("named lock 'index' is busy").message
+ +    where LockTimeoutError("named lock 'index' is busy") = <ExceptionInfo LockTimeoutError("named lock 'index' is busy") tblen=2>.value
+FAILED tests/test_named_locks.py::test_the_payload_names_the_live_owner - assert None is not None
+FAILED tests/test_named_locks.py::test_dead_owner_lock_is_taken_over_cleanly - assert (None is not None)
+10 failed, 520 passed, 12 skipped in 43.47s
