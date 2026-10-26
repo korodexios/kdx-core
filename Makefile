@@ -35,7 +35,7 @@ test:
 
 # The floor is a ratchet: it is set one point under the measured total, so a
 # removed test or a new untested branch fails the bar instead of sliding by.
-# Measured 89.6% (540 tests) on the Core API v2 surface at the v0.3.0 tag.
+# Measured 88.4% (542 tests) on the Core API v2 surface at the v0.3.1 tag.
 COVERAGE_FLOOR ?= 88
 
 coverage:

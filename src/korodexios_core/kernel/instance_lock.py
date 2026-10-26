@@ -22,6 +22,15 @@ from typing import Any
 from ..constants import ENCODING, INSTANCE_LOCK_NAME
 from ..exceptions import InstanceLockError
 
+
+# mypy folds a direct ``sys.platform == "win32"`` comparison per host, which makes the
+# other platform's branch "unreachable" and trips --strict on whichever side runs. Reading
+# the value through this module-level indirection keeps both branches live to mypy on every
+# platform while the runtime behaviour is identical.
+def _current_platform() -> str:
+    """Return the current ``sys.platform`` marker without folding at check time."""
+    return sys.platform
+
 __all__ = [
     "INSTANCE_LOCK_NAME",
     "InstanceLock",
@@ -83,9 +92,18 @@ def unlock_descriptor(descriptor: int) -> None:
 
 
 def pid_alive(pid: int) -> bool:
-    """Return True when *pid* still names a live process."""
+    """Return True when *pid* still names a live process.
+
+    POSIX can ask the kernel directly with ``kill(pid, 0)``. Windows cannot: its
+    ``os.kill`` routes through ``TerminateProcess`` and answers nothing useful for
+    a probe, so a dead high PID would read as live and a stale lock would never be
+    detected. There the answer comes from ``OpenProcess`` instead - the same
+    primitive ``tasklist`` uses - which is stdlib ``ctypes``, no extra package.
+    """
     if pid <= 0:
         return False
+    if _current_platform() == "win32":  # pragma: no cover - Windows only
+        return _pid_alive_windows(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -95,6 +113,26 @@ def pid_alive(pid: int) -> bool:
     except OSError:
         return True
     return True
+
+
+def _pid_alive_windows(pid: int) -> bool:  # pragma: no cover - Windows only
+    """Return True when *pid* names a live process, via ``OpenProcess``."""
+    import ctypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    # windll only exists on Windows; getattr keeps mypy quiet on every platform
+    # without a platform-conditional type ignore (which would be 'unused' on win32).
+    windll = getattr(ctypes, "windll", None)
+    if windll is None:  # pragma: no cover - defensive; the win32 branch is never here
+        return False
+    kernel32 = windll.kernel32
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return False
+    try:
+        return True
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 @dataclass(frozen=True, slots=True)

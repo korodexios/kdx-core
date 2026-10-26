@@ -21,6 +21,31 @@ def test_pid_alive_accepts_self_and_rejects_garbage() -> None:
     assert pid_alive(999_999_999) is False
 
 
+def test_pid_alive_routes_to_the_windows_probe_on_win32(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On win32 pid_alive must not trust os.kill, which cannot see a dead PID.
+
+    Regression: a dead high PID used to read as live on Windows because os.kill
+    raised a bare OSError that the POSIX handler answered 'True' to. The fix
+    routes win32 to the OpenProcess probe, so this test proves the dispatch and
+    that the probe's answer (dead -> False) is what flows out.
+    """
+    import korodexios_core.kernel.instance_lock as il
+
+    monkeypatch.setattr(il.sys, "platform", "win32")
+    seen: dict[str, object] = {}
+
+    def fake_probe(pid: int) -> bool:
+        seen["pid"] = pid
+        return False  # stand in for OpenProcess finding no such process
+
+    monkeypatch.setattr(il, "_pid_alive_windows", fake_probe)
+    assert pid_alive(4242) is False
+    assert seen == {"pid": 4242}, "the win32 branch must answer, not os.kill"
+    # non-positive pids short-circuit before the platform probe
+    assert pid_alive(0) is False
+    assert pid_alive(-3) is False
+
+
 def test_holder_shape_and_liveness() -> None:
     holder = LockHolder(pid=os.getpid(), label="kdx", host="127.0.0.1", port=8123)
     assert holder.is_alive is True

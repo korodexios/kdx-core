@@ -186,6 +186,46 @@ def test_shutdown_post_asks_the_chassis_to_stop(tmp_path: Path) -> None:
         server.stop()
 
 
+def test_shutdown_is_requested_before_the_response_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """'accepted: true' is a contract: the shutdown is asked for before it is promised.
+
+    Regression for the macOS/Windows CI failure where a slow runner saw the 200
+    before the counter moved. The handler must call request_shutdown() and only
+    then commit the reply, so a client that has read 'accepted: true' can rely on
+    the shutdown having been requested.
+    """
+    order: list[str] = []
+    server, _ = make_server(tmp_path)
+    base = server.discovery.base_url()  # type: ignore[union-attr]
+    handler = ipc_module._ControlHandler
+
+    real_request_shutdown = server.request_shutdown
+    real_reply = handler._reply
+
+    def tracking_shutdown() -> None:
+        order.append("requested")
+        real_request_shutdown()
+
+    def tracking_reply(self: object, code: int, payload: dict[str, object]) -> None:
+        order.append(f"replied:{code}")
+        real_reply(self, code, payload)  # type: ignore[assignment]
+
+    monkeypatch.setattr(server, "request_shutdown", tracking_shutdown)
+    monkeypatch.setattr(handler, "_reply", tracking_reply)
+    try:
+        code, payload = http_call(base, SHUTDOWN_PATH, token=server.discovery_token, method="POST")
+        assert code == 200
+        assert payload["accepted"] is True  # type: ignore[index]
+    finally:
+        server.stop()
+    assert "requested" in order, "the shutdown was never asked for"
+    assert order.index("requested") < order.index("replied:200"), (
+        "the response committed before the shutdown was requested: " + str(order)
+    )
+
+
 def test_rpc_payload_over_the_limit_is_refused_with_413(tmp_path: Path) -> None:
     """A request body over 10 MiB is rejected before a single byte is buffered."""
     server, _ = make_server(tmp_path)
@@ -382,9 +422,11 @@ def ui_mount(tmp_path: Path) -> IpcStaticMount:
     """Return a mounted dashboard directory with one nested file."""
     ui = tmp_path / "ui"
     (ui / "sub").mkdir(parents=True)
-    (ui / "app.js").write_text("// app\n", encoding="utf-8")
-    (ui / "sub" / "app.js").write_text("// nested\n", encoding="utf-8")
-    (ui / "index.html").write_text("<html><body>ui</body></html>\n", encoding="utf-8")
+    # write_bytes keeps the served bytes exact: write_text would translate the
+    # trailing newline to CRLF on Windows and the response comparison would drift.
+    (ui / "app.js").write_bytes(b"// app\n")
+    (ui / "sub" / "app.js").write_bytes(b"// nested\n")
+    (ui / "index.html").write_bytes(b"<html><body>ui</body></html>\n")
     return IpcStaticMount(route_prefix="/ui", directory=ui, auth=False)
 
 
@@ -447,11 +489,19 @@ def test_linux_memory_probe_is_cached_at_import(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_process_memory_reports_a_bounded_error_free_reading() -> None:
-    """A status snapshot reads memory without touching the platform module."""
+    """A status snapshot reads memory without touching the platform module.
+
+    Windows answers neither /proc nor getrusage, so 'unavailable' is the honest
+    answer there and the byte assertions only bind where a source exists.
+    """
     memory = process_memory()
-    assert memory["source"] in {"proc/statm", "getrusage"}
-    assert isinstance(memory["rss_bytes"], int)
-    assert memory["rss"] != "-"
+    allowed = {"proc/statm", "getrusage"} if os.name != "nt" else {"unavailable"}
+    assert memory["source"] in allowed
+    if memory["source"] != "unavailable":
+        assert isinstance(memory["rss_bytes"], int)
+        assert memory["rss"] != "-"
+    else:
+        assert memory["rss_bytes"] is None
 
 
 def test_a_keep_alive_client_does_not_hang_on_the_control_plane(tmp_path: Path) -> None:
@@ -539,10 +589,15 @@ def request_health(port: int) -> bytes:
         return connection.recv(65536)
 
 
+@pytest.mark.posix
 def test_the_discovery_file_lands_in_one_filesystem_step(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The discovery file is renamed into place, so no reader ever opens a truncated one."""
+    """The discovery file is renamed into place, so no reader ever opens a truncated one.
+
+    POSIX-only: it asserts the published file keeps 0o600 mode bits, which Windows
+    file systems do not honour, and relies on os.replace over an existing file.
+    """
     server, _ = make_server(tmp_path)
     try:
         target = tmp_path / DISCOVERY_NAME
@@ -577,8 +632,13 @@ def test_the_discovery_file_lands_in_one_filesystem_step(
         server.stop()
 
 
+@pytest.mark.posix
 def test_no_reader_finds_the_discovery_file_half_written(tmp_path: Path) -> None:
-    """A polling reader never catches the discovery file empty while the chassis publishes."""
+    """A polling reader never catches the discovery file empty while the chassis publishes.
+
+    POSIX-only: it republishes the discovery file sixty times via os.replace over an
+    existing file, which Windows refuses with a sharing violation (WinError 5).
+    """
     server, _ = make_server(tmp_path)
     try:
         target = tmp_path / DISCOVERY_NAME

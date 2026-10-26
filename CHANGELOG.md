@@ -5,7 +5,48 @@ history lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## [Unreleased]
 
-_Nothing pending: the working tree is the `v0.2.10` tag._
+_Nothing pending: the working tree is the `v0.3.1` tag._
+
+## [0.3.1] - 2026-10-26
+
+A portability patch on the frozen `v2` line: the Windows and macOS CI legs that `v0.3.0`
+left red are green again, and the fixes are in the chassis, not the runners. Nothing in the
+frozen surface changed shape - no new package-root export, no changed signature, no renamed
+configuration key; the changes are additive behaviour on the platforms the chassis already
+claimed to support.
+
+### Fixed
+
+- **`pid_alive` is now honest on Windows**: POSIX asked the kernel with `kill(pid, 0)`, but
+  Windows `os.kill` routes through `TerminateProcess` and answers nothing useful for a
+  probe, so a dead high PID read as *live* and a stale instance lock was never detected
+  (six tests in `test_instance_lock` failed on every Windows leg since `v0.2.9`). On `win32`
+  the answer now comes from `OpenProcess` - the same primitive `tasklist` uses, via stdlib
+  `ctypes`, no new dependency - and `IpcDiscovery.is_process_alive` reuses the shared
+  `pid_alive` instead of carrying a second copy of the buggy `os.kill` logic, so a stale
+  discovery file no longer makes `kdx status` hang reaching a daemon that is gone.
+- **The control-plane shutdown is requested before it is promised**: the `POST /api/v1/shutdown`
+  handler committed its `200 {"accepted": true}` reply before calling `request_shutdown()`,
+  so a client that saw `accepted` could not rely on the shutdown having been asked for. On
+  a slow runner (the macOS arm64 legs) the response landed first and `calls["shutdown"]` was
+  still `0` when the test checked, failing `test_shutdown_post_asks_the_chassis_to_stop` and
+  `test_anonymous_shutdown_when_configured`. The handler now asks, then replies, so the
+  contract the payload advertises holds on every host.
+- **The backup engine and its tests stop assuming the host separator**: `plan.files` and the
+  size assertions compared `Path.relative_to` output, which carries `\` on Windows, against
+  forward-slash strings (and the fixtures wrote text that Windows translated to CRLF, drifting
+  the byte count by two). The assertions now compare in `.as_posix()` form and the fixtures
+  write bytes, so a backup plans and sizes the same on every platform.
+- **The IPC tests respect the platforms they run on**: `process_memory` on Windows answers
+  `unavailable` (no `/proc`, no `getrusage`), which the test now accepts; the discovery-file
+  tests that assert `0o600` mode bits and `os.replace` over a live file are marked `posix`, the
+  marker this suite already uses for exactly that kind of behaviour.
+
+### Added
+
+- Regression tests: `pid_alive` routes to the `win32` probe (not `os.kill`) and the probe's
+  answer flows out; the shutdown handler requests before it replies, so `accepted: true` is a
+  promise the runner cannot race past.
 
 ## [0.3.0] - 2026-10-26
 

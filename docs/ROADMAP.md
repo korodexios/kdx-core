@@ -129,6 +129,13 @@ directory ignores dot files, swap files, and names `lock_name()` refuses | **del
   `kdx contracts check` hashes and reports at exit `3` on drift, the chassis verifying and
   never rewriting a declared file | **delivered** |
 
+| 28 | `v0.3.1` the Windows and macOS CI legs come back green on the `v2` line: `pid_alive`
+  answers from `OpenProcess` on `win32` (a dead PID is dead, so a stale instance lock is
+  detected and a stale discovery file stops hanging `kdx status`); the control-plane shutdown
+  is requested before it is promised, so `accepted: true` holds on a slow runner; the backup
+  engine and its tests stop assuming the host path separator or CRLF translation; and the IPC
+  tests accept the platform answers they run on | **delivered** |
+
 ## Next
 
 1. **Publish to an index.** PyPI through trusted publishing. The git bootstrap is

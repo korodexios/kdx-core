@@ -33,6 +33,7 @@ from typing import Any, Final, cast
 from ..constants import IPC_SCHEMA_VERSION
 from ..units import page_size
 from ..version import CORE_API_VERSION
+from .instance_lock import pid_alive
 
 DISCOVERY_NAME = "chassis.ipc"
 TOKEN_HEADER = "X-Kdx-Token"
@@ -637,18 +638,14 @@ class IpcDiscovery:
         )
 
     def is_process_alive(self) -> bool:
-        """Return True when the recorded pid still exists."""
-        if self.pid <= 0:
-            return False
-        try:
-            os.kill(self.pid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        except OSError:
-            return True
-        return True
+        """Return True when the recorded pid still exists.
+
+        Delegates to the shared :func:`pid_alive` so the discovery file and the
+        instance lock answer the same question on every platform - on Windows a
+        bogus pid must read as dead, or a stale discovery file looks like a live
+        daemon and 'kdx status' hangs trying to reach it.
+        """
+        return pid_alive(self.pid)
 
     def request(
         self,
@@ -878,8 +875,12 @@ class _ControlHandler(BaseHTTPRequestHandler):
         if method != "POST":
             self._reply(405, {"error": "shutdown expects POST"})
             return
-        self._reply(200, {"accepted": True, "state": ipc.health()["state"]})
+        # Ask the chassis to stop before committing the response: 'accepted: true'
+        # is the contract that the shutdown was requested, so a client that sees it
+        # must be able to rely on it having happened. Replying first raced the call
+        # on slow runners, where the response landed before the counter moved.
         ipc.request_shutdown()
+        self._reply(200, {"accepted": True, "state": ipc.health()["state"]})
 
     def _serve_module_route(self, ipc: IpcServer, route: IpcRoute, method: str) -> None:
         """Answer one module-declared route, mapping the handler result to HTTP."""

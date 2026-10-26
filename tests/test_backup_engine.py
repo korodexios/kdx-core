@@ -45,11 +45,13 @@ class RecordingSurface:
 def source_tree(tmp_path: Path) -> Path:
     source = tmp_path / "source"
     (source / "nested").mkdir(parents=True)
-    (source / "alpha.txt").write_text("alpha\n", encoding="utf-8")
-    (source / "nested" / "beta.txt").write_text("beta contents\n", encoding="utf-8")
-    (source / "notes.log").write_text("noise\n", encoding="utf-8")
+    # write_bytes keeps the fixtures byte-exact: write_text would translate the
+    # trailing newline to os.linesep on Windows and the size assertions drift.
+    (source / "alpha.txt").write_bytes(b"alpha\n")
+    (source / "nested" / "beta.txt").write_bytes(b"beta contents\n")
+    (source / "notes.log").write_bytes(b"noise\n")
     (source / "__pycache__").mkdir()
-    (source / "__pycache__" / "cached.pyc").write_text("junk\n", encoding="utf-8")
+    (source / "__pycache__" / "cached.pyc").write_bytes(b"junk\n")
     return source
 
 
@@ -68,7 +70,7 @@ def settings_for(source: Path, dest: Path, **overrides: object) -> BackupSetting
 
 def test_build_plan_honours_excludes(source_tree: Path, tmp_path: Path) -> None:
     plan = build_plan(settings_for(source_tree, tmp_path / "dest"))
-    names = sorted(str(path.relative_to(source_tree)) for path in plan.files)
+    names = sorted(path.relative_to(source_tree).as_posix() for path in plan.files)
     assert names == ["alpha.txt", "nested/beta.txt"]
     assert plan.total_bytes == 6 + 14
     assert plan.target.parent == tmp_path / "dest"
@@ -289,7 +291,7 @@ def test_destination_inside_source_is_auto_excluded(tmp_path: Path) -> None:
         stamp="run-1",
     )
     assert plan.auto_excluded == ["backups"]
-    assert sorted(str(item.relative_to(source)) for item in plan.files) == ["src/a.txt"]
+    assert sorted(item.relative_to(source).as_posix() for item in plan.files) == ["src/a.txt"]
     assert plan.as_dict()["auto_excluded"] == ["backups"]
 
 
