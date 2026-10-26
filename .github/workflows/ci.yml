@@ -82,7 +82,26 @@ jobs:
 
       - name: Verify the chassis (make check)
         if: runner.os != 'Windows'
-        run: make check PYTHON="$PWD/.venv/bin/python"
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p build
+          set +e
+          make check PYTHON="$PWD/.venv/bin/python" > build/make-check-raw.txt 2>&1
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo "::error::[make check] $(grep -m 3 -E 'FAILED|ERROR|error:|AssertionError' build/make-check-raw.txt | tr -d '\r' | tr '\n' ' ')"
+          fi
+          head -150 build/make-check-raw.txt
+          git config --global --add safe.directory "$PWD" || true
+          git config user.name korodexios-ci
+          git config user.email ci@korodexios.dev
+          { printf 'make check exit %s for %s on %s\n\n' "$status" "$GITHUB_SHA" "${RUNNER_OS}"; cat build/make-check-raw.txt; } > build/make-check.txt
+          git add -f build/make-check.txt
+          git commit -qm "make check diagnostics for $GITHUB_SHA" || true
+          git push -f origin "HEAD:refs/heads/ci/make-check-diag" || echo "::warning::[make check] diagnostics push failed"
+          exit "$status"
 
       # Windows is the one platform nobody here can reproduce locally, so each
       # check is its own step: the step name identifies the failing command even
@@ -127,8 +146,24 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          set -euo pipefail
-          uv run pytest -q --tb=short
+          set -uo pipefail
+          mkdir -p build
+          set +e
+          uv run pytest -q --tb=short > build/win-pytest-raw.txt 2>&1
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo "::error::[win pytest] $(grep -m 5 -E 'FAILED|ERROR' build/win-pytest-raw.txt | tr -d '\r' | tr '\n' ' ')"
+          fi
+          head -150 build/win-pytest-raw.txt
+          git config --global --add safe.directory "$PWD" || true
+          git config user.name korodexios-ci
+          git config user.email ci@korodexios.dev
+          { printf 'windows pytest exit %s for %s\n\n' "$status" "$GITHUB_SHA"; cat build/win-pytest-raw.txt; } > build/windows-pytest.txt
+          git add -f build/windows-pytest.txt
+          git commit -qm "windows pytest diagnostics for $GITHUB_SHA" || true
+          git push -f origin "HEAD:refs/heads/ci/windows-pytest" || echo "::warning::[win pytest] diagnostics push failed"
+          exit "$status"
 
       - name: Boot the chassis
         shell: bash
