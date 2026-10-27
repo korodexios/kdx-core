@@ -16,7 +16,7 @@ make check        # ruff + mypy --strict + pytest, in that order
 make lint         # ruff check src tests
 make typecheck    # mypy, strict, over korodexios_core
 make test         # pytest -q
-make coverage     # pytest -q with the coverage floor (87%) enforced
+make coverage     # pytest -q with the coverage floor (88%) enforced
 make demo         # scripted end-to-end tour of the CLI
 kdx doctor        # environment, config provenance, modules, control plane
 kdx status        # live daemon report over the IPC endpoint
@@ -55,7 +55,7 @@ kdx logs -n 50    # the rotating log file, no POSIX tail required
 ## Verification
 
 Coverage is a ratchet, not a report: `make check` runs `pytest --cov` with
-`--cov-fail-under=87`, one point under the measured total, so a new untested
+`--cov-fail-under=88`, one point under the measured total, so a new untested
 branch fails the bar. `pytest-cov` is a dev-extra tool only - the runtime stays
 PyYAML and rich.
 

@@ -138,23 +138,27 @@ directory ignores dot files, swap files, and names `lock_name()` refuses | **del
 
 ## Next
 
-1. **Publish to an index.** PyPI through trusted publishing. The git bootstrap is
-   already live in the seed: `kdx init` pins the chassis to the repository, so a
-   freshly seeded project installs today without waiting for an index.
-2. **A Textual/TUI front end** over the same declarative `CliCommand` tree the wizard
+1. **A Textual/TUI front end** over the same declarative `CliCommand` tree the wizard
    already reads - no module knows a second surface exists.
-3. **Retention an operator can read**: `v0.2.7` gave retention a clock of its own - an
+2. **Retention an operator can read**: `v0.2.7` gave retention a clock of its own - an
    `auto_prune` task that ages stamped copies out on its own interval, under the named lock a
    copy takes, reporting last run and reclaimed space to `health()`, `kdx status`, and a
    `retention` diagnostic row. The next honest step is putting that window in front of a person:
    a `kdx backup retention` report (window, sweep interval, archives standing, last sweep, space
    taken back) so an operator can ask what the policy did without reading JSON.
-4. **Windows in CI** types clean and waits on its runtime path. The red was ours, not
-   mypy's: the runner starts bash with `-e`, so the failing mypy call ended the step
-   before any diagnostic ran, and the POSIX-only `os.sysconf` / `os.getrusage` reads
-   failed the Windows platform check - `v0.2.8` resolved those reads at import, so a
-   `--platform win32` check reports no errors. What remains is the Windows runtime path:
-   test, boot, and seed steps now get to run there for the first time.
+3. **Publish to an index (parked, owner's choice).** PyPI through trusted publishing is a
+   ~30-minute setup whenever the owner wants it; the name `korodexios-core` was unclaimed
+   on PyPI as of 2026-10-27. The git bootstrap is already live in the seed: `kdx init`
+   pins the chassis to the repository, so a freshly seeded project installs today without
+   waiting for an index.
+
+Closed since `v0.3.1`: **Windows, in CI and on real hardware.** The CI legs are green
+(`mypy --platform win32` clean, the Windows job passes `make check`), and the manual
+harness `windows-check.ps1` validated the runtime path on a real Windows 11 host: daemon
+boot, `kdx status` over the win32 `pid_alive` path, the msvcrt single-instance lock
+refusing a second daemon at exit `1`, and a clean operator shutdown at exit `0`. The
+harness also caught a real cross-platform defect - Windows' `mimetypes` answering
+`application/vnd.ms-excel` for `.csv` - now pinned to `text/csv` on every platform.
 
 ## Release cadence
 
