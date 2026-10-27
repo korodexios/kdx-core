@@ -264,6 +264,13 @@ jobs:
           uv build --out-dir dist
           ls -1 dist
 
+      - name: Keep the build even if publishing fails
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ github.ref_name }}
+          path: dist/
+          retention-days: 30
+
       - name: Publish the GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

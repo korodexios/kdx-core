@@ -99,6 +99,7 @@ def test_release_waits_for_checks_and_only_runs_on_tags() -> None:
     body = str(release['steps'])
     assert 'uv build' in body
     assert 'gh release create' in body and 'gh release upload' in body
+    assert 'actions/upload-artifact' in body, "a failed publish must not lose the build"
     assert '--verify-tag' in body
 
 
