@@ -109,6 +109,9 @@ def test_guess_content_type_labels_common_web_files() -> None:
         "text/javascript",
     }
     assert guess_content_type("data.json").startswith("application/json")
+    # Windows' mimetypes reads the registry and answers 'application/vnd.ms-excel'
+    # for '.csv'; the table pins the honest type on every platform.
+    assert guess_content_type("report.csv") == "text/csv"
     assert guess_content_type("pixel.png").startswith("image/")
     assert guess_content_type("no-extension") == CONTENT_OCTET_STREAM
     assert guess_content_type("archive.unknownext") == CONTENT_OCTET_STREAM

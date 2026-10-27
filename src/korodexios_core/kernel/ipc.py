@@ -122,6 +122,7 @@ means, and these names are the vocabulary it may choose from.
 
 _EXTRA_CONTENT_TYPES: dict[str, str] = {
     ".css": "text/css",
+    ".csv": "text/csv",
     ".htm": "text/html",
     ".html": "text/html",
     ".js": "text/javascript",
@@ -137,8 +138,9 @@ def guess_content_type(name: str) -> str:
     """Return the media type for *name*, defaulting to octet-stream.
 
     The small table settles the extensions mimetypes answers differently per
-    platform - '.js' is the usual offender - so a dashboard gets the same type on
-    every host, and a static build keeps caching it.
+    platform - '.js' is the usual offender, and on Windows '.csv' comes back as
+    'application/vnd.ms-excel' - so a dashboard gets the same type on every host,
+    and a static build keeps caching it.
     """
     suffix = Path(str(name)).suffix.lower()
     if suffix in _EXTRA_CONTENT_TYPES:
