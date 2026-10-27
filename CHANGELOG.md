@@ -5,7 +5,17 @@ history lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## [Unreleased]
 
-_Nothing pending._
+### Added
+
+- **`kdx backup retention`**: an operator can now ask what the retention policy has done
+  without reading JSON by hand. The report answers from three honest sources: the window
+  and sweep beat from the configuration, the stamped copies standing in the destination
+  (count, bytes, oldest, newest, and how many already stand past the window - the same
+  stamp-name rule a sweep deletes by, and the report never removes anything), and the
+  sweep record (runs, last sweep, removed, reclaimed). The counters name the answering
+  process; a running daemon's own record answers through `kdx status`, `kdx doctor`,
+  `kdx --remote backup retention`, or the new read-only control-plane route
+  `GET /api/v1/backup/retention`.
 
 ## [0.3.2] - 2026-10-27
 

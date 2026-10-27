@@ -357,7 +357,7 @@ releases every name the chassis took. Files that must outlive a moved `var/` bel
 ```bash
 kdx system info | diagnostics | disk      # host OS, CPU, memory, disk
 kdx heartbeat status [--json]             # counters and the configured interval
-kdx backup plan | run | configure         # dry-run, execute, or reconfigure
+kdx backup plan | run | retention | configure   # dry-run, execute, ask what retention did, or reconfigure
 ```
 
 Each is registered by its module through `register_cli`, so argparse and the wizard
@@ -368,6 +368,15 @@ both know about them.
 `modules.backup_engine.auto_prune_days` decides how long a stamped copy survives (`0` keeps
 every copy), and `modules.backup_engine.prune_interval` (`v0.2.7`) gives retention its own beat
 (task `auto_prune`) so aging an archive never waits for the next copy to land.
+
+`kdx backup retention [--json]` answers what that policy has done without reading JSON by
+hand: the window and sweep beat from the configuration, the stamped copies standing in the
+destination (count, bytes, oldest and newest, how many already stand past the window), and
+the sweep record (runs, last sweep, removed, reclaimed). Only folders whose own name is a
+backup stamp count - the same rule a sweep deletes by - and the report never removes
+anything. The counters name the process that answers: a running daemon's own record comes
+through `kdx status`, `kdx doctor`, or `kdx --remote backup retention`, which runs the
+report inside the daemon; the control plane also carries it at `GET /api/v1/backup/retention`.
 
 ## LAN and auth options
 

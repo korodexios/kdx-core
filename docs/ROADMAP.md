@@ -136,17 +136,28 @@ directory ignores dot files, swap files, and names `lock_name()` refuses | **del
   engine and its tests stop assuming the host path separator or CRLF translation; and the IPC
   tests accept the platform answers they run on | **delivered** |
 
+| 29 | `v0.3.2` the defect a real Windows host found, and the harness that found it: Windows'
+  `mimetypes` answers `application/vnd.ms-excel` for `.csv` from the OS registry, so the
+  chassis' own table now pins `.csv` to `text/csv` on every platform; `windows-check.ps1` is
+  a PowerShell 5.1 manual validation harness (static bar plus daemon boot, win32 `pid_alive`,
+  the msvcrt single-instance lock at exit `1`, and a clean shutdown at exit `0` verified via
+  the chassis' own stop line) that writes `var/windows-report.md` with verdicts and a JSON
+  summary; CI also audits the locked runtime dependency tree with `pip-audit` before any
+  release | **delivered** |
+
+| 30 | retention an operator can read: `kdx backup retention` (with `--json`) answers the
+  window and sweep beat from the configuration, the stamped copies standing in the
+  destination (count, bytes, oldest, newest, how many past the window - the same stamp-name
+  rule a sweep deletes by, and the report removes nothing), and the sweep record (runs,
+  last sweep, removed, reclaimed); the counters name the answering process, and a running
+  daemon's live record answers through `kdx --remote backup retention` or the new read-only
+  `GET /api/v1/backup/retention` | **delivered** |
+
 ## Next
 
 1. **A Textual/TUI front end** over the same declarative `CliCommand` tree the wizard
    already reads - no module knows a second surface exists.
-2. **Retention an operator can read**: `v0.2.7` gave retention a clock of its own - an
-   `auto_prune` task that ages stamped copies out on its own interval, under the named lock a
-   copy takes, reporting last run and reclaimed space to `health()`, `kdx status`, and a
-   `retention` diagnostic row. The next honest step is putting that window in front of a person:
-   a `kdx backup retention` report (window, sweep interval, archives standing, last sweep, space
-   taken back) so an operator can ask what the policy did without reading JSON.
-3. **Publish to an index (parked, owner's choice).** PyPI through trusted publishing is a
+2. **Publish to an index (parked, owner's choice).** PyPI through trusted publishing is a
    ~30-minute setup whenever the owner wants it; the name `korodexios-core` was unclaimed
    on PyPI as of 2026-10-27. The git bootstrap is already live in the seed: `kdx init`
    pins the chassis to the repository, so a freshly seeded project installs today without

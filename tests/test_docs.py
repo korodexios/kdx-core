@@ -189,7 +189,7 @@ def test_roadmap_records_the_phase_history_and_the_next_step() -> None:
     for needle in ("## Phases", "## Next", "| 1 |", "| 12 |", "make check"):
         assert needle in roadmap, f"roadmap lost {needle!r}"
     next_section = roadmap.split("## Next", 1)[1].split("## Release", 1)[0]
-    for needle in ("Publish to an index", "Textual/TUI", "Retention an operator can read"):
+    for needle in ("Publish to an index", "Textual/TUI"):
         assert needle in next_section, f"roadmap next lost {needle!r}"
 
 

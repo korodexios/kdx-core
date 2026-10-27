@@ -121,8 +121,11 @@ def test_heartbeat_and_system_info_declare_their_keys() -> None:
 
 def test_module_routes_are_declared_read_only() -> None:
     backup = BackupEngineModule().ipc_routes()
-    assert [route.path for route in backup] == ["/api/v1/backup/plan"]
-    assert [route.methods for route in backup] == [("GET",)]
+    assert [route.path for route in backup] == [
+        "/api/v1/backup/plan",
+        "/api/v1/backup/retention",
+    ]
+    assert [route.methods for route in backup] == [("GET",), ("GET",)]
     system_info = SystemInfoModule().ipc_routes()
     assert [route.path for route in system_info] == ["/api/v1/system/snapshot"]
     assert all(route.module and route.summary for route in backup + system_info)

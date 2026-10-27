@@ -63,6 +63,55 @@ class PruneReport:
     reclaimed_bytes: int = 0
 
 
+@dataclass(slots=True)
+class RetentionReport:
+    """The retention policy, the copies standing in the destination, and the sweep record.
+
+    'expired_now' counts the standing copies the current window says the next sweep
+    would remove; the sweep counters name this process, so a running daemon's own
+    record answers through 'kdx status', 'kdx doctor', or 'kdx --remote backup
+    retention', which runs the report inside the daemon.
+    """
+
+    dest: str = ""
+    window_days: int = 0
+    sweep_interval_seconds: float = 0.0
+    sweep_scheduled: bool = False
+    copies_standing: int = 0
+    copies_bytes: int = 0
+    expired_now: int = 0
+    oldest_stamp: str = ""
+    newest_stamp: str = ""
+    sweeps: int = 0
+    last_sweep_seconds_ago: float | None = None
+    last_sweep_removed: int = 0
+    removed_total: int = 0
+    reclaimed_bytes: int = 0
+    refusals: int = 0
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the machine shape: raw bytes plus a human rendering of each total."""
+        return {
+            "dest": self.dest,
+            "window_days": self.window_days,
+            "sweep_interval_seconds": self.sweep_interval_seconds,
+            "sweep_scheduled": self.sweep_scheduled,
+            "copies_standing": self.copies_standing,
+            "copies_bytes": self.copies_bytes,
+            "copies_human": format_bytes(self.copies_bytes),
+            "expired_now": self.expired_now,
+            "oldest_stamp": self.oldest_stamp,
+            "newest_stamp": self.newest_stamp,
+            "sweeps": self.sweeps,
+            "last_sweep_seconds_ago": self.last_sweep_seconds_ago,
+            "last_sweep_removed": self.last_sweep_removed,
+            "removed_total": self.removed_total,
+            "reclaimed_bytes": self.reclaimed_bytes,
+            "reclaimed_human": format_bytes(self.reclaimed_bytes),
+            "refusals": self.refusals,
+        }
+
+
 class BackupEngineModule(Module):
     """Backs up a source tree into a timestamped destination with validation."""
 
@@ -312,7 +361,7 @@ class BackupEngineModule(Module):
         )
 
     def ipc_routes(self) -> tuple[IpcRoute, ...]:
-        """Expose the plan the current settings produce, read-only."""
+        """Expose the plan the current settings produce and the retention record, read-only."""
         return (
             IpcRoute(
                 path="/api/v1/backup/plan",
@@ -320,7 +369,17 @@ class BackupEngineModule(Module):
                 module=self.name,
                 summary="the backup plan the current settings produce",
             ),
+            IpcRoute(
+                path="/api/v1/backup/retention",
+                handler=self._retention_route,
+                module=self.name,
+                summary="the retention policy, standing copies, and sweep record",
+            ),
         )
+
+    def _retention_route(self, request: IpcRequest) -> Any:
+        """Answer the retention route from inside the running chassis, counters live."""
+        return self.retention_report().as_dict()
 
     def _plan_route(self, request: IpcRequest) -> Any:
         """Answer the plan route; an unreadable source is a 503, not a stack trace."""
@@ -359,6 +418,20 @@ class BackupEngineModule(Module):
                                 dest="force",
                                 action="store_true",
                                 help="Copy even when the size budget is exceeded.",
+                            ),
+                        ),
+                    ),
+                    CliCommand(
+                        name="retention",
+                        help="Report the retention window, standing copies, and sweep record.",
+                        module_name=self.name,
+                        handler=_retention_command,
+                        args=(
+                            CliArgument(
+                                ("--json",),
+                                dest="as_json",
+                                action="store_true",
+                                help="Emit the report as JSON.",
                             ),
                         ),
                     ),
@@ -741,6 +814,59 @@ class BackupEngineModule(Module):
         """Remove expired copies under *dest* and return how many went; 0 keeps every copy."""
         return self._prune_dest(dest, keep=keep).removed
 
+    def retention_report(self) -> RetentionReport:
+        """Answer 'what has the retention policy done?' in one honest pass.
+
+        The policy comes from the configuration, the standing copies from the
+        destination itself (only folders whose own name is a backup stamp count,
+        the same rule a sweep deletes by), and the sweep counters from this
+        process. A copy that stands past the window is reported, not removed:
+        this is the report, not the sweep.
+        """
+        report = RetentionReport(
+            dest=str(self._dest),
+            window_days=self._auto_prune_days,
+            sweep_interval_seconds=round(self._prune_interval, 3),
+            sweep_scheduled=self._prune_task is not None,
+            sweeps=self._prune_sweeps,
+            last_sweep_seconds_ago=(
+                None
+                if self._prune_last_run is None
+                else round(max(0.0, time.time() - self._prune_last_run), 3)
+            ),
+            last_sweep_removed=self._prune_last_removed,
+            removed_total=self._pruned,
+            reclaimed_bytes=self._prune_reclaimed_bytes,
+            refusals=self._prune_refusals,
+        )
+        dest = self._dest
+        if dest.is_dir():
+            cutoff = (
+                time.time() - self._auto_prune_days * SECONDS_PER_DAY
+                if self._auto_prune_days > 0
+                else None
+            )
+            oldest: float | None = None
+            newest: float | None = None
+            for child in sorted(dest.iterdir()):
+                if not child.is_dir():
+                    continue
+                stamp = self._stamp_time(child.name)
+                if stamp is None:
+                    continue
+                report.copies_standing += 1
+                report.copies_bytes += _tree_bytes(child)
+                if cutoff is not None and stamp < cutoff:
+                    report.expired_now += 1
+                if oldest is None or stamp < oldest:
+                    oldest = stamp
+                if newest is None or stamp > newest:
+                    newest = stamp
+            if oldest is not None and newest is not None:
+                report.oldest_stamp = datetime.fromtimestamp(oldest).strftime(STAMP_FORMAT)
+                report.newest_stamp = datetime.fromtimestamp(newest).strftime(STAMP_FORMAT)
+        return report
+
     def _prune_check(self) -> DiagnosticCheck:
         """Report the independent retention sweep, its last beat, and what it reclaimed.
 
@@ -999,6 +1125,62 @@ def _run_command(request: CliRequest) -> int:
         f"{result.copied} file(s) {'would be' if result.dry_run else ''} copied".replace("  ", " "),
         tag=tag,
     )
+    return int(ExitCode.SUCCESS)
+
+
+def describe_retention(report: RetentionReport) -> list[tuple[str, Any]]:
+    """Render the retention report as operator rows."""
+    if report.window_days > 0:
+        window = f"{report.window_days} day(s)"
+    else:
+        window = "off (copies age out only as copies land)"
+    if report.sweep_interval_seconds > 0:
+        sweep = f"every {report.sweep_interval_seconds} s"
+        sweep += " (on the clock)" if report.sweep_scheduled else " (no clock yet)"
+    else:
+        sweep = "only as a copy lands"
+    rows: list[tuple[str, Any]] = [
+        ("destination", report.dest),
+        ("window", window),
+        ("sweep", sweep),
+        ("copies standing", f"{report.copies_standing} ({format_bytes(report.copies_bytes)})"),
+        ("oldest / newest", f"{report.oldest_stamp or '-'} / {report.newest_stamp or '-'}"),
+        ("past the window now", report.expired_now),
+        ("sweeps run", report.sweeps),
+        (
+            "last sweep",
+            "never"
+            if report.last_sweep_seconds_ago is None
+            else f"{report.last_sweep_seconds_ago} s ago ({report.last_sweep_removed} removed)",
+        ),
+        ("removed in total", report.removed_total),
+        ("reclaimed", format_bytes(report.reclaimed_bytes)),
+    ]
+    if report.refusals:
+        rows.append(("sweeps stepped aside", report.refusals))
+    return rows
+
+
+def _retention_command(request: CliRequest) -> int:
+    module = _module(request)
+    report = module.retention_report()
+    if request.flag("as_json"):
+        dump_json(report.as_dict())
+        return int(ExitCode.SUCCESS)
+    print_section("Backup retention")
+    print_key_values(describe_retention(report))
+    if report.window_days <= 0:
+        write_status(
+            "the window is off: copies stand until the window opens or a sweep is asked for",
+            tag=TAG_NOTE,
+        )
+    elif report.expired_now:
+        write_status(
+            f"{report.expired_now} copy(ies) stand past the window; the next sweep removes them",
+            tag=TAG_NOTE,
+        )
+    else:
+        write_status("every standing copy is inside the window", tag=TAG_OK)
     return int(ExitCode.SUCCESS)
 
 
