@@ -555,7 +555,12 @@ def test_the_retention_sweep_ages_archives_out_without_a_copy(tmp_path: Path) ->
         assert stamped_copies(dest) == [], "retention copied nothing"
         health = module.health()
         assert health["prune_sweeps"] >= 1, "the clock ran the sweep"
-        assert health["prune_last_removed"] == 0, "the last beat found nothing left to age out"
+        # A slow runner may fit only one beat into the window, and that beat is the
+        # one that aged the archive out: asserting the last beat removed nothing
+        # would measure how busy the runner is, not what retention does. The total
+        # below is the runner-independent truth: exactly one archive was taken.
+        if health["prune_sweeps"] >= 2:
+            assert health["prune_last_removed"] == 0, "a second beat finds nothing left to age out"
         assert health["pruned"] == 1, "the archive the first beat took is counted"
         assert health["prune_reclaimed_bytes"] == 15
         assert health["prune_reclaimed"] == "15 bytes"
