@@ -108,6 +108,7 @@ def test_package_audit_runs_before_release() -> None:
     assert 'package' in jobs(data)['release']['needs']
     body = str(jobs(data)['package'])
     assert 'uv build' in body and 'tar' in body
+    assert 'pip-audit' in body, "the shipped dependency tree must be audited before release"
 
 
 def test_jobs_that_need_the_tree_check_it_out() -> None:
