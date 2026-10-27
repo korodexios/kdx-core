@@ -5,7 +5,39 @@ history lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## [Unreleased]
 
-_Nothing pending: the working tree is the `v0.3.1` tag._
+_Nothing pending._
+
+## [0.3.2] - 2026-10-27
+
+A small patch on the frozen `v2` line: one cross-platform defect found by running the
+chassis on real Windows hardware, and the harness that found it. Nothing in the frozen
+surface changed shape.
+
+### Fixed
+
+- **`.csv` answers `text/csv` on every platform**: Windows' `mimetypes` reads the OS
+  registry, which maps `.csv` to `application/vnd.ms-excel`, so a dashboard served over
+  the control plane carried a different `Content-Type` on Windows than on any other host,
+  breaking client assumptions and caching. The chassis' own `_EXTRA_CONTENT_TYPES` table
+  now pins `.csv` next to the existing `.js` pin, and the content-type test locks the
+  answer on every platform.
+
+### Added
+
+- **`windows-check.ps1`** (repo tooling, not package code): a PowerShell 5.1-compatible
+  manual Windows validation harness. It runs the static bar (ruff, mypy strict, pytest
+  with the coverage floor - 88 on POSIX, 87 on Windows, where 22 POSIX-only tests skip)
+  and the runtime smoke: daemon boot, control-plane reads, `kdx status` over the win32
+  `pid_alive` path, `kdx --remote` RPC, the single-instance lock (a second daemon must
+  exit `1`), and a clean operator shutdown (exit `0`, verified through the chassis' own
+  `chassis stopped exit_code=0` line). Everything lands in `var/windows-report.md` with
+  step verdicts and a machine-readable JSON summary. Validated green on Windows 11 and
+  Linux; it found the `.csv` defect above.
+
+### Docs
+
+- Roadmap: Windows closed in CI and on real hardware; PyPI publishing parked by the
+  owner's choice. `AGENTS.md`'s coverage floor now matches the Makefile (88).
 
 ## [0.3.1] - 2026-10-26
 
